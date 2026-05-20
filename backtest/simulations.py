@@ -19,6 +19,18 @@ try:
 except Exception:  # pragma: no cover
     sns = None
 
+CHART_BG = "#080d14"
+CHART_PANEL = "#111827"
+CHART_GRID = "#2b3a4f"
+CHART_TEXT = "#e5eefb"
+CHART_MUTED = "#94a3b8"
+CHART_GREEN = "#34d399"
+CHART_RED = "#fb7185"
+CHART_BLUE = "#60a5fa"
+CHART_CYAN = "#22d3ee"
+CHART_AMBER = "#fbbf24"
+CHART_ORANGE = "#fb923c"
+
 BootstrapMode = Literal["trade", "day", "week", "month"]
 
 
@@ -65,21 +77,21 @@ def _ensure_dir(path: Path) -> None:
 
 
 def _style_dark_axis(ax) -> None:
-    ax.set_facecolor("#151526")
-    ax.tick_params(colors="#b8bed6")
-    ax.xaxis.label.set_color("#d7dcef")
-    ax.yaxis.label.set_color("#d7dcef")
-    ax.title.set_color("white")
+    ax.set_facecolor(CHART_PANEL)
+    ax.tick_params(colors=CHART_MUTED)
+    ax.xaxis.label.set_color(CHART_TEXT)
+    ax.yaxis.label.set_color(CHART_TEXT)
+    ax.title.set_color(CHART_TEXT)
     for spine in ax.spines.values():
-        spine.set_edgecolor("#38405f")
-    ax.grid(True, color="#69708a", alpha=0.16, linewidth=0.8)
+        spine.set_edgecolor(CHART_GRID)
+    ax.grid(True, color=CHART_GRID, alpha=0.28, linewidth=0.75)
 
 
 def _style_monte_carlo_fan_axis(ax) -> None:
     ax.set_facecolor("#05070b")
     ax.tick_params(colors="#cbd5e1")
-    ax.xaxis.label.set_color("#d7dcef")
-    ax.yaxis.label.set_color("#d7dcef")
+    ax.xaxis.label.set_color(CHART_TEXT)
+    ax.yaxis.label.set_color(CHART_TEXT)
     ax.title.set_color("#f8fafc")
     for spine in ax.spines.values():
         spine.set_visible(False)
@@ -95,6 +107,23 @@ def _monte_carlo_fan_cmap() -> LinearSegmentedColormap:
             "#2aa38f",
             "#9be7c4",
         ],
+    )
+
+
+def _annotate_vertical_line(ax, x: float, label: str, color: str) -> None:
+    if not np.isfinite(x):
+        return
+    ymin, ymax = ax.get_ylim()
+    ax.text(
+        x,
+        ymax - (ymax - ymin) * 0.08,
+        label,
+        rotation=90,
+        va="top",
+        ha="right",
+        color=color,
+        fontsize=9,
+        fontweight="bold",
     )
 
 
@@ -137,7 +166,7 @@ def _render_monte_carlo_fan(
     ax.plot(x, p50, color="#f8fafc", linewidth=1.6, alpha=0.92, zorder=3)
 
     if reference_path is not None and len(reference_path) == paths.shape[1]:
-        ax.plot(x, reference_path, color="#8ad7ff", linewidth=2.0, alpha=0.95, zorder=4)
+        ax.plot(x, reference_path, color=CHART_CYAN, linewidth=2.0, alpha=0.95, zorder=4)
 
     ax.axhline(0.0, color="#d8dee9", linewidth=0.8, alpha=0.28, zorder=0)
     ax.set_title(title, fontsize=17, fontweight="semibold", pad=18)
@@ -302,7 +331,7 @@ def run_monte_carlo(
     x_label = "trade #" if bootstrap_mode == "trade" else f"{bootstrap_mode} bucket #"
 
     fig, ax = plt.subplots(figsize=(13.5, 7.0))
-    fig.patch.set_facecolor("#0b0f1a")
+    fig.patch.set_facecolor(CHART_BG)
     _render_monte_carlo_fan(
         ax,
         plotted_pnl_paths,
@@ -316,25 +345,29 @@ def run_monte_carlo(
     plt.close()
 
     fig, ax = plt.subplots(figsize=(10, 4.8))
-    fig.patch.set_facecolor("#0b0f1a")
-    ax.hist(final_equities, bins=60, color="#37d67a", alpha=0.82, edgecolor="#182032", linewidth=0.5)
-    ax.axvline(np.median(final_equities), color="#f6c945", linestyle="--", linewidth=1.2, alpha=0.9)
+    fig.patch.set_facecolor(CHART_BG)
+    median_final = float(np.median(final_equities))
+    ax.hist(final_equities, bins=60, color=CHART_GREEN, alpha=0.82, edgecolor="#182032", linewidth=0.5)
+    ax.axvline(median_final, color=CHART_AMBER, linestyle="--", linewidth=1.2, alpha=0.9)
     ax.set_title(f"Monte Carlo Final Equity ({bootstrap_mode}-bootstrap, n={n_sims})", fontsize=16, fontweight="bold")
     ax.set_xlabel("Final equity ($)")
     ax.set_ylabel("Count")
     _style_dark_axis(ax)
+    _annotate_vertical_line(ax, median_final, f"median ${median_final:,.0f}", CHART_AMBER)
     plt.tight_layout()
     plt.savefig(final_equity_png, dpi=160, facecolor=fig.get_facecolor())
     plt.close()
 
     fig, ax = plt.subplots(figsize=(10, 4.8))
-    fig.patch.set_facecolor("#0b0f1a")
-    ax.hist(max_dds, bins=60, color="#ff7f50", alpha=0.84, edgecolor="#182032", linewidth=0.5)
-    ax.axvline(np.median(max_dds), color="#8ad7ff", linestyle="--", linewidth=1.2, alpha=0.9)
+    fig.patch.set_facecolor(CHART_BG)
+    median_dd = float(np.median(max_dds))
+    ax.hist(max_dds, bins=60, color=CHART_ORANGE, alpha=0.84, edgecolor="#182032", linewidth=0.5)
+    ax.axvline(median_dd, color=CHART_CYAN, linestyle="--", linewidth=1.2, alpha=0.9)
     ax.set_title(f"Monte Carlo Max Drawdown (%) ({bootstrap_mode}-bootstrap, n={n_sims})", fontsize=16, fontweight="bold")
     ax.set_xlabel("Max drawdown (%)")
     ax.set_ylabel("Count")
     _style_dark_axis(ax)
+    _annotate_vertical_line(ax, median_dd, f"median {median_dd:.1f}%", CHART_CYAN)
     plt.tight_layout()
     plt.savefig(max_drawdown_png, dpi=160, facecolor=fig.get_facecolor())
     plt.close()
@@ -676,7 +709,7 @@ def _store_advanced_paths(
     pd.DataFrame(paths).to_csv(paths_csv, index=False)
 
     fig, ax = plt.subplots(figsize=(13.5, 7.0))
-    fig.patch.set_facecolor("#0b0f1a")
+    fig.patch.set_facecolor(CHART_BG)
     _render_monte_carlo_fan(
         ax,
         paths - float(starting_capital),
@@ -982,19 +1015,22 @@ def _result_stress_row(
 def _plot_execution_delay_stress(summary: pd.DataFrame, out_path: Path) -> None:
     df = summary[summary["error"].fillna("").eq("")].copy()
     fig, ax = plt.subplots(figsize=(10.8, 5.4))
-    fig.patch.set_facecolor("#0b0f1a")
+    fig.patch.set_facecolor(CHART_BG)
     if not df.empty:
         df = df.sort_values("entry_delay_bars")
         x = df["entry_delay_minutes"].astype(float)
-        ax.plot(x, df["total_pnl"].astype(float), marker="o", linewidth=2.0, color="#37d67a", label="Total P&L")
-        ax.axhline(0, color="#69708a", linewidth=1.0, alpha=0.45)
+        pnl = df["total_pnl"].astype(float)
+        ax.plot(x, pnl, marker="o", linewidth=2.0, color=CHART_GREEN, label="Total P&L")
+        for x_value, y_value in zip(x, pnl, strict=False):
+            ax.text(x_value, y_value, f"${y_value:,.0f}", color=CHART_TEXT, fontsize=8, ha="center", va="bottom")
+        ax.axhline(0, color=CHART_MUTED, linewidth=1.0, alpha=0.45)
         ax2 = ax.twinx()
-        ax2.plot(x, df["profit_factor"].astype(float), marker="s", linewidth=1.7, color="#f6c945", label="Profit factor")
+        ax2.plot(x, df["profit_factor"].astype(float), marker="s", linewidth=1.7, color=CHART_AMBER, label="Profit factor")
         ax2.set_ylabel("Profit factor")
-        ax2.tick_params(colors="#b8bed6")
-        ax2.yaxis.label.set_color("#d7dcef")
+        ax2.tick_params(colors=CHART_MUTED)
+        ax2.yaxis.label.set_color(CHART_TEXT)
         for spine in ax2.spines.values():
-            spine.set_edgecolor("#38405f")
+            spine.set_edgecolor(CHART_GRID)
     ax.set_title("Execution Delay Stress", fontsize=16, fontweight="bold")
     ax.set_xlabel("Extra entry delay (minutes)")
     ax.set_ylabel("Total P&L ($)")
@@ -1264,7 +1300,7 @@ def run_regime_conditional_cost_stress(
     # Plot comparison
     if not summary.empty:
         fig, ax = plt.subplots(figsize=(10, 5.2))
-        fig.patch.set_facecolor("#0b0f1a")
+        fig.patch.set_facecolor(CHART_BG)
         _style_dark_axis(ax)
 
         labels = summary["scenario"].tolist()
@@ -1273,22 +1309,42 @@ def run_regime_conditional_cost_stress(
 
         x = np.arange(len(labels))
         width = 0.35
-        bars1 = ax.bar(x - width / 2, pnl_values, width, color="#37d67a", alpha=0.82, label="Total P&L ($)")
-        ax.set_ylabel("Total P&L ($)", color="#d7dcef")
+        bars1 = ax.bar(x - width / 2, pnl_values, width, color=CHART_GREEN, alpha=0.82, label="Total P&L ($)")
+        for bar, value in zip(bars1, pnl_values, strict=False):
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                value,
+                f"${value:,.0f}",
+                ha="center",
+                va="bottom" if value >= 0 else "top",
+                color=CHART_TEXT,
+                fontsize=8,
+            )
+        ax.set_ylabel("Total P&L ($)", color=CHART_TEXT)
         ax.set_xticks(x)
-        ax.set_xticklabels(labels, rotation=30, ha="right", color="#d7dcef")
+        ax.set_xticklabels(labels, rotation=30, ha="right", color=CHART_TEXT)
 
         ax2 = ax.twinx()
-        bars2 = ax2.bar(x + width / 2, pf_values, width, color="#f6c945", alpha=0.82, label="Profit Factor")
-        ax2.set_ylabel("Profit Factor", color="#d7dcef")
-        ax2.tick_params(colors="#b8bed6")
+        bars2 = ax2.bar(x + width / 2, pf_values, width, color=CHART_AMBER, alpha=0.82, label="Profit Factor")
+        for bar, value in zip(bars2, pf_values, strict=False):
+            ax2.text(
+                bar.get_x() + bar.get_width() / 2,
+                value,
+                f"{value:.2f}",
+                ha="center",
+                va="bottom" if value >= 0 else "top",
+                color=CHART_TEXT,
+                fontsize=8,
+            )
+        ax2.set_ylabel("Profit Factor", color=CHART_TEXT)
+        ax2.tick_params(colors=CHART_MUTED)
         for spine in ax2.spines.values():
-            spine.set_edgecolor("#38405f")
+            spine.set_edgecolor(CHART_GRID)
 
         lines = [bars1, bars2]
         labels_list = ["Total P&L", "Profit Factor"]
         ax.legend(lines, labels_list, loc="upper right", fontsize=10)
-        ax.set_title("Regime-Conditional Cost Stress", fontsize=16, fontweight="bold", color="white")
+        ax.set_title("Regime-Conditional Cost Stress", fontsize=16, fontweight="bold", color=CHART_TEXT)
         plt.tight_layout()
         plt.savefig(chart_png, dpi=160, facecolor=fig.get_facecolor())
         plt.close()

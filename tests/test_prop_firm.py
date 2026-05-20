@@ -13,6 +13,7 @@ from backtest.prop_firm import (
     _simulate_eval_arrays,
     _simulate_funded_arrays,
     _normalize_profile,
+    _sample_eval_equity_paths,
     _daily_paths_from_trades,
     _trade_path_work_frame,
     _coerce_daily_paths,
@@ -36,6 +37,29 @@ class PropFirmAnalyticsTests(unittest.TestCase):
         self.assertEqual(result["status"], "pass")
         self.assertEqual(result["reason"], "profit_target")
         self.assertEqual(result["days"], 3)
+
+    def test_path_min_trading_days_count_active_trade_days(self) -> None:
+        result = evaluate_prop_firm_path(
+            pd.DataFrame(
+                [
+                    {"net_pnl": 300.0, "min_intraday_pnl": 0.0, "max_intraday_pnl": 300.0, "trade_count": 1},
+                    {"net_pnl": 0.0, "min_intraday_pnl": 0.0, "max_intraday_pnl": 0.0, "trade_count": 0},
+                    {"net_pnl": 0.0, "min_intraday_pnl": 0.0, "max_intraday_pnl": 0.0, "trade_count": 0},
+                ]
+            ),
+            {
+                "account_size": 50_000,
+                "profit_target": 250,
+                "max_drawdown": 2_500,
+                "daily_loss_limit": 1_200,
+                "min_trading_days": 2,
+                "max_trading_days": 3,
+            },
+        )
+
+        self.assertEqual(result["status"], "timeout")
+        self.assertEqual(result["days"], 3)
+        self.assertEqual(result["trading_days"], 1)
 
     def test_daily_loss_uses_intraday_path_not_just_day_close(self) -> None:
         result = evaluate_prop_firm_path(
@@ -160,9 +184,96 @@ class PropFirmAnalyticsTests(unittest.TestCase):
 
             summary = pd.read_csv(paths.summary_csv)
             self.assertEqual(summary.loc[0, "profile"], "unit_eval")
+            self.assertEqual(summary.loc[0, "sample_scope"], "development_in_sample")
+            self.assertEqual(summary.loc[0, "evidence_grade"], "research_only")
+            self.assertEqual(summary.loc[0, "optimism_warning"], "in_sample_bootstrap_not_approval_evidence")
             self.assertEqual(float(summary.loc[0, "pass_probability_pct"]), 100.0)
             self.assertEqual(float(summary.loc[0, "median_days_to_pass"]), 2.0)
-            self.assertIn("Prop Firm Evaluation Report", paths.report_md.read_text(encoding="utf-8"))
+            self.assertEqual(float(summary.loc[0, "median_trading_days_to_pass"]), 2.0)
+            self.assertEqual(int(summary.loc[0, "calendar_history_days"]), 5)
+            self.assertEqual(int(summary.loc[0, "active_history_days"]), 5)
+            report_text = paths.report_md.read_text(encoding="utf-8")
+            self.assertIn("Prop Firm Evaluation Report", report_text)
+            self.assertIn("in-sample development bootstrap", report_text)
+            self.assertIn("calendar-day paths", report_text)
+
+    def test_prop_eval_samples_calendar_days_after_first_trade_not_active_days_only(self) -> None:
+        trades = pd.DataFrame(
+            [
+                {"exit_time": pd.Timestamp("2024-01-02 10:00"), "pnl": 1_000.0},
+                {"exit_time": pd.Timestamp("2024-01-12 10:00"), "pnl": 1_000.0},
+            ]
+        )
+        daily_paths = _daily_paths_from_trades(trades)
+        self.assertEqual(len(daily_paths), 11)
+        self.assertEqual(int((daily_paths["trade_count"] > 0).sum()), 2)
+        self.assertEqual(float(daily_paths["net_pnl"].sum()), 2_000.0)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = export_prop_firm_report(
+                trades,
+                out_dir=Path(tmp),
+                artifact_name="sparse_prop",
+                profiles=[
+                    {
+                        "name": "sparse_eval",
+                        "account_size": 50_000,
+                        "profit_target": 2_000,
+                        "max_drawdown": 5_000,
+                        "daily_loss_limit": 5_000,
+                        "min_trading_days": 1,
+                        "max_trading_days": 5,
+                        "enable_surfaces": False,
+                    }
+                ],
+                n_sims=20,
+                seed=3,
+                enable_surfaces=False,
+            )
+
+            summary = pd.read_csv(paths.summary_csv)
+            self.assertEqual(float(summary.loc[0, "pass_probability_pct"]), 0.0)
+            self.assertEqual(int(summary.loc[0, "calendar_history_days"]), 11)
+            self.assertEqual(int(summary.loc[0, "active_history_days"]), 2)
+
+    def test_walkforward_export_marks_validation_scope(self) -> None:
+        trades = pd.DataFrame(
+            [
+                {
+                    "exit_time": pd.Timestamp("2024-01-02 10:00") + pd.Timedelta(days=day),
+                    "pnl": 250.0,
+                }
+                for day in range(4)
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = export_prop_firm_report(
+                trades,
+                out_dir=Path(tmp),
+                artifact_name="wf_prop",
+                sample_scope="walkforward_oos",
+                profiles=[
+                    {
+                        "name": "wf_eval",
+                        "account_size": 50_000,
+                        "profit_target": 500,
+                        "max_drawdown": 5_000,
+                        "daily_loss_limit": 5_000,
+                        "min_trading_days": 2,
+                        "max_trading_days": 4,
+                    }
+                ],
+                n_sims=10,
+                seed=3,
+                enable_surfaces=False,
+            )
+
+            summary = pd.read_csv(paths.summary_csv)
+
+            self.assertEqual(summary.loc[0, "sample_scope"], "walkforward_oos")
+            self.assertEqual(summary.loc[0, "evidence_grade"], "validation_candidate")
+            self.assertTrue(pd.isna(summary.loc[0, "optimism_warning"]) or summary.loc[0, "optimism_warning"] == "")
 
     def test_export_uses_trade_mae_for_daily_loss(self) -> None:
         trades = pd.DataFrame(
@@ -306,6 +417,32 @@ class PropFirmAnalyticsTests(unittest.TestCase):
             self.assertTrue(paths.risk_geometry_png.exists())
             self.assertTrue(paths.daily_rules_png.exists())
             self.assertTrue(paths.funded_payout_png.exists())
+
+    def test_sample_eval_equity_paths_do_not_pass_on_calendar_wait_only(self) -> None:
+        daily_paths = pd.DataFrame(
+            [
+                {"net_pnl": 300.0, "min_intraday_pnl": 0.0, "max_intraday_pnl": 300.0, "trade_count": 1},
+                {"net_pnl": 0.0, "min_intraday_pnl": 0.0, "max_intraday_pnl": 0.0, "trade_count": 0},
+                {"net_pnl": 0.0, "min_intraday_pnl": 0.0, "max_intraday_pnl": 0.0, "trade_count": 0},
+            ]
+        )
+
+        paths = _sample_eval_equity_paths(
+            daily_paths,
+            {
+                "name": "chart_eval",
+                "account_size": 50_000,
+                "profit_target": 250,
+                "max_drawdown": 2_500,
+                "daily_loss_limit": 1_200,
+                "min_trading_days": 2,
+                "max_trading_days": 3,
+            },
+            n_paths=1,
+            seed=1,
+        )
+
+        self.assertNotIn("pass", set(paths["status"]))
 
 
 class PropFirmVectorizedSimulationTests(unittest.TestCase):

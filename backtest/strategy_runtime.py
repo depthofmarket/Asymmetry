@@ -76,15 +76,12 @@ def extract_signal_events(
             entry_idx = idx + entry_delay_bars
             if entry_idx >= len(df):
                 continue
-            entry_time = pd.Timestamp(df.at[entry_idx, "time"])
-            # Point-in-time: use the prior bar's close as the best estimate
-            # of fill price for same-bar entries, since the current bar's
-            # close is not known until the bar completes.
             if entry_delay_bars > 0:
+                entry_time = pd.Timestamp(df.at[entry_idx, "time"])
                 entry_price = float(df.at[entry_idx, "open"]) if "open" in df.columns else np.nan
             else:
-                # Use prior bar open or close for same-bar entries
-                entry_price = float(df.at[entry_idx, "open"]) if "open" in df.columns else float(df.at[entry_idx, "close"])
+                entry_time = pd.Timestamp(df.at[entry_idx, "time"]) + pd.Timedelta(minutes=5)
+                entry_price = float(df.at[entry_idx, "close"]) if "close" in df.columns else np.nan
 
         signal_type = str(df.at[idx, "signal_type"]) if "signal_type" in df.columns else ""
         signal_price = float(df.at[idx, "close"]) if "close" in df.columns else np.nan

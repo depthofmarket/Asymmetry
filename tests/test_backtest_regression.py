@@ -146,6 +146,7 @@ class BacktestRegressionTests(unittest.TestCase):
         self.assertGreater(results["total_trades"], 0)
         self.assertIsInstance(results["final_equity"], float)
         self.assertIn("bar_profit_factor", results)
+        self.assertIn("execution_bar_profit_factor", results)
 
     def test_candidate_round_trip(self):
         """All CANDIDATE_CONFIGS should be runnable without crashing."""
@@ -272,6 +273,28 @@ class CandidateConfigTests(unittest.TestCase):
         hf = CANDIDATE_CONFIGS["higher_frequency_probe"]
         self.assertNotIn("blocked_entry_context", hf)
         self.assertEqual(hf["max_trades_per_day"], 5)
+
+    def test_high_frequency_observation_candidate_is_research_only(self):
+        name = "edge_vp_mr_trend_failed_auction_hf_observation_probe"
+        c = CANDIDATE_CONFIGS[name]
+
+        self.assertEqual(c["position_sizing_mode"], "fixed_contracts")
+        self.assertEqual(c["fixed_contracts"], 1)
+        self.assertEqual(c["max_contracts"], 1)
+        self.assertGreaterEqual(c["max_trades_per_day"], 20)
+        self.assertEqual(c["target_fill_mode"], "trade_through")
+        self.assertEqual(c["managed_stop_activation_mode"], "next_bar")
+        self.assertIn(name, RESEARCH_CONFIG["candidate_research_families"]["high_frequency_observation"])
+        self.assertNotIn(name, RESEARCH_CONFIG["next_validation_candidates"])
+
+    def test_failed_auction_quality_family_is_rejected_not_active(self):
+        family = RESEARCH_CONFIG["rejected_research_families"]["failed_auction_quality"]
+        active = set(RESEARCH_CONFIG["next_validation_candidates"])
+        failed_auction_candidates = set(RESEARCH_CONFIG["candidate_research_families"]["failed_auction_quality"])
+
+        self.assertEqual(family["status"], "rejected")
+        self.assertFalse(family["allow_new_variants"])
+        self.assertFalse(active & failed_auction_candidates)
 
     def test_composed_candidates_have_correct_entry_context(self):
         candidates_requiring_vwap_cross = [

@@ -609,6 +609,11 @@ class SignalMixin:
         df['signal'] = 0
         df['signal_type'] = ''
 
+        if 'open_context' in df.columns and 'inside_ib' in df.columns and 'cusum_event' in df.columns:
+            df['mr_long_blocked'] = ~((df['open_context'] == 'gap_below_prior_low') | (df['inside_ib'].fillna(False) & df['cusum_event'].fillna(False)))
+        else:
+            df['mr_long_blocked'] = False
+
         allow_long = bool(p.get('allow_long', True))
         allow_short = bool(p.get('allow_short', True))
         vp_valid = df['vp_poc'].notna() & df['vp_val'].notna() & df['vp_vah'].notna()

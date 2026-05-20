@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 
 from backtest.engine import BacktestEngine
-from backtest.objectives import bar_objective_metrics
+from backtest.objectives import bar_objective_metrics, execution_bar_objective_metrics
 from backtest.portfolio import Portfolio
 
 
@@ -27,6 +27,17 @@ class WalkForwardFoldResult:
     train_neighbor_metric: float = float("nan")
     train_selection_metric: float = float("nan")
     selected_train_trades: int = 0
+    planned_train_start: datetime | None = None
+    planned_train_end: datetime | None = None
+    window_mode: str = "rolling"
+    purge_bars: int = 0
+    embargo_bars: int = 0
+    gap_bars: int = 0
+    bar_interval_minutes: float = 5.0
+    boundary_gap_minutes: float = 0.0
+    train_rows: int = 0
+    test_rows: int = 0
+    purge_embargo_ok: bool = True
 
 
 @dataclass(frozen=True)
@@ -54,6 +65,65 @@ def _as_dt(x) -> pd.Series:
 def _date_mask(df: pd.DataFrame, start: datetime, end: datetime) -> pd.Series:
     t = _as_dt(df["time"])
     return (t >= start) & (t < end)
+
+
+def _infer_bar_interval(df: pd.DataFrame) -> pd.Timedelta:
+    if "time" not in df.columns or len(df) < 2:
+        return pd.Timedelta(minutes=5)
+    times = pd.to_datetime(df["time"], errors="coerce").dropna().sort_values()
+    diffs = times.diff().dropna()
+    diffs = diffs.loc[diffs > pd.Timedelta(0)]
+    if diffs.empty:
+        return pd.Timedelta(minutes=5)
+    interval = diffs.median()
+    if not isinstance(interval, pd.Timedelta) or interval <= pd.Timedelta(0):
+        return pd.Timedelta(minutes=5)
+    return interval
+
+
+def _coerce_nonnegative_int(value: Any, *, name: str) -> int:
+    if value is None:
+        return 0
+    try:
+        result = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a non-negative integer, got {value!r}") from exc
+    if result < 0:
+        raise ValueError(f"{name} must be non-negative, got {result}")
+    return result
+
+
+def _max_int_setting(base_params: dict[str, Any], param_grid: dict[str, list[Any]], key: str, default: int = 0) -> int:
+    values: list[int] = []
+    if key in base_params:
+        values.append(_coerce_nonnegative_int(base_params.get(key), name=key))
+    if key in param_grid:
+        for item in param_grid.get(key, []):
+            values.append(_coerce_nonnegative_int(item, name=key))
+    return max(values) if values else int(default)
+
+
+def _infer_purge_bars(base_params: dict[str, Any], param_grid: dict[str, list[Any]]) -> int:
+    max_hold_bars = _max_int_setting(base_params, param_grid, "max_hold_bars")
+    entry_delay_bars = _max_int_setting(base_params, param_grid, "entry_delay_bars")
+    if max_hold_bars <= 0 and entry_delay_bars <= 0:
+        return 0
+    return max_hold_bars + entry_delay_bars + 1
+
+
+def _resolve_purge_bars(
+    value: int | str | None,
+    *,
+    base_params: dict[str, Any],
+    param_grid: dict[str, list[Any]],
+) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, str):
+        if value.lower().strip() == "auto":
+            return _infer_purge_bars(base_params, param_grid)
+        return _coerce_nonnegative_int(value, name="purge_bars")
+    return _coerce_nonnegative_int(value, name="purge_bars")
 
 
 def _grid_product(param_grid: dict[str, list[Any]]) -> list[dict[str, Any]]:
@@ -92,6 +162,10 @@ def _score_from_results(
         return min(float(results.get("bar_profit_factor", 0.0)), _MAX_RATIO_SCORE)
     if metric == "bar_sharpe":
         return float(results.get("bar_sharpe_ratio", 0.0))
+    if metric == "execution_bar_profit_factor":
+        return min(float(results.get("execution_bar_profit_factor", 0.0)), _MAX_RATIO_SCORE)
+    if metric == "execution_bar_sharpe":
+        return float(results.get("execution_bar_sharpe_ratio", 0.0))
 
     raise ValueError(f"Unknown metric: {metric}")
 
@@ -179,6 +253,7 @@ def summarize_trades(
     starting_capital: float,
     pre_df: pd.DataFrame | None = None,
     futures_specs: dict[str, Any] | None = None,
+    execution_df: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     """
     Summarize an already-stitched trade dataframe without re-running the engine.
@@ -232,6 +307,14 @@ def summarize_trades(
     }
     if pre_df is not None and futures_specs is not None:
         out.update(bar_objective_metrics(pre_df, df, futures_specs, starting_capital))
+    if execution_df is not None and futures_specs is not None:
+        exec_frame = execution_df
+        if "time" in exec_frame.columns:
+            exec_time = pd.to_datetime(exec_frame["time"], errors="coerce")
+            start_time = df["entry_time"].min()
+            end_time = df["exit_time"].max()
+            exec_frame = exec_frame.loc[(exec_time >= start_time) & (exec_time <= end_time)].reset_index(drop=True)
+        out.update(execution_bar_objective_metrics(exec_frame, df, futures_specs, starting_capital))
     return out
 
 
@@ -270,6 +353,9 @@ def run_walk_forward(
     train_years: int = 4,
     test_months: int = 6,
     step_months: int = 6,
+    window_mode: str = "rolling",
+    purge_bars: int | str | None = "auto",
+    embargo_bars: int = 0,
     param_grid: dict[str, list[Any]] | None = None,
     metric: str = "sharpe",
     min_trades_train: int = 40,
@@ -289,6 +375,12 @@ def run_walk_forward(
 
     `pre_df` must be a 5-min dataframe produced by BacktestEngine.preprocess().
     Keep `param_grid` limited to non-indicator parameters for speed.
+
+    `window_mode` is either "rolling" (fixed-width training window) or
+    "anchored" (expanding training window from the first bar). `purge_bars`
+    removes the final train bars before each test fold so train labels/trades
+    cannot overlap the OOS period; "auto" resolves to max_hold_bars +
+    entry_delay_bars + 1. `embargo_bars` adds an extra serial-correlation gap.
     """
     df = pre_df.copy()
     df["time"] = pd.to_datetime(df["time"])
@@ -331,6 +423,21 @@ def run_walk_forward(
         rng.shuffle(combos)
         combos = combos[:n_random_samples]
 
+    window_mode = window_mode.lower().strip()
+    if window_mode not in {"rolling", "anchored"}:
+        raise ValueError(f"window_mode must be 'rolling' or 'anchored', got {window_mode!r}")
+
+    bar_interval = _infer_bar_interval(df)
+    resolved_purge_bars = _resolve_purge_bars(
+        purge_bars,
+        base_params=base_params,
+        param_grid=param_grid,
+    )
+    resolved_embargo_bars = _coerce_nonnegative_int(embargo_bars, name="embargo_bars")
+    gap_bars = resolved_purge_bars + resolved_embargo_bars
+    gap_delta = bar_interval * gap_bars
+    bar_interval_minutes = float(bar_interval / pd.Timedelta(minutes=1))
+
     start = df["time"].min().to_pydatetime()
     end = df["time"].max().to_pydatetime()
 
@@ -356,26 +463,34 @@ def run_walk_forward(
         print(
             f"   Walk-forward setup: {estimated_folds} folds, "
             f"{len(combos)} parameter samples per fold, metric={metric}, "
-            f"selection={selection_mode}"
+            f"selection={selection_mode}, window={window_mode}, "
+            f"purge={resolved_purge_bars} bars, embargo={resolved_embargo_bars} bars"
         )
 
     fold_idx = 0
     cursor = t0 + pd.DateOffset(years=train_years)
     while cursor + pd.DateOffset(months=test_months) <= tf:
-        train_start = (cursor - pd.DateOffset(years=train_years)).to_pydatetime()
-        train_end = cursor.to_pydatetime()
+        planned_train_start_ts = t0 if window_mode == "anchored" else cursor - pd.DateOffset(years=train_years)
+        planned_train_end_ts = cursor
+        train_start = planned_train_start_ts.to_pydatetime()
+        train_end = (planned_train_end_ts - gap_delta).to_pydatetime()
         test_start = cursor.to_pydatetime()
         test_end = (cursor + pd.DateOffset(months=test_months)).to_pydatetime()
+        planned_train_start = planned_train_start_ts.to_pydatetime()
+        planned_train_end = planned_train_end_ts.to_pydatetime()
 
         train_mask = _date_mask(df, train_start, train_end)
         test_mask = _date_mask(df, test_start, test_end)
         train_df = df.loc[train_mask].reset_index(drop=True)
         test_df = df.loc[test_mask].reset_index(drop=True)
+        boundary_gap_minutes = float((pd.Timestamp(test_start) - pd.Timestamp(train_end)) / pd.Timedelta(minutes=1))
+        purge_embargo_ok = boundary_gap_minutes + 1e-9 >= float(gap_delta / pd.Timedelta(minutes=1))
 
         if progress:
             print(
                 f"   WF fold {fold_idx + 1}/{estimated_folds}: "
-                f"train {train_start:%Y-%m-%d} -> {train_end:%Y-%m-%d}, "
+                f"train {train_start:%Y-%m-%d} -> {train_end:%Y-%m-%d} "
+                f"(planned {planned_train_end:%Y-%m-%d}), "
                 f"test {test_start:%Y-%m-%d} -> {test_end:%Y-%m-%d}"
             )
 
@@ -444,6 +559,17 @@ def run_walk_forward(
                 train_neighbor_metric=train_neighbor_metric,
                 train_selection_metric=train_selection_metric,
                 selected_train_trades=selected_train_trades,
+                planned_train_start=planned_train_start,
+                planned_train_end=planned_train_end,
+                window_mode=window_mode,
+                purge_bars=resolved_purge_bars,
+                embargo_bars=resolved_embargo_bars,
+                gap_bars=gap_bars,
+                bar_interval_minutes=bar_interval_minutes,
+                boundary_gap_minutes=boundary_gap_minutes,
+                train_rows=int(len(train_df)),
+                test_rows=int(len(test_df)),
+                purge_embargo_ok=bool(purge_embargo_ok),
             )
         )
 
@@ -451,21 +577,42 @@ def run_walk_forward(
             fold_rows = []
             for f in folds:
                 tr = f.test_results
+                test_metric = _score_from_results(tr, metric=metric, min_trades=min_trades_test)
+                train_neighbor_ratio = (
+                    float(f.train_neighbor_metric) / float(f.train_metric)
+                    if np.isfinite(f.train_neighbor_metric) and np.isfinite(f.train_metric) and float(f.train_metric) > 0
+                    else np.nan
+                )
                 fold_rows.append(
                     {
                         "fold_idx": f.fold_idx,
+                        "window_mode": f.window_mode,
+                        "planned_train_start": f.planned_train_start,
+                        "planned_train_end": f.planned_train_end,
                         "train_start": f.train_start,
                         "train_end": f.train_end,
                         "test_start": f.test_start,
                         "test_end": f.test_end,
+                        "purge_bars": f.purge_bars,
+                        "embargo_bars": f.embargo_bars,
+                        "gap_bars": f.gap_bars,
+                        "bar_interval_minutes": f.bar_interval_minutes,
+                        "boundary_gap_minutes": f.boundary_gap_minutes,
+                        "train_rows": f.train_rows,
+                        "test_rows": f.test_rows,
+                        "purge_embargo_ok": f.purge_embargo_ok,
                         "train_metric": f.train_metric,
                         "train_neighbor_metric": f.train_neighbor_metric,
+                        "train_neighbor_ratio": train_neighbor_ratio,
                         "train_selection_metric": f.train_selection_metric,
                         "selected_train_trades": f.selected_train_trades,
+                        "test_metric": test_metric,
                         "test_total_trades": tr.get("total_trades", 0),
                         "test_total_pnl": tr.get("total_pnl", 0.0),
                         "test_sharpe": tr.get("sharpe_ratio", 0.0),
                         "test_profit_factor": tr.get("profit_factor", 0.0),
+                        "test_bar_profit_factor": tr.get("bar_profit_factor", 0.0),
+                        "test_execution_bar_profit_factor": tr.get("execution_bar_profit_factor", 0.0),
                         "best_overrides": f.best_overrides,
                     }
                 )
@@ -493,6 +640,7 @@ def run_walk_forward(
             starting_capital=starting_capital,
             pre_df=df,
             futures_specs=futures_specs,
+            execution_df=raw_data,
         )
         if write_fold_csv:
             stitched_df.to_csv(stitched_trades_csv, index=False)

@@ -136,11 +136,21 @@ STRATEGY_PARAMS = {
     'entry_delay_bars': 0,
     'exit_mode': 'hybrid',
     'intrabar_exit_assumption': 'proximity',
+    # Target fills are a major scalping-backtest failure mode.  The default
+    # preserves legacy behavior; validation candidates can require price to
+    # trade through targets before assuming the resting limit was filled.
+    'target_fill_mode': 'touch',  # touch | trade_through
+    'target_fill_trade_through_ticks': 1,
+    'target_fill_trade_through_points': None,
     'breakeven_trigger_dollars': 0,
     'breakeven_offset_points': 0.0,
     'breakeven_min_hold_bars': 1,
     'trail_trigger_dollars': 160,
     'trail_distance_points': 3.5,
+    # same_bar preserves legacy behavior: current bar MFE can activate a
+    # managed stop that is also fillable on that bar. next_bar only lets prior
+    # completed-bar MFE activate managed stops for the current execution bar.
+    'managed_stop_activation_mode': 'same_bar',  # same_bar | next_bar
 
     # Day regime classifier:
     # keep ambiguous sessions neutral, confirm trend after acceptance + follow-through,
@@ -1337,6 +1347,203 @@ EDGE_CANDIDATE_CONFIGS = {
 CANDIDATE_CONFIGS.update(EDGE_CANDIDATE_CONFIGS)
 
 
+# === Prop-firm optimisation candidates ===
+#
+# These are intentionally layered after EDGE_CANDIDATE_CONFIGS so they can use
+# the latest failed-auction quality/frequency probes as explicit bases.
+PROP_FIRM_OPTIMIZATION_CANDIDATES = {
+    'edge_vp_mr_trend_failed_auction_quality_no_mr_long': make_candidate(
+        base=CANDIDATE_CONFIGS['edge_vp_mr_trend_failed_auction_quality_probe'],
+        mr_long_enabled=False,
+    ),
+    'edge_vp_mr_trend_failed_auction_quality_no_mr_long_target_through_1t': make_candidate(
+        base=CANDIDATE_CONFIGS['edge_vp_mr_trend_failed_auction_quality_probe'],
+        mr_long_enabled=False,
+        target_fill_mode='trade_through',
+        target_fill_trade_through_ticks=1,
+    ),
+    'edge_vp_mr_trend_failed_auction_quality_no_mr_long_ib_cusum_guard': make_candidate(
+        base=CANDIDATE_CONFIGS['edge_vp_mr_trend_failed_auction_quality_probe'],
+        # Saved-run hypothesis: inside-IB entries were weak unless the entry
+        # bar had an active CUSUM displacement event.  Use direction keys so
+        # this remains an independent blocked clause instead of being merged
+        # into existing trend/setup-specific guards.
+        entry_context={
+            'long': {'inside_ib': [True], 'cusum_event': [False]},
+            'short': {'inside_ib': [True], 'cusum_event': [False]},
+        },
+        mr_long_enabled=False,
+        target_fill_mode='trade_through',
+        target_fill_trade_through_ticks=1,
+    ),
+    'edge_vp_mr_trend_failed_auction_quality_no_mr_long_ib_cusum_wf_stable': make_candidate(
+        base=CANDIDATE_CONFIGS['edge_vp_mr_trend_failed_auction_quality_probe'],
+        # Freeze candidate: same IB/CUSUM guard, plus the parameter set selected
+        # independently by both walk-forward folds of the guard run.
+        entry_context={
+            'long': {'inside_ib': [True], 'cusum_event': [False]},
+            'short': {'inside_ib': [True], 'cusum_event': [False]},
+        },
+        mr_long_enabled=False,
+        target_fill_mode='trade_through',
+        target_fill_trade_through_ticks=1,
+        mr_trade_end='12:00',
+        mr_trail_trigger_dollars=140,
+        trend_trade_start='10:30',
+        trend_pullback_buffer_points=3.5,
+    ),
+    'edge_vp_mr_trend_failed_auction_quality_gap_guard_no_mr_long': make_candidate(
+        base=CANDIDATE_CONFIGS['edge_vp_mr_trend_failed_auction_quality_probe'],
+        entry_context={
+            'trend': {'open_context': ['gap_below_prior_low']},
+        },
+        mr_long_enabled=False,
+    ),
+    'edge_vp_mr_trend_failed_auction_quality_gap_guard_no_mr_long_delay_1': make_candidate(
+        base=CANDIDATE_CONFIGS['edge_vp_mr_trend_failed_auction_quality_probe'],
+        entry_context={
+            'trend': {'open_context': ['gap_below_prior_low']},
+        },
+        mr_long_enabled=False,
+        entry_delay_bars=1,
+    ),
+    'edge_vp_mr_trend_failed_auction_quality_gap_guard_no_mr_long_memory_guard': make_candidate(
+        base=CANDIDATE_CONFIGS['edge_vp_mr_trend_failed_auction_quality_probe'],
+        entry_context={
+            'trend': {'open_context': ['gap_below_prior_low']},
+        },
+        mr_long_enabled=False,
+        market_memory_filter='map',
+        market_memory_blocked_states={
+            'trend_long': ['chaotic_memory'],
+        },
+    ),
+    'edge_vp_mr_trend_failed_auction_frequency_vwap_guard': make_candidate(
+        base=CANDIDATE_CONFIGS['edge_vp_mr_trend_failed_auction_frequency_probe'],
+        entry_context={
+            'trend': {'open_context': ['gap_below_prior_low']},
+        },
+        mr_long_enabled=False,
+        mr_short_require_vwap_reclaim=True,
+    ),
+    'edge_vp_mr_trend_failed_auction_frequency_aggressive_payout': make_candidate(
+        base=CANDIDATE_CONFIGS['edge_vp_mr_trend_failed_auction_frequency_probe'],
+        entry_context={
+            'trend': {'open_context': ['gap_below_prior_low']},
+        },
+        max_trades_per_day=14,
+        trend_trade_start='09:45',
+        trend_trade_end='15:30',
+        trend_pullback_buffer_points=3.0,
+        trend_reclaim_buffer_points=0.25,
+        regime_trend_min_range_multiple=1.45,
+        regime_trend_min_extension_factor=0.30,
+        regime_trend_min_extension_points=3.0,
+        regime_trend_min_vwap_distance_points=2.0,
+        regime_range_max_range_multiple=2.00,
+        regime_range_max_vwap_distance_points=10.0,
+        trend_min_range_multiple=1.45,
+        mr_balance_max_range_multiple=2.00,
+        mr_trade_start='09:45',
+        mr_trade_end='14:30',
+        vp_mr_min_poc_room_points=0.25,
+        mr_excess_buffer_points=1.00,
+        mr_reclaim_buffer_points=0.25,
+        mr_long_enabled=False,
+        mr_short_enabled=True,
+        mr_short_require_vwap_reclaim=True,
+    ),
+}
+CANDIDATE_CONFIGS.update(PROP_FIRM_OPTIMIZATION_CANDIDATES)
+
+# === High-frequency observation candidates ===
+#
+# These are not validation or funded candidates.  They intentionally trade more
+# often so exploratory runs can accumulate observations faster, while keeping
+# size fixed and fill assumptions conservative enough for diagnosis.
+HIGH_FREQUENCY_OBSERVATION_CANDIDATES = {
+    'edge_vp_mr_trend_failed_auction_hf_observation_probe': make_candidate(
+        base=CANDIDATE_CONFIGS['edge_vp_mr_trend_failed_auction_frequency_probe'],
+        blocked_entry_context=_GUARD_VWAP_CROSS_CUSUM,
+        position_sizing_mode='fixed_contracts',
+        fixed_contracts=1,
+        max_contracts=1,
+        max_trades_per_day=20,
+        max_hold_bars=4,
+        target_fill_mode='trade_through',
+        target_fill_trade_through_ticks=1,
+        managed_stop_activation_mode='next_bar',
+        regime_trend_confirm_bars=1,
+        regime_range_confirm_bars=1,
+        regime_trend_min_range_multiple=1.15,
+        regime_range_max_range_multiple=2.25,
+        regime_trend_min_extension_factor=0.15,
+        regime_trend_min_extension_points=1.0,
+        regime_trend_min_vwap_distance_points=0.50,
+        regime_range_max_vwap_distance_points=12.0,
+        trend_min_range_multiple=1.15,
+        mr_balance_max_range_multiple=2.25,
+        mr_signal_mode='failed_auction_acceptance',
+        mr_sweep_lookback_bars=3,
+        mr_acceptance_bars=1,
+        mr_trade_start='09:40',
+        mr_trade_end='15:30',
+        vp_mr_min_poc_room_points=0.0,
+        mr_excess_buffer_points=0.75,
+        mr_reclaim_buffer_points=0.25,
+        mr_value_extension_points=0.25,
+        mr_close_strength_min=0.50,
+        mr_close_strength_max=0.50,
+        mr_atr_stop_multiplier=0.75,
+        mr_atr_target_multiplier=1.0,
+        mr_trail_trigger_dollars=80,
+        mr_trail_distance_points=2.0,
+        trend_trade_start='09:40',
+        trend_trade_end='15:45',
+        trend_pullback_buffer_points=7.0,
+        trend_reclaim_buffer_points=0.50,
+        trend_close_strength_min=0.45,
+        trend_close_strength_max=0.55,
+        trend_atr_stop_multiplier=0.75,
+        trend_atr_target_multiplier=1.0,
+        trend_trail_trigger_dollars=100,
+        trend_trail_distance_points=2.5,
+        allow_long=True,
+        allow_short=True,
+        mr_long_enabled=True,
+        mr_short_enabled=True,
+        trend_long_enabled=True,
+        trend_short_enabled=True,
+    ),
+}
+CANDIDATE_CONFIGS.update(HIGH_FREQUENCY_OBSERVATION_CANDIDATES)
+CANDIDATE_CONFIGS[
+    'edge_vp_mr_trend_failed_auction_quality_no_mr_long_ib_cusum_wf_stable_managed_stop_next_bar'
+] = make_candidate(
+    base=CANDIDATE_CONFIGS['edge_vp_mr_trend_failed_auction_quality_no_mr_long_ib_cusum_wf_stable'],
+    managed_stop_activation_mode='next_bar',
+)
+
+CANDIDATE_CONFIGS[
+    'edge_vp_mr_trend_failed_auction_quality_rebuilt_mr_long'
+] = make_candidate(
+    base=CANDIDATE_CONFIGS['edge_vp_mr_trend_failed_auction_quality_no_mr_long_ib_cusum_wf_stable_managed_stop_next_bar'],
+    mr_long_enabled=True,
+    mr_trade_end='11:45',
+    trend_trade_start='10:15',
+    blocked_entry_context={
+        'trend': {'vwap_cross_direction': ['cross_up', 'cross_down']},
+        'trend_long': {'open_context': ['gap_below_prior_low'], 'cusum_event_direction': [-1]},
+        'trend_short': {'cusum_event_direction': [1]},
+        'mr_short': {'open_context': ['gap_below_prior_low']},
+        'mr_long': {'mr_long_blocked': [True]},
+        'long': {'inside_ib': [True], 'cusum_event': [False]},
+        'short': {'inside_ib': [True], 'cusum_event': [False]},
+    },
+)
+
+
+
 # Optional: walk-forward + parameter sweep tooling
 RESEARCH_CONFIG = {
     'enable_monte_carlo': True,
@@ -1373,6 +1580,10 @@ RESEARCH_CONFIG = {
     'conditional_distribution_bootstrap_samples': 300,
     'conditional_distribution_random_seed': 7,
     'conditional_distribution_max_groups_per_set': 80,
+    # Multiple-testing debt guard. Once a family has too many saved runs, new
+    # variants are treated as contaminated until an untouched holdout/paper
+    # sample supplies the next evidence.
+    'max_candidate_family_runs_before_holdout': 4,
     'enable_vwap_repricing_report': True,
     'vwap_repricing_period': 'Q',
     'vwap_repricing_midday_start': '12:00',
@@ -1440,6 +1651,9 @@ RESEARCH_CONFIG = {
     'wf_train_years': 3,
     'wf_test_months': 6,
     'wf_step_months': 12,
+    'wf_window_mode': 'rolling',  # rolling | anchored
+    'wf_purge_bars': 'auto',  # auto = max_hold_bars + entry_delay_bars + 1
+    'wf_embargo_bars': 1,  # extra completed bars between train labels and OOS test
     'wf_metric': 'bar_profit_factor',  # sharpe | profit_factor | bar_profit_factor | bar_sharpe | expectancy | total_pnl
     'wf_selection_mode': 'stable',  # best | stable
     'wf_min_trades_train': 40,
@@ -1450,6 +1664,54 @@ RESEARCH_CONFIG = {
         'mr_trail_trigger_dollars': [120, 140, 160, 180],
         'trend_trade_start': ['10:30', '11:00', '11:30', '12:00'],
         'trend_pullback_buffer_points': [2.0, 2.5, 3.0, 3.5],
+    },
+    # Keep the active validation queue empty until a new ex-ante hypothesis is
+    # written down before testing. Do not recycle failed-auction variants from
+    # the same sample.
+    'next_validation_candidates': [],
+    'rejected_research_families': {
+        'failed_auction_quality': {
+            'status': 'rejected',
+            'decision_date': '2026-05-20',
+            'rejected_after_run': (
+                '20260520_152332_'
+                'edge_vp_mr_trend_failed_auction_quality_no_mr_long_ib_cusum_wf_stable_managed_stop_next_bar_'
+                'long_short_next_bar_open_hybrid'
+            ),
+            'reason': (
+                'Strict managed-stop variant failed before walk-forward: 157 trades, '
+                'profit factor 0.85, net PnL -2757.99, daily Sharpe -1.30, '
+                'all traded setups negative, and in-sample prop expected value negative.'
+            ),
+            'allow_new_variants': False,
+            'revival_requirements': [
+                'new ex-ante hypothesis not derived from the failed-auction sample',
+                'untouched holdout or paper evidence',
+                'survives execution realism plus purged/embargoed walk-forward validation',
+            ],
+        },
+    },
+    'candidate_research_families': {
+        'failed_auction_quality': [
+            'edge_vp_mr_trend_failed_auction_quality_probe',
+            'edge_vp_mr_trend_failed_auction_quality_no_mr_long',
+            'edge_vp_mr_trend_failed_auction_quality_no_mr_long_target_through_1t',
+            'edge_vp_mr_trend_failed_auction_quality_no_mr_long_ib_cusum_guard',
+            'edge_vp_mr_trend_failed_auction_quality_no_mr_long_ib_cusum_wf_stable',
+            'edge_vp_mr_trend_failed_auction_quality_no_mr_long_ib_cusum_wf_stable_managed_stop_next_bar',
+            'edge_vp_mr_trend_failed_auction_quality_rebuilt_mr_long',
+            'edge_vp_mr_trend_failed_auction_quality_gap_guard_no_mr_long',
+            'edge_vp_mr_trend_failed_auction_quality_gap_guard_no_mr_long_delay_1',
+            'edge_vp_mr_trend_failed_auction_quality_gap_guard_no_mr_long_memory_guard',
+        ],
+        'failed_auction_frequency': [
+            'edge_vp_mr_trend_failed_auction_frequency_probe',
+            'edge_vp_mr_trend_failed_auction_frequency_vwap_guard',
+            'edge_vp_mr_trend_failed_auction_frequency_aggressive_payout',
+        ],
+        'high_frequency_observation': [
+            'edge_vp_mr_trend_failed_auction_hf_observation_probe',
+        ],
     },
 
     # 2D parameter sweep (heatmap)
@@ -1508,6 +1770,14 @@ VALIDATION_CONFIG = {
     'min_trades_per_year': 20.0,
     'max_suspicious_win_rate_pct': 75.0,
     'max_suspicious_profit_factor': 3.0,
+    'max_suspicious_sharpe_ratio': 3.0,
     'max_in_sample_permutation_p': 0.01,
     'max_walk_forward_permutation_p': 0.05,
+    'min_combined_mild_profit_factor': 1.05,
+    'min_combined_mild_total_pnl': 0.0,
+    'research_discipline_require_permutation': True,
+    'research_discipline_require_bar_exposure_audit': True,
+    'research_discipline_require_execution_realism': True,
+    'max_in_sample_to_walk_forward_profit_factor_ratio': 2.5,
+    'min_execution_realism_profit_factor': 1.0,
 }

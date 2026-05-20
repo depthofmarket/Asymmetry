@@ -72,21 +72,21 @@ DEFAULT_PROFILE: dict[str, Any] = {
 }
 
 
-CHART_BG = "#0b1017"
-CHART_PANEL = "#141922"
-CHART_GRID = "#303846"
-CHART_TEXT = "#d7dce7"
-CHART_MUTED = "#9aa4b2"
-CHART_SPINE = "#303846"
-CHART_TABLE_HEADER = "#202732"
-CHART_TABLE_ROW = "#141922"
-CHART_GREEN = "#3fb950"
-CHART_RED = "#ff554d"
-CHART_BLUE = "#58a6ff"
-CHART_CYAN = "#39d0d8"
-CHART_YELLOW = "#f2cc60"
-CHART_ORANGE = "#f59e0b"
-CHART_PURPLE = "#bc8cff"
+CHART_BG = "#080d14"
+CHART_PANEL = "#111827"
+CHART_GRID = "#2b3a4f"
+CHART_TEXT = "#e5eefb"
+CHART_MUTED = "#94a3b8"
+CHART_SPINE = "#2b3a4f"
+CHART_TABLE_HEADER = "#172033"
+CHART_TABLE_ROW = "#111827"
+CHART_GREEN = "#34d399"
+CHART_RED = "#fb7185"
+CHART_BLUE = "#60a5fa"
+CHART_CYAN = "#22d3ee"
+CHART_YELLOW = "#fbbf24"
+CHART_ORANGE = "#fb923c"
+CHART_PURPLE = "#a78bfa"
 
 
 def _amount_from_profile(profile: dict[str, Any], amount_key: str, pct_key: str, account_size: float) -> float:
@@ -334,17 +334,40 @@ def _daily_paths_from_work(work: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def _calendarize_daily_paths(daily_paths: pd.DataFrame) -> pd.DataFrame:
+    if daily_paths.empty:
+        return _empty_daily_path_frame()
+
+    paths = daily_paths.copy()
+    dates = pd.to_datetime(paths.index, errors="coerce").normalize()
+    keep = ~pd.isna(dates)
+    if not keep.any():
+        return paths
+
+    paths = paths.loc[keep].copy()
+    paths.index = dates[keep]
+    full_index = pd.date_range(paths.index.min(), paths.index.max(), freq="D")
+    paths = paths.reindex(full_index)
+    for col in ("net_pnl", "min_intraday_pnl", "max_intraday_pnl"):
+        paths[col] = pd.to_numeric(paths.get(col), errors="coerce").fillna(0.0)
+    paths["trade_count"] = pd.to_numeric(paths.get("trade_count"), errors="coerce").fillna(0).astype(int)
+    paths.index.name = "date"
+    return paths.loc[:, ["net_pnl", "min_intraday_pnl", "max_intraday_pnl", "trade_count"]]
+
+
 def _daily_paths_from_trades(
     trades: pd.DataFrame,
     *,
     daily_loss_stop: float = 0.0,
     daily_profit_lock: float = 0.0,
+    calendarize: bool = True,
 ) -> pd.DataFrame:
     work = _trade_path_work_frame(trades)
     if work.empty:
         return _empty_daily_path_frame()
     if daily_loss_stop <= 0 and daily_profit_lock <= 0:
-        return _daily_paths_from_work(work)
+        daily_paths = _daily_paths_from_work(work)
+        return _calendarize_daily_paths(daily_paths) if calendarize else daily_paths
 
     rows: list[dict[str, Any]] = []
     for date, group in work.groupby("date", sort=True):
@@ -396,7 +419,7 @@ def _daily_paths_from_trades(
     if not rows:
         return _empty_daily_path_frame()
     daily_paths = pd.DataFrame(rows).set_index("date")
-    return daily_paths.astype(
+    daily_paths = daily_paths.astype(
         {
             "net_pnl": float,
             "min_intraday_pnl": float,
@@ -404,6 +427,7 @@ def _daily_paths_from_trades(
             "trade_count": int,
         }
     )
+    return _calendarize_daily_paths(daily_paths) if calendarize else daily_paths
 
 
 def _coerce_daily_paths(daily_pnls: Any) -> pd.DataFrame:
@@ -461,19 +485,37 @@ def _sample_daily_arrays(
     days: int,
     n_sims: int,
     rng: np.random.Generator,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     n_sims = max(1, int(n_sims))
     days = max(1, int(days))
     if daily_paths.empty:
         zeros = np.zeros((n_sims, days), dtype=float)
-        return zeros, zeros.copy(), zeros.copy()
+        counts = np.zeros((n_sims, days), dtype=int)
+        return zeros, zeros.copy(), zeros.copy(), counts
 
     paths = _coerce_daily_paths(daily_paths)
-    idx = rng.integers(0, len(paths), size=(n_sims, days))
-    net = paths["net_pnl"].to_numpy(dtype=float)[idx]
-    low = paths["min_intraday_pnl"].to_numpy(dtype=float)[idx]
-    high = paths["max_intraday_pnl"].to_numpy(dtype=float)[idx]
-    return net, low, high
+    trade_counts_base = paths["trade_count"].to_numpy(dtype=int)
+    active_starts = np.flatnonzero(trade_counts_base > 0)
+    if active_starts.size == 0:
+        active_starts = np.arange(len(paths))
+
+    eligible_starts = active_starts[active_starts <= max(0, len(paths) - days)]
+    if eligible_starts.size == 0:
+        eligible_starts = active_starts
+
+    starts = rng.choice(eligible_starts, size=n_sims, replace=True)
+    idx = starts[:, None] + np.arange(days)[None, :]
+    valid = idx < len(paths)
+    safe_idx = np.minimum(idx, max(len(paths) - 1, 0))
+    net = paths["net_pnl"].to_numpy(dtype=float)[safe_idx]
+    low = paths["min_intraday_pnl"].to_numpy(dtype=float)[safe_idx]
+    high = paths["max_intraday_pnl"].to_numpy(dtype=float)[safe_idx]
+    trade_count = trade_counts_base[safe_idx]
+    net = np.where(valid, net, 0.0)
+    low = np.where(valid, low, 0.0)
+    high = np.where(valid, high, 0.0)
+    trade_count = np.where(valid, trade_count, 0)
+    return net, low, high, trade_count
 
 
 def _simulate_eval_arrays(
@@ -481,19 +523,24 @@ def _simulate_eval_arrays(
     low: np.ndarray,
     high: np.ndarray,
     profile: dict[str, Any],
+    trade_count: np.ndarray | None = None,
 ) -> pd.DataFrame:
     rules = _normalize_profile(profile)
     n_sims, max_days = net.shape
+    if trade_count is None:
+        trade_count = np.ones_like(net, dtype=int)
+    else:
+        trade_count = np.asarray(trade_count, dtype=int)
     account_size = float(rules["account_size"])
     profit_target = float(rules["profit_target"])
     max_drawdown = float(rules["max_drawdown"])
     daily_loss_limit = float(rules["daily_loss_limit"])
     min_days = int(rules["min_trading_days"])
+    stop_after_target = bool(rules["stop_after_target_until_min_days"])
+    consistency_limit = float(rules["consistency_profit_limit"])
     drawdown_mode = str(rules["drawdown_mode"]).lower()
     drawdown_check = str(rules["drawdown_check"]).lower()
     cap_trailing_floor = bool(rules["trailing_drawdown_cap_at_initial"])
-    stop_after_target = bool(rules["stop_after_target_until_min_days"])
-    consistency_limit = float(rules["consistency_profit_limit"])
     initial_max_days = int(rules["initial_max_trading_days"])
     extension_threshold = float(rules["extension_threshold"])
 
@@ -511,6 +558,7 @@ def _simulate_eval_arrays(
     status = np.zeros(n_sims, dtype=np.int8)  # 0 timeout/active, 1 pass, 2 fail
     reason = np.zeros(n_sims, dtype=np.int8)
     days_taken = np.zeros(n_sims, dtype=int)
+    trading_days_taken = np.zeros(n_sims, dtype=int)
 
     if net.size == 0:
         reason[:] = 5
@@ -519,6 +567,7 @@ def _simulate_eval_arrays(
             status=np.zeros(n_sims, dtype=np.int8),
             reason=reason,
             days_taken=days_taken,
+            trading_days_taken=trading_days_taken,
             target_hit_day=target_hit_day,
             equity=equity,
             max_drawdown_seen=max_drawdown_seen,
@@ -546,12 +595,14 @@ def _simulate_eval_arrays(
         day_pnl = np.where(hold_after_target, 0.0, net[:, day_idx])
         min_intraday_pnl = np.where(hold_after_target, 0.0, low[:, day_idx])
         max_intraday_pnl = np.where(hold_after_target, 0.0, high[:, day_idx])
+        active_trade_day = trade_count[:, day_idx] > 0
 
         day_start_equity = equity.copy()
         day_low_equity = day_start_equity + min_intraday_pnl
         day_high_equity = day_start_equity + max_intraday_pnl
         equity[active] += day_pnl[active]
         days_taken[active] = day_idx + 1
+        trading_days_taken[active & active_trade_day] += 1
         best_profit_day[active] = np.maximum(best_profit_day[active], day_pnl[active])
         eod_peak_equity[active] = np.maximum(eod_peak_equity[active], equity[active])
         min_equity[active] = np.minimum.reduce([min_equity[active], day_low_equity[active], equity[active]])
@@ -594,7 +645,7 @@ def _simulate_eval_arrays(
         target_reached = still_active & (profit_target > 0) & (net_pnl >= profit_target)
         newly_hit = target_reached & ~np.isfinite(target_hit_day)
         target_hit_day[newly_hit] = day_idx + 1
-        pass_now = target_reached & (day_idx + 1 >= min_days) & consistency_ok
+        pass_now = target_reached & (trading_days_taken >= min_days) & consistency_ok
         status[pass_now] = 1
         reason[pass_now] = 1
         consistency_blocked[target_reached & ~consistency_ok & ~pass_now] = True
@@ -614,6 +665,7 @@ def _simulate_eval_arrays(
         status=status,
         reason=reason,
         days_taken=days_taken,
+        trading_days_taken=trading_days_taken,
         target_hit_day=target_hit_day,
         equity=equity,
         max_drawdown_seen=max_drawdown_seen,
@@ -643,6 +695,7 @@ def _eval_records_from_arrays(
     best_profit_day: np.ndarray,
     consistency_blocked: np.ndarray,
     extension_threshold: float,
+    trading_days_taken: np.ndarray | None = None,
 ) -> pd.DataFrame:
     account_size = float(rules["account_size"])
     final_net_pnl = equity - account_size
@@ -664,10 +717,13 @@ def _eval_records_from_arrays(
 
     status_labels = np.where(status == 1, "pass", np.where(status == 2, "fail", "timeout"))
     reason_labels = [REASON_LABELS.get(int(code), "unknown") for code in reason]
+    if trading_days_taken is None:
+        trading_days_taken = days_taken
     return pd.DataFrame({
         "status": status_labels,
         "reason": reason_labels,
         "days": days_taken.astype(int),
+        "trading_days": np.asarray(trading_days_taken, dtype=int),
         "target_hit_day": target_hit_day,
         "final_equity": equity.astype(float),
         "net_pnl": final_net_pnl.astype(float),
@@ -867,6 +923,7 @@ def evaluate_prop_firm_path(daily_pnls: Any, profile: dict[str, Any]) -> dict[st
     status = "timeout"
     reason = "max_days_elapsed"
     days_taken = 0
+    trading_days_taken = 0
 
     daily_paths = _coerce_daily_paths(daily_pnls)
     if daily_paths.empty:
@@ -874,6 +931,7 @@ def evaluate_prop_firm_path(daily_pnls: Any, profile: dict[str, Any]) -> dict[st
             "status": "timeout",
             "reason": "no_daily_pnls",
             "days": 0,
+            "trading_days": 0,
             "target_hit_day": np.nan,
             "final_equity": equity,
             "net_pnl": 0.0,
@@ -901,17 +959,22 @@ def evaluate_prop_firm_path(daily_pnls: Any, profile: dict[str, Any]) -> dict[st
             day_pnl = 0.0
             min_intraday_pnl = 0.0
             max_intraday_pnl = 0.0
+            trade_count = 0
         elif day_idx < len(daily_paths):
             day = daily_paths.iloc[day_idx]
             day_pnl = float(day["net_pnl"])
             min_intraday_pnl = float(day["min_intraday_pnl"])
             max_intraday_pnl = float(day["max_intraday_pnl"])
+            trade_count = int(day.get("trade_count", 0) or 0)
         else:
             day_pnl = 0.0
             min_intraday_pnl = 0.0
             max_intraday_pnl = 0.0
+            trade_count = 0
 
         days_taken = day_idx + 1
+        if trade_count > 0:
+            trading_days_taken += 1
         day_start_equity = equity
         day_low_equity = day_start_equity + min_intraday_pnl
         day_high_equity = day_start_equity + max_intraday_pnl
@@ -957,7 +1020,7 @@ def evaluate_prop_firm_path(daily_pnls: Any, profile: dict[str, Any]) -> dict[st
         if profit_target > 0 and (equity - account_size) >= profit_target:
             if target_hit_day is None:
                 target_hit_day = days_taken
-            if days_taken >= min_days and consistency_ok:
+            if trading_days_taken >= min_days and consistency_ok:
                 status = "pass"
                 reason = "profit_target"
                 break
@@ -988,6 +1051,7 @@ def evaluate_prop_firm_path(daily_pnls: Any, profile: dict[str, Any]) -> dict[st
         "status": status,
         "reason": reason,
         "days": days_taken,
+        "trading_days": trading_days_taken,
         "target_hit_day": float(target_hit_day) if target_hit_day is not None else np.nan,
         "final_equity": float(equity),
         "net_pnl": float(equity - account_size),
@@ -1014,8 +1078,8 @@ def _simulate_profile(
     rules = _normalize_profile(profile)
     rng = np.random.default_rng(seed)
     max_days = int(rules["max_trading_days"])
-    net, low, high = _sample_daily_arrays(daily_paths, max_days, n_sims, rng)
-    return _attach_eval_metadata(_simulate_eval_arrays(net, low, high, rules), rules)
+    net, low, high, trade_count = _sample_daily_arrays(daily_paths, max_days, n_sims, rng)
+    return _attach_eval_metadata(_simulate_eval_arrays(net, low, high, rules, trade_count), rules)
 
 
 def _evaluate_funded_path(daily_pnls: Any, profile: dict[str, Any]) -> dict[str, Any]:
@@ -1127,7 +1191,7 @@ def _simulate_funded_profile(
     rules = _normalize_profile(profile)
     rng = np.random.default_rng(seed)
     horizon_days = int(rules["funded_horizon_days"])
-    net, low, high = _sample_daily_arrays(daily_paths, horizon_days, n_sims, rng)
+    net, low, high, _ = _sample_daily_arrays(daily_paths, horizon_days, n_sims, rng)
     return _attach_funded_metadata(_simulate_funded_arrays(net, low, high, rules), rules)
 
 
@@ -1146,13 +1210,25 @@ def _summarize_simulations(
         intraday_lows = (
             daily_paths["min_intraday_pnl"] if "min_intraday_pnl" in daily_paths.columns else pd.Series(dtype=float)
         )
-        active_days = int(len(net_daily))
-        avg_daily = float(net_daily.mean()) if active_days else 0.0
-        median_daily = float(net_daily.median()) if active_days else 0.0
-        worst_daily = float(net_daily.min()) if active_days else 0.0
-        best_daily = float(net_daily.max()) if active_days else 0.0
-        daily_std = float(net_daily.std(ddof=1)) if active_days > 1 else 0.0
-        worst_intraday = float(intraday_lows.min()) if active_days else 0.0
+        trade_counts = (
+            pd.to_numeric(daily_paths["trade_count"], errors="coerce").fillna(0)
+            if "trade_count" in daily_paths.columns
+            else pd.Series(1, index=daily_paths.index, dtype=int)
+        )
+        active_mask = trade_counts > 0
+        calendar_days = int(len(net_daily))
+        active_days = int(active_mask.sum())
+        active_net_daily = net_daily.loc[active_mask] if active_days else pd.Series(dtype=float)
+        active_intraday_lows = intraday_lows.loc[active_mask] if active_days else pd.Series(dtype=float)
+        avg_daily = float(active_net_daily.mean()) if active_days else 0.0
+        median_daily = float(active_net_daily.median()) if active_days else 0.0
+        worst_daily = float(active_net_daily.min()) if active_days else 0.0
+        best_daily = float(active_net_daily.max()) if active_days else 0.0
+        daily_std = float(active_net_daily.std(ddof=1)) if active_days > 1 else 0.0
+        worst_intraday = float(active_intraday_lows.min()) if active_days else 0.0
+        avg_calendar_daily = float(net_daily.mean()) if calendar_days else 0.0
+        median_calendar_daily = float(net_daily.median()) if calendar_days else 0.0
+        active_day_pct = float(active_days / calendar_days * 100.0) if calendar_days else 0.0
         n = len(group)
         pass_mask = group["status"].eq("pass")
         fail_mask = group["status"].eq("fail")
@@ -1221,6 +1297,12 @@ def _summarize_simulations(
             "median_days_to_pass": float(passes["days"].median()) if not passes.empty else np.nan,
             "p25_days_to_pass": float(passes["days"].quantile(0.25)) if not passes.empty else np.nan,
             "p75_days_to_pass": float(passes["days"].quantile(0.75)) if not passes.empty else np.nan,
+            "avg_trading_days_to_pass": float(passes["trading_days"].mean())
+            if not passes.empty and "trading_days" in passes.columns
+            else np.nan,
+            "median_trading_days_to_pass": float(passes["trading_days"].median())
+            if not passes.empty and "trading_days" in passes.columns
+            else np.nan,
             "avg_best_day_pct_of_total_profit": float(group["best_day_pct_of_total_profit"].mean())
             if "best_day_pct_of_total_profit" in group.columns
             else np.nan,
@@ -1260,7 +1342,11 @@ def _summarize_simulations(
             "expected_net_payout_per_eval_attempt": expected_net_payout_per_eval_attempt,
             "median_days_to_first_payout": median_days_to_first_payout,
             "avg_days_to_first_payout": avg_days_to_first_payout,
+            "calendar_history_days": calendar_days,
             "active_history_days": active_days,
+            "historical_active_day_pct": active_day_pct,
+            "avg_historical_calendar_day_pnl": avg_calendar_daily,
+            "median_historical_calendar_day_pnl": median_calendar_daily,
             "avg_historical_active_day_pnl": avg_daily,
             "median_historical_active_day_pnl": median_daily,
             "std_historical_active_day_pnl": daily_std,
@@ -1411,19 +1497,20 @@ def _risk_geometry_surface(profile: dict[str, Any], *, n_sims: int, seed: int) -
             if risk_dollars <= 0:
                 continue
 
-            def make_daily_arrays(days: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+            def make_daily_arrays(days: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
                 wins = rng.random((n_sims, days, trades_per_day)) < win_prob
                 trade_pnl = np.where(wins, risk_dollars * rr, -risk_dollars)
                 cum = trade_pnl.cumsum(axis=2)
                 net = trade_pnl.sum(axis=2)
                 low = np.minimum(0.0, cum.min(axis=2))
                 high = np.maximum(0.0, cum.max(axis=2))
-                return net, low, high
+                trade_count = np.full((n_sims, days), trades_per_day, dtype=int)
+                return net, low, high, trade_count
 
-            eval_net, eval_low, eval_high = make_daily_arrays(max_days)
-            funded_net, funded_low, funded_high = make_daily_arrays(horizon_days)
+            eval_net, eval_low, eval_high, eval_trade_count = make_daily_arrays(max_days)
+            funded_net, funded_low, funded_high, _ = make_daily_arrays(horizon_days)
             eval_records = _attach_eval_metadata(
-                _simulate_eval_arrays(eval_net, eval_low, eval_high, rules),
+                _simulate_eval_arrays(eval_net, eval_low, eval_high, rules, eval_trade_count),
                 rules,
             )
             funded_records = _attach_funded_metadata(
@@ -1773,12 +1860,14 @@ def _sample_eval_equity_paths(
     rules = _normalize_profile(profile)
     rng = np.random.default_rng(seed)
     max_days = int(rules["max_trading_days"])
-    net, low, high = _sample_daily_arrays(daily_paths, max_days, n_paths, rng)
+    net, low, high, trade_count = _sample_daily_arrays(daily_paths, max_days, n_paths, rng)
     account_size = float(rules["account_size"])
     profit_target = float(rules["profit_target"])
     max_drawdown = float(rules["max_drawdown"])
     daily_loss_limit = float(rules["daily_loss_limit"])
     min_days = int(rules["min_trading_days"])
+    stop_after_target = bool(rules["stop_after_target_until_min_days"])
+    consistency_limit = float(rules["consistency_profit_limit"])
     drawdown_mode = str(rules["drawdown_mode"]).lower()
     drawdown_check = str(rules["drawdown_check"]).lower()
     cap_trailing_floor = bool(rules["trailing_drawdown_cap_at_initial"])
@@ -1791,6 +1880,10 @@ def _sample_eval_equity_paths(
         static_floor = account_size - max_drawdown if max_drawdown > 0 else -np.inf
         drawdown_floor = static_floor
         status = "active"
+        trading_days_taken = 0
+        best_profit_day = 0.0
+        target_hit_day: int | None = None
+        consistency_blocked = False
         rows.append({
             "profile": rules["name"],
             "sim_id": sim_id,
@@ -1800,10 +1893,29 @@ def _sample_eval_equity_paths(
             "status": status,
         })
         for day_idx in range(max_days):
+            hold_after_target = (
+                target_hit_day is not None
+                and stop_after_target
+                and not consistency_blocked
+                and equity - account_size >= profit_target
+            )
+            if hold_after_target:
+                day_net = 0.0
+                day_low_offset = 0.0
+                day_high_offset = 0.0
+                day_trade_count = 0
+            else:
+                day_net = float(net[sim_id, day_idx])
+                day_low_offset = float(low[sim_id, day_idx])
+                day_high_offset = float(high[sim_id, day_idx])
+                day_trade_count = int(trade_count[sim_id, day_idx])
             day_start = equity
-            day_low = day_start + float(low[sim_id, day_idx])
-            day_high = day_start + float(high[sim_id, day_idx])
-            equity += float(net[sim_id, day_idx])
+            day_low = day_start + day_low_offset
+            day_high = day_start + day_high_offset
+            equity += day_net
+            if day_trade_count > 0:
+                trading_days_taken += 1
+            best_profit_day = max(best_profit_day, day_net)
             peak_equity = max(peak_equity, day_high, equity)
             eod_peak_equity = max(eod_peak_equity, equity)
             if drawdown_mode in (
@@ -1819,12 +1931,24 @@ def _sample_eval_equity_paths(
             else:
                 drawdown_floor = static_floor
             drawdown_test_equity = equity if drawdown_check == "eod" else min(day_low, equity)
-            if daily_loss_limit > 0 and float(low[sim_id, day_idx]) <= -daily_loss_limit:
+            if daily_loss_limit > 0 and day_low_offset <= -daily_loss_limit:
                 status = "fail"
             elif max_drawdown > 0 and drawdown_test_equity <= drawdown_floor:
                 status = "fail"
-            elif equity - account_size >= profit_target and day_idx + 1 >= min_days:
-                status = "pass"
+            else:
+                net_pnl = equity - account_size
+                consistency_ok = True
+                if consistency_limit > 0 and net_pnl > 0:
+                    consistency_ok = best_profit_day <= net_pnl * consistency_limit
+                if profit_target > 0 and net_pnl >= profit_target:
+                    if target_hit_day is None:
+                        target_hit_day = day_idx + 1
+                    if trading_days_taken >= min_days and consistency_ok:
+                        status = "pass"
+                    elif not consistency_ok:
+                        consistency_blocked = True
+                else:
+                    consistency_blocked = False
             rows.append({
                 "profile": rules["name"],
                 "sim_id": sim_id,
@@ -2487,27 +2611,27 @@ def _plot_strategy_equity_chart(
         figsize=(16.5, 13.5),
         gridspec_kw={"height_ratios": [4.6, 1.8, 1.8]},
     )
-    fig.patch.set_facecolor("#0b1017")
+    fig.patch.set_facecolor(CHART_BG)
     fig.suptitle(
         f"{profile['name']} - Historical Equity Curve",
-        color="#d7dce7",
+        color=CHART_TEXT,
         fontsize=21,
         fontweight="bold",
         y=0.98,
     )
 
     ax = axes[0]
-    ax.plot(x, equity, color="#58a6ff", linewidth=1.7, label="Equity")
+    ax.plot(x, equity, color=CHART_BLUE, linewidth=1.7, label="Equity")
     ax.fill_between(x, float(profile["account_size"]), equity, where=equity >= float(profile["account_size"]), color="#1f7a45", alpha=0.28)
     ax.axhline(float(profile["account_size"]), color="#7c8798", linestyle="--", linewidth=1.1, label=f"Start ${profile['account_size']:,.0f}")
     ax.yaxis.set_major_formatter(FuncFormatter(_money_formatter))
     ax.set_ylabel("Equity ($)")
     ax.set_title(f"Total PnL: ${total_pnl:,.0f} | Final: ${equity.iloc[-1]:,.0f}", fontsize=16)
-    ax.legend(facecolor="#141922", edgecolor="#9aa4b2", labelcolor="#cbd5e1")
+    ax.legend(facecolor=CHART_PANEL, edgecolor=CHART_SPINE, labelcolor=CHART_TEXT)
     _style_dark_axis(ax)
 
     ax = axes[1]
-    ax.plot(x, drawdown, color="#ff554d", linewidth=1.25)
+    ax.plot(x, drawdown, color=CHART_RED, linewidth=1.25)
     ax.fill_between(x, drawdown, 0, where=drawdown <= 0, color="#b43a35", alpha=0.55)
     ax.yaxis.set_major_formatter(FuncFormatter(_money_formatter))
     ax.set_ylabel("Drawdown ($)")
@@ -2515,7 +2639,7 @@ def _plot_strategy_equity_chart(
     _style_dark_axis(ax)
 
     ax = axes[2]
-    colors = np.where(pnl.to_numpy(dtype=float) >= 0, "#2da44e", "#cf423d")
+    colors = np.where(pnl.to_numpy(dtype=float) >= 0, CHART_GREEN, CHART_RED)
     ax.bar(path["trade_number"], pnl, color=colors, width=0.9, alpha=0.88)
     ax.axhline(0, color="#7c8798", linewidth=0.9)
     ax.yaxis.set_major_formatter(FuncFormatter(_money_formatter))
@@ -2544,10 +2668,10 @@ def _plot_random_walk_chart(
     row = summary.iloc[0]
 
     fig, axes = plt.subplots(1, 2, figsize=(16.2, 6.2))
-    fig.patch.set_facecolor("#0b1017")
+    fig.patch.set_facecolor(CHART_BG)
     fig.suptitle(
         f"{profile} - Random Walk Sign-Flip Test ({int(row['n_permutations']):,} permutations)",
-        color="#d7dce7",
+        color=CHART_TEXT,
         fontsize=20,
         fontweight="bold",
         y=0.98,
@@ -2575,13 +2699,13 @@ def _plot_random_walk_chart(
     for ax, col, real_value, p95, p_value, title, xlabel in panels:
         vals = pd.to_numeric(samples[col], errors="coerce").dropna()
         ax.hist(vals, bins=min(70, max(15, int(np.sqrt(len(vals)) * 2))), color="#7c8798", alpha=0.75)
-        ax.axvline(0, color="#cf423d", linestyle="--", linewidth=1.2, alpha=0.9, label="Zero")
-        ax.axvline(p95, color="#f2cc60", linestyle=":", linewidth=1.6, label=f"95th pct: {p95:,.1f}")
-        ax.axvline(real_value, color="#3fb950", linewidth=2.4, label=f"Real: {real_value:,.1f}")
+        ax.axvline(0, color=CHART_RED, linestyle="--", linewidth=1.2, alpha=0.9, label="Zero")
+        ax.axvline(p95, color=CHART_YELLOW, linestyle=":", linewidth=1.6, label=f"95th pct: {p95:,.1f}")
+        ax.axvline(real_value, color=CHART_GREEN, linewidth=2.4, label=f"Real: {real_value:,.1f}")
         ax.set_title(f"{title}: p-value = {p_value:.6f} {'PASS' if p_value <= 0.05 else 'FAIL'}", fontsize=15)
         ax.set_xlabel(xlabel)
         ax.set_ylabel("Count")
-        ax.legend(facecolor="#141922", edgecolor="#9aa4b2", labelcolor="#cbd5e1")
+        ax.legend(facecolor=CHART_PANEL, edgecolor=CHART_SPINE, labelcolor=CHART_TEXT)
         _style_dark_axis(ax)
 
     fig.tight_layout(rect=(0, 0, 1, 0.93))
@@ -2620,10 +2744,10 @@ def _plot_monte_carlo_chart(
     pass_days = pd.to_numeric(sim.loc[passed, "days"], errors="coerce").dropna()
 
     fig, axes = plt.subplots(2, 2, figsize=(16.2, 12.0))
-    fig.patch.set_facecolor("#0b1017")
+    fig.patch.set_facecolor(CHART_BG)
     fig.suptitle(
         f"{profile_name} - Monte Carlo Evaluation Simulation ({len(sim):,} paths)",
-        color="#d7dce7",
+        color=CHART_TEXT,
         fontsize=20,
         fontweight="bold",
         y=0.98,
@@ -2633,34 +2757,34 @@ def _plot_monte_carlo_chart(
     if not path_sample.empty:
         for _, path_group in path_sample.groupby("sim_id", sort=False):
             status = str(path_group["status"].iloc[-1])
-            color = "#2da44e" if status == "pass" else "#cf423d" if status == "fail" else "#7c8798"
+            color = CHART_GREEN if status == "pass" else CHART_RED if status == "fail" else CHART_MUTED
             ax.plot(path_group["day"], path_group["equity"], color=color, alpha=0.07, linewidth=0.8)
-    ax.axhline(target, color="#3fb950", linestyle="--", linewidth=1.4, label=f"Target ${target:,.0f}")
+    ax.axhline(target, color=CHART_GREEN, linestyle="--", linewidth=1.4, label=f"Target ${target:,.0f}")
     ax.axhline(float(profile["account_size"]), color="#7c8798", linestyle=":", linewidth=1.1, label=f"Start ${profile['account_size']:,.0f}")
     ax.set_title("Sample Evaluation Paths", fontsize=15)
     ax.set_xlabel("Day")
     ax.set_ylabel("Equity ($)")
     ax.yaxis.set_major_formatter(FuncFormatter(_money_formatter))
-    ax.legend(facecolor="#141922", edgecolor="#9aa4b2", labelcolor="#cbd5e1")
+    ax.legend(facecolor=CHART_PANEL, edgecolor=CHART_SPINE, labelcolor=CHART_TEXT)
     _style_dark_axis(ax)
 
     ax = axes[0, 1]
-    ax.hist(final_equity, bins=min(70, max(15, int(np.sqrt(len(final_equity)) * 2))), color="#58a6ff", alpha=0.76)
-    ax.axvline(target, color="#3fb950", linestyle="--", linewidth=1.5, label="Target")
+    ax.hist(final_equity, bins=min(70, max(15, int(np.sqrt(len(final_equity)) * 2))), color=CHART_BLUE, alpha=0.76)
+    ax.axvline(target, color=CHART_GREEN, linestyle="--", linewidth=1.5, label="Target")
     if not final_equity.empty:
-        ax.axvline(final_equity.median(), color="#39d0d8", linewidth=1.7, label=f"Median ${final_equity.median():,.0f}")
+        ax.axvline(final_equity.median(), color=CHART_CYAN, linewidth=1.7, label=f"Median ${final_equity.median():,.0f}")
     ax.set_title("Final Equity Distribution", fontsize=15)
     ax.set_xlabel("Final equity ($)")
     ax.set_ylabel("Count")
     ax.xaxis.set_major_formatter(FuncFormatter(_money_formatter))
-    ax.legend(facecolor="#141922", edgecolor="#9aa4b2", labelcolor="#cbd5e1")
+    ax.legend(facecolor=CHART_PANEL, edgecolor=CHART_SPINE, labelcolor=CHART_TEXT)
     _style_dark_axis(ax)
 
     ax = axes[1, 0]
     if not pass_days.empty:
-        ax.hist(pass_days, bins=min(35, max(8, int(np.sqrt(len(pass_days)) * 2))), color="#2da44e", alpha=0.82)
-        ax.axvline(pass_days.median(), color="#39d0d8", linewidth=1.7, label=f"Median: {pass_days.median():.0f} days")
-        ax.legend(facecolor="#141922", edgecolor="#9aa4b2", labelcolor="#cbd5e1")
+        ax.hist(pass_days, bins=min(35, max(8, int(np.sqrt(len(pass_days)) * 2))), color=CHART_GREEN, alpha=0.82)
+        ax.axvline(pass_days.median(), color=CHART_CYAN, linewidth=1.7, label=f"Median: {pass_days.median():.0f} days")
+        ax.legend(facecolor=CHART_PANEL, edgecolor=CHART_SPINE, labelcolor=CHART_TEXT)
         ax.set_title(f"Avg: {pass_days.mean():.0f} days | Median: {pass_days.median():.0f} days", fontsize=15)
     else:
         ax.set_title("Days To Pass", fontsize=15)
@@ -2713,10 +2837,10 @@ def _plot_payout_analysis_chart(
     ).dropna()
 
     fig, axes = plt.subplots(2, 2, figsize=(16.2, 12.0))
-    fig.patch.set_facecolor("#0b1017")
+    fig.patch.set_facecolor(CHART_BG)
     fig.suptitle(
         f"{profile} - Payout And Attempt Economics",
-        color="#d7dce7",
+        color=CHART_TEXT,
         fontsize=20,
         fontweight="bold",
         y=0.98,
@@ -2724,12 +2848,12 @@ def _plot_payout_analysis_chart(
 
     ax = axes[0, 0]
     if not payout_values.empty:
-        ax.hist(payout_values, bins=min(55, max(10, int(np.sqrt(len(payout_values)) * 2))), color="#2da44e", alpha=0.8)
-        ax.axvline(payout_values.median(), color="#39d0d8", linewidth=1.8, label=f"Median: ${payout_values.median():,.0f}")
+        ax.hist(payout_values, bins=min(55, max(10, int(np.sqrt(len(payout_values)) * 2))), color=CHART_GREEN, alpha=0.8)
+        ax.axvline(payout_values.median(), color=CHART_CYAN, linewidth=1.8, label=f"Median: ${payout_values.median():,.0f}")
         min_payout = float(row.get("minimum_payout", 0.0) or 0.0)
         if min_payout > 0:
-            ax.axvline(min_payout, color="#f2cc60", linestyle="--", linewidth=1.5, label=f"Min payout ${min_payout:,.0f}")
-        ax.legend(facecolor="#141922", edgecolor="#9aa4b2", labelcolor="#cbd5e1")
+            ax.axvline(min_payout, color=CHART_YELLOW, linestyle="--", linewidth=1.5, label=f"Min payout ${min_payout:,.0f}")
+        ax.legend(facecolor=CHART_PANEL, edgecolor=CHART_SPINE, labelcolor=CHART_TEXT)
     ax.xaxis.set_major_formatter(FuncFormatter(_money_formatter))
     ax.set_title(
         f"Payout Distribution | Avg: ${float(payout_values.mean()) if not payout_values.empty else 0:,.0f}",
@@ -2751,7 +2875,7 @@ def _plot_payout_analysis_chart(
         if not attempt_work.empty:
             x = attempt_work["attempts"]
             y = attempt_work["expected_value"]
-            ax.bar(x, y, color=np.where(y >= 0, "#2da44e", "#cf423d"), alpha=0.88)
+            ax.bar(x, y, color=np.where(y >= 0, CHART_GREEN, CHART_RED), alpha=0.88)
             ax.axhline(0, color="#7c8798", linewidth=0.9)
             ax.yaxis.set_major_formatter(FuncFormatter(_money_formatter))
             ev = (
@@ -2801,7 +2925,7 @@ def _plot_payout_analysis_chart(
     table.set_fontsize(11)
     table.scale(1.0, 1.9)
     _style_chart_table(table)
-    ax.set_title("Payout Economics Summary", color="#d7dce7", fontsize=15, pad=16)
+    ax.set_title("Payout Economics Summary", color=CHART_TEXT, fontsize=15, pad=16)
 
     fig.tight_layout(rect=(0, 0, 1, 0.94))
     fig.savefig(out_path, dpi=170, facecolor=fig.get_facecolor())
@@ -2855,19 +2979,19 @@ def _plot_overview_dashboard(
         wins = daily[daily > 0]
         losses = daily[daily < 0]
         if not wins.empty:
-            ax.hist(wins, bins=25, color="#2da44e", alpha=0.75, label=f"Win ({len(wins)})")
+            ax.hist(wins, bins=25, color=CHART_GREEN, alpha=0.75, label=f"Win ({len(wins)})")
         if not losses.empty:
-            ax.hist(losses, bins=25, color="#cf423d", alpha=0.75, label=f"Loss ({len(losses)})")
-        ax.axvline(0, color="#7c8798", linewidth=0.8)
-        ax.legend(facecolor="#141922", edgecolor="#303846", labelcolor="#cbd5e1", fontsize=8)
+            ax.hist(losses, bins=25, color=CHART_RED, alpha=0.75, label=f"Loss ({len(losses)})")
+        ax.axvline(0, color=CHART_MUTED, linewidth=0.8)
+        ax.legend(facecolor=CHART_PANEL, edgecolor=CHART_SPINE, labelcolor=CHART_TEXT, fontsize=8)
     ax.set_title("Daily PnL Distribution", fontsize=12)
     _style_dark_axis(ax)
 
     ax = fig.add_subplot(gs[0, 2])
     if not path.empty:
         drawdown = pd.to_numeric(path["drawdown"], errors="coerce")
-        ax.plot(path["trade_number"], drawdown, color="#ff554d", linewidth=0.9)
-        ax.fill_between(path["trade_number"], drawdown, 0, where=drawdown <= 0, color="#cf423d", alpha=0.28)
+        ax.plot(path["trade_number"], drawdown, color=CHART_RED, linewidth=0.9)
+        ax.fill_between(path["trade_number"], drawdown, 0, where=drawdown <= 0, color=CHART_RED, alpha=0.28)
     ax.yaxis.set_major_formatter(FuncFormatter(_money_formatter))
     ax.set_title("Drawdown Curve", fontsize=12)
     _style_dark_axis(ax)
@@ -2896,25 +3020,33 @@ def _plot_overview_dashboard(
     table.set_fontsize(8)
     table.scale(1.0, 1.6)
     _style_chart_table(table, font_color="#f2f5f9")
-    ax.set_title("Account Rules", color="#d7dce7", fontsize=12, pad=10)
+    ax.set_title("Account Rules", color=CHART_TEXT, fontsize=12, pad=10)
 
     ax = fig.add_subplot(gs[1, 1])
-    quality = [
-        ("Win rate", float(metric_row.get("win_rate_pct", 0))),
-        ("Profit factor", float(metric_row.get("profit_factor", 0)) * 50.0),
-        ("Reward:risk", float(metric_row.get("reward_risk", 0)) * 35.0),
+    _style_chart_axis(ax, grid=False)
+    ax.set_axis_off()
+    ax.set_title("Strategy Quality Snapshot", fontsize=12, pad=10)
+    quality_rows = [
+        ("Win rate", f"{float(metric_row.get('win_rate_pct', 0)):.1f}%", "higher"),
+        ("Profit factor", f"{float(metric_row.get('profit_factor', 0)):.2f}", ">= 1.10"),
+        ("Reward:risk", f"{float(metric_row.get('reward_risk', 0)):.2f}", "context"),
+        ("Avg win", f"${float(metric_row.get('avg_win', 0)):,.0f}", "gross"),
+        ("Avg loss", f"${float(metric_row.get('avg_loss', 0)):,.0f}", "gross"),
     ]
-    ax.bar([label for label, _ in quality], [value for _, value in quality], color=[CHART_GREEN, CHART_BLUE, CHART_CYAN], alpha=0.88)
-    labels = [
-        f"{float(metric_row.get('win_rate_pct', 0)):.1f}%",
-        f"{float(metric_row.get('profit_factor', 0)):.2f}",
-        f"{float(metric_row.get('reward_risk', 0)):.2f}",
-    ]
-    for idx, (label, (_, value)) in enumerate(zip(labels, quality)):
-        ax.text(idx, value + 2, label, ha="center", color="#f2f5f9", fontweight="bold")
-    ax.set_ylim(0, max(100, max(value for _, value in quality) * 1.25))
-    ax.set_title("Strategy Quality Snapshot", fontsize=12)
-    _style_dark_axis(ax)
+    table = ax.table(
+        cellText=quality_rows,
+        colLabels=["Metric", "Value", "Reference"],
+        cellLoc="left",
+        loc="center",
+        colWidths=[0.42, 0.26, 0.32],
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(8.5)
+    table.scale(1.0, 1.45)
+    _style_chart_table(table)
+    for row_idx in range(1, len(quality_rows) + 1):
+        table[(row_idx, 1)].get_text().set_color(CHART_CYAN)
+        table[(row_idx, 1)].get_text().set_fontweight("bold")
 
     ax = fig.add_subplot(gs[1, 2])
     payout_values = (
@@ -2923,9 +3055,9 @@ def _plot_overview_dashboard(
         else pd.Series(dtype=float)
     )
     if not payout_values.empty:
-        ax.hist(payout_values, bins=30, color="#2da44e", alpha=0.75)
-        ax.axvline(payout_values.mean(), color="#39d0d8", linewidth=1.6, label=f"Avg ${payout_values.mean():,.0f}")
-        ax.legend(facecolor="#141922", edgecolor="#303846", labelcolor="#cbd5e1", fontsize=8)
+        ax.hist(payout_values, bins=30, color=CHART_GREEN, alpha=0.75)
+        ax.axvline(payout_values.mean(), color=CHART_CYAN, linewidth=1.6, label=f"Avg ${payout_values.mean():,.0f}")
+        ax.legend(facecolor=CHART_PANEL, edgecolor=CHART_SPINE, labelcolor=CHART_TEXT, fontsize=8)
     ax.xaxis.set_major_formatter(FuncFormatter(_money_formatter))
     ax.set_title("Payout Distribution", fontsize=12)
     _style_dark_axis(ax)
@@ -3050,13 +3182,26 @@ def _write_markdown_report(path: Path, summary: pd.DataFrame, chart_paths: dict[
     lines = [
         "# Prop Firm Evaluation Report",
         "",
-        "This report uses a configurable, generic prop-firm rule model. It bootstraps active trading days from the historical trade log. When timestamped trades are available, daily-loss and drawdown checks use each sampled day's worst intraday cumulative trade PnL, including trade MAE/MFE when present.",
+        "This report uses a configurable, generic prop-firm rule model. It samples calendar-day paths that start on a historical active trading day, then includes zero-PnL no-trade days after that start. When timestamped trades are available, daily-loss and drawdown checks use each sampled day's worst intraday cumulative trade PnL, including trade MAE/MFE when present.",
         "",
     ]
     if summary.empty:
         lines.append("No prop-firm statistics were generated.")
     else:
+        sample_scope = str(summary["sample_scope"].iloc[0]) if "sample_scope" in summary.columns else "unknown"
+        evidence_grade = str(summary["evidence_grade"].iloc[0]) if "evidence_grade" in summary.columns else "unknown"
+        if sample_scope == "development_in_sample":
+            lines.extend(
+                [
+                    "**Evidence warning:** this is an in-sample development bootstrap. Pass rates and payout EV are for hypothesis generation only; they are not approval, lockbox, or forward evidence.",
+                    "",
+                ]
+            )
+        else:
+            lines.extend([f"Evidence scope: `{sample_scope}` / `{evidence_grade}`.", ""])
         display_cols = [
+            "sample_scope",
+            "evidence_grade",
             "profile",
             "pass_probability_pct",
             "expected_eval_cost_to_pass",
@@ -3065,6 +3210,10 @@ def _write_markdown_report(path: Path, summary: pd.DataFrame, chart_paths: dict[
             "avg_net_payout_after_split",
             "expected_net_payout_per_eval_attempt",
             "median_days_to_pass",
+            "median_trading_days_to_pass",
+            "calendar_history_days",
+            "active_history_days",
+            "historical_active_day_pct",
             "max_drawdown_fail_probability_pct",
             "consistency_block_probability_pct",
         ]
@@ -3113,6 +3262,7 @@ def export_prop_firm_report(
     *,
     out_dir: Path | str,
     artifact_name: str = "prop_firm",
+    sample_scope: str = "development_in_sample",
     profiles: list[dict[str, Any]] | None = None,
     n_sims: int = 5000,
     seed: int = 17,
@@ -3150,6 +3300,20 @@ def export_prop_firm_report(
     ]
     funded_simulations = pd.concat(funded_frames, ignore_index=True) if funded_frames else pd.DataFrame()
     summary = _summarize_simulations(simulations, daily_paths_by_profile, funded_simulations)
+    sample_scope = str(sample_scope or "development_in_sample")
+    evidence_grade = "validation_candidate" if sample_scope in {"walkforward_oos", "lockbox"} else "research_only"
+    if not summary.empty:
+        summary.insert(1, "sample_scope", sample_scope)
+        summary.insert(2, "evidence_grade", evidence_grade)
+        summary.insert(
+            3,
+            "optimism_warning",
+            (
+                "in_sample_bootstrap_not_approval_evidence"
+                if evidence_grade == "research_only"
+                else ""
+            ),
+        )
 
     surface_enabled = (
         any(bool(profile.get("enable_surfaces", True)) for profile in normalized_profiles)

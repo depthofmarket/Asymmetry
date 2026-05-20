@@ -518,6 +518,20 @@ def run_backtest(
     )
     print_complete("Trade summaries")
 
+    try:
+        from backtest.execution_realism import export_execution_realism_report
+
+        export_execution_realism_report(
+            results["trades"],
+            out_dir=run_dir / "research" / "execution_realism",
+            futures_specs=FUTURES_SPECS,
+            strategy_params=strategy_params,
+            artifact_name="execution_realism",
+        )
+        print_complete("Execution realism report")
+    except Exception as e:
+        print(f"   ⚠️ Execution realism report skipped: {e}")
+
     robustness_paths = export_robustness_reports(
         results["trades"],
         out_dir=run_dir / "research" / "robustness",
@@ -534,6 +548,7 @@ def run_backtest(
                 results["trades"],
                 out_dir=run_dir / "research" / "prop_firm",
                 artifact_name="prop_firm",
+                sample_scope="development_in_sample",
                 profiles=list(RESEARCH_CONFIG.get("prop_firm_profiles", [])),
                 n_sims=int(RESEARCH_CONFIG.get("prop_firm_n_sims", 5000)),
                 seed=int(RESEARCH_CONFIG.get("prop_firm_seed", 17)),
@@ -639,6 +654,7 @@ def run_backtest(
     )
     print_complete("Charts")
 
+    stress = None
     if RESEARCH_CONFIG.get("enable_monte_carlo", False):
         print(f"\n🎲 Running Monte Carlo simulations...")
         try:
@@ -681,7 +697,6 @@ def run_backtest(
                     drawdown_limit_pct=float(RESEARCH_CONFIG.get("advanced_monte_carlo_drawdown_limit_pct", 5.0)),
                 )
 
-            stress = None
             if RESEARCH_CONFIG.get("enable_trade_stress_tests", True):
                 stress = run_trade_stress_tests(
                     results,
@@ -739,6 +754,9 @@ def run_backtest(
                 train_years=int(RESEARCH_CONFIG.get("wf_train_years", 4)),
                 test_months=int(RESEARCH_CONFIG.get("wf_test_months", 6)),
                 step_months=int(RESEARCH_CONFIG.get("wf_step_months", 6)),
+                window_mode=str(RESEARCH_CONFIG.get("wf_window_mode", "rolling")),
+                purge_bars=RESEARCH_CONFIG.get("wf_purge_bars", "auto"),
+                embargo_bars=int(RESEARCH_CONFIG.get("wf_embargo_bars", 0)),
                 metric=str(RESEARCH_CONFIG.get("wf_metric", "sharpe")),
                 min_trades_train=int(RESEARCH_CONFIG.get("wf_min_trades_train", 40)),
                 min_trades_test=int(RESEARCH_CONFIG.get("wf_min_trades_test", 5)),
@@ -802,6 +820,7 @@ def run_backtest(
                             wf_result.stitched_trades,
                             out_dir=run_dir / "research" / "walkforward" / "prop_firm",
                             artifact_name="walkforward_stitched",
+                            sample_scope="walkforward_oos",
                             profiles=list(RESEARCH_CONFIG.get("prop_firm_profiles", [])),
                             n_sims=int(RESEARCH_CONFIG.get("prop_firm_n_sims", 5000)),
                             seed=int(RESEARCH_CONFIG.get("prop_firm_seed", 17)),
@@ -873,6 +892,9 @@ def run_backtest(
                         train_years=int(RESEARCH_CONFIG.get("wf_train_years", 4)),
                         test_months=int(RESEARCH_CONFIG.get("wf_test_months", 6)),
                         step_months=int(RESEARCH_CONFIG.get("wf_step_months", 6)),
+                        window_mode=str(RESEARCH_CONFIG.get("wf_window_mode", "rolling")),
+                        purge_bars=RESEARCH_CONFIG.get("wf_purge_bars", "auto"),
+                        embargo_bars=int(RESEARCH_CONFIG.get("wf_embargo_bars", 0)),
                         metric=permutation_metric,
                         min_trades_train=int(RESEARCH_CONFIG.get("wf_min_trades_train", 40)),
                         min_trades_test=int(RESEARCH_CONFIG.get("wf_min_trades_test", 5)),
@@ -934,6 +956,7 @@ def run_backtest(
 
     try:
         from backtest.validation import export_development_report
+
         report = export_development_report(
             results=results,
             years=years_covered(data),
@@ -943,10 +966,51 @@ def run_backtest(
             walk_forward_years=walk_forward_years(wf_result) if wf_result is not None else None,
             in_sample_permutation=insample_perm,
             walk_forward_permutation=wf_perm,
+            stress_summary_csv=getattr(stress, "summary_csv", None),
         )
         print_complete("\nDevelopment report")
     except Exception as e:
         print(f"\n   ⚠️ Development report skipped: {e}")
+
+    try:
+        if wf_result is not None:
+            from backtest.validation import export_optimization_stability_report
+
+            export_optimization_stability_report(
+                wf_result,
+                out_dir=run_dir / "research",
+                validation_config=VALIDATION_CONFIG,
+                metric=str(RESEARCH_CONFIG.get("wf_metric", "bar_profit_factor")),
+            )
+            print_complete("Optimization stability report")
+    except Exception as e:
+        print(f"\n   ⚠️ Optimization stability report skipped: {e}")
+
+    try:
+        from backtest.validation import export_multiple_testing_debt_report
+
+        export_multiple_testing_debt_report(
+            candidate_name=candidate_name,
+            candidate_configs=CANDIDATE_CONFIGS,
+            out_dir=run_dir / "research",
+            research_config=RESEARCH_CONFIG,
+            results_root=Path("results/runs"),
+        )
+        print_complete("Multiple-testing debt report")
+    except Exception as e:
+        print(f"\n   ⚠️ Multiple-testing debt report skipped: {e}")
+
+    try:
+        from backtest.validation import export_research_discipline_report
+
+        export_research_discipline_report(
+            run_dir=run_dir,
+            validation_config=VALIDATION_CONFIG,
+            research_config=RESEARCH_CONFIG,
+        )
+        print_complete("Research discipline gate")
+    except Exception as e:
+        print(f"\n   ⚠️ Research discipline gate skipped: {e}")
 
     try:
         from results.research_dashboards import export_research_dashboards

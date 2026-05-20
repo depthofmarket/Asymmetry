@@ -10,7 +10,7 @@ from backtest.market_structure import add_market_structure_features
 from backtest.market_profile import add_market_profile_features
 from backtest.market_memory import add_market_memory_features
 from backtest.markov_regime import add_markov_regime_features
-from backtest.objectives import bar_objective_metrics
+from backtest.objectives import bar_objective_metrics, execution_bar_objective_metrics
 from backtest.options_flow import add_options_flow_features
 from backtest.point_in_time import mask_columns_before_clock
 from backtest.strategy_runtime import SignalEvent, extract_signal_events
@@ -88,6 +88,12 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
         if self.strategy_params.get('entry_mode', 'same_bar_close') == 'next_bar_open':
             return 1 + entry_delay_bars
         return entry_delay_bars
+
+    def _entry_context_offset_bars(self) -> int:
+        entry_offset = self._entry_offset_bars()
+        if entry_offset <= 0:
+            return 0
+        return entry_offset - 1
 
     def _coerce_markov_state_set(self, value) -> set[int]:
         if value is None:
@@ -251,7 +257,8 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
                 hour_match |= key_match & effective_hour.isin(hours)
             keep &= ~(active & hour_match)
 
-        entry_context = out.shift(-entry_offset) if entry_offset else out
+        context_offset = self._entry_context_offset_bars()
+        entry_context = out.shift(-context_offset) if context_offset else out
 
         if allowed_context:
             context_match = pd.Series(False, index=out.index)
@@ -908,9 +915,17 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
             self._execution_times = np.array([], dtype='datetime64[ns]')
             return self._execution_1m
 
-        df = self.data[['time', 'open', 'high', 'low', 'close', 'volume']].copy()
+        cols = ['time', 'open', 'high', 'low', 'close']
+        df = self.data[cols].copy()
+        df['volume'] = self.data['volume'].to_numpy() if 'volume' in self.data.columns else 0.0
         df['time'] = pd.to_datetime(df['time'])
         df = df.sort_values('time').drop_duplicates(subset='time', keep='first').reset_index(drop=True)
+        if self._preprocessed_5m is not None and 'time' in self._preprocessed_5m.columns and not self._preprocessed_5m.empty:
+            pre_times = pd.to_datetime(self._preprocessed_5m['time'], errors='coerce').dropna()
+            if not pre_times.empty:
+                start_time = pre_times.min()
+                end_time = pre_times.max() + pd.Timedelta(minutes=5)
+                df = df.loc[(df['time'] >= start_time) & (df['time'] < end_time)].reset_index(drop=True)
         self._execution_1m = df
         self._execution_times = df['time'].to_numpy(dtype='datetime64[ns]')
         return self._execution_1m
@@ -1174,6 +1189,7 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
                 if entry_i >= len(df):
                     break
                 entry_row = df.iloc[entry_i]
+                context_row = df.iloc[max(i, entry_i - 1)]
                 direction = 'long' if int(signal_row['signal']) == 1 else 'short'
                 signal_type = signal_row['signal_type'] if 'signal_type' in df.columns else None
                 entry_price = float(entry_row['open'])
@@ -1185,13 +1201,15 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
                     if entry_i >= len(df):
                         break
                     entry_row = df.iloc[entry_i]
+                    context_row = df.iloc[max(i, entry_i - 1)]
                     entry_price = float(entry_row['open'])
                 else:
                     entry_i = i
                     entry_row = signal_row
+                    context_row = signal_row
                     entry_price = float(entry_row['close'])
 
-            if pd.isna(entry_row['atr']):
+            if pd.isna(context_row['atr']):
                 i += 1
                 continue
 
@@ -1205,7 +1223,8 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
                 i += 1
                 continue
 
-            contracts = self.calculate_contracts(float(entry_row['atr']), direction, signal_type)
+            context_atr = float(context_row['atr'])
+            contracts = self.calculate_contracts(context_atr, direction, signal_type)
             if contracts <= 0:
                 i += 1
                 continue
@@ -1218,7 +1237,7 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
                 direction,
                 signal_type=signal_type or "",
                 setup_tag=setup_tag,
-                metadata=self.entry_context_metadata(entry_row),
+                metadata=self.entry_context_metadata(context_row),
             )
             if open_position is None:
                 i += 1
@@ -1228,19 +1247,19 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
             target_price = None
             if signal_type == 'mr':
                 if self.use_volume_profile_mr_target() and 'vp_poc' in df.columns:
-                    target_price = entry_row['vp_poc']
+                    target_price = context_row['vp_poc']
                 else:
-                    vwap_target = entry_row['vwap']
+                    vwap_target = context_row['vwap']
 
             exit_levels = self.build_exit_levels(
                 direction,
                 entry_price,
                 contracts,
-                float(entry_row['atr']),
+                context_atr,
                 vwap_target=vwap_target,
                 target_price=target_price,
                 signal_type=signal_type,
-                entry_row=entry_row,
+                entry_row=context_row,
             )
             daily_trade_count[trade_date] += 1
 
@@ -1275,6 +1294,7 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
         exit_levels = {}
         pending_signal = None
         pending_signal_type = None
+        pending_context_i = None
         pending_entry_delay_remaining = 0
         daily_trade_count = {}
         p = self.strategy_params
@@ -1296,7 +1316,9 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
                 exit_flag = False
                 exit_reason = ""
                 exit_price = close_price
-                self.update_trade_excursions(open_position, high_price, low_price)
+                use_current_bar_excursion = self.managed_stop_uses_current_bar_excursion()
+                if use_current_bar_excursion:
+                    self.update_trade_excursions(open_position, high_price, low_price)
                 active_exit_levels = self.apply_trade_management(
                     open_position,
                     exit_levels,
@@ -1312,6 +1334,9 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
                 )
                 if exit_flag:
                     exit_price = resolved_exit_price
+
+                if not exit_flag and not use_current_bar_excursion:
+                    self.update_trade_excursions(open_position, high_price, low_price)
 
                 if not exit_flag and i - entry_bar >= p['max_hold_bars']:
                     exit_flag, exit_reason, exit_price = True, "time_exit", close_price
@@ -1331,6 +1356,7 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
             if open_position is None and pending_signal is not None:
                 if pending_entry_delay_remaining > 0:
                     pending_entry_delay_remaining -= 1
+                    pending_context_i = i
                     self.equity_curve.append(self.portfolio.get_equity())
                     continue
 
@@ -1338,7 +1364,17 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
                 daily_trade_count[trade_date] = daily_trade_count.get(trade_date, 0)
                 direction = 'long' if pending_signal == 1 else 'short'
                 setup_tag = f"{pending_signal_type}_{direction}" if pending_signal_type else direction
-                contracts = self.calculate_contracts(atr, direction, pending_signal_type)
+                context_i = pending_context_i if pending_context_i is not None else max(0, i - 1)
+                context_row = df.loc[context_i]
+                if pd.isna(context_row['atr']):
+                    pending_signal = None
+                    pending_signal_type = None
+                    pending_context_i = None
+                    pending_entry_delay_remaining = 0
+                    self.equity_curve.append(self.portfolio.get_equity())
+                    continue
+                context_atr = float(context_row['atr'])
+                contracts = self.calculate_contracts(context_atr, direction, pending_signal_type)
 
                 if daily_trade_count[trade_date] < p['max_trades_per_day'] and contracts > 0:
                     open_position = self.portfolio.enter_position(
@@ -1348,7 +1384,7 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
                         direction,
                         signal_type=pending_signal_type or "",
                         setup_tag=setup_tag,
-                        metadata=self.entry_context_metadata(df.loc[i]),
+                        metadata=self.entry_context_metadata(context_row),
                     )
                     # Circuit breaker: enter_position returns None when equity too low
                     if open_position is not None:
@@ -1357,18 +1393,18 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
                         target_price = None
                         if pending_signal_type == 'mr':
                             if self.use_volume_profile_mr_target() and 'vp_poc' in df.columns:
-                                target_price = df.loc[i, 'vp_poc']
+                                target_price = context_row['vp_poc']
                             else:
-                                vwap_target = df.loc[i, 'vwap']
+                                vwap_target = context_row['vwap']
                         exit_levels = self.build_exit_levels(
                             direction,
                             open_price,
                             contracts,
-                            atr,
+                            context_atr,
                             vwap_target=vwap_target,
                             target_price=target_price,
                             signal_type=pending_signal_type,
-                            entry_row=df.loc[i],
+                            entry_row=context_row,
                         )
                         daily_trade_count[trade_date] += 1
                         self.update_trade_excursions(open_position, high_price, low_price)
@@ -1388,12 +1424,14 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
 
                 pending_signal = None
                 pending_signal_type = None
+                pending_context_i = None
                 pending_entry_delay_remaining = 0
 
             if open_position is None and pending_signal is None and df.loc[i, 'signal'] != 0:
                 if p.get('entry_mode', 'same_bar_close') == 'next_bar_open':
                     pending_signal = df.loc[i, 'signal']
                     pending_signal_type = df.loc[i, 'signal_type'] if 'signal_type' in df.columns else None
+                    pending_context_i = i
                     pending_entry_delay_remaining = entry_delay_bars
                     self.equity_curve.append(self.portfolio.get_equity())
                     continue
@@ -1401,6 +1439,7 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
                 if entry_delay_bars > 0:
                     pending_signal = df.loc[i, 'signal']
                     pending_signal_type = df.loc[i, 'signal_type'] if 'signal_type' in df.columns else None
+                    pending_context_i = i
                     pending_entry_delay_remaining = max(0, entry_delay_bars - 1)
                     self.equity_curve.append(self.portfolio.get_equity())
                     continue
@@ -1478,6 +1517,12 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
         trades_df['equity'] = self.portfolio.initial_capital + trades_df['cumulative_pnl']
         bar_metrics = bar_objective_metrics(
             self._preprocessed_5m if self._preprocessed_5m is not None else self.resample_to_5min(self.data),
+            trades_df,
+            self.futures_specs,
+            self.portfolio.initial_capital,
+        )
+        execution_bar_metrics = execution_bar_objective_metrics(
+            self._get_execution_1m(),
             trades_df,
             self.futures_specs,
             self.portfolio.initial_capital,
@@ -1587,4 +1632,5 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
             'equity_curve': equity_array.tolist(),
             'trades': trades_df,
             **bar_metrics,
+            **execution_bar_metrics,
         }

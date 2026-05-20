@@ -110,6 +110,25 @@ def bar_objective_metrics(
     }
 
 
+def execution_bar_objective_metrics(
+    execution_df: pd.DataFrame,
+    trades_df: pd.DataFrame,
+    futures_specs: dict[str, Any],
+    starting_capital: float,
+) -> dict[str, float]:
+    """
+    Estimate objective metrics from the execution-timeframe bar stream.
+
+    This deliberately mirrors ``bar_objective_metrics`` but prefixes every
+    metric with ``execution_``. The existing ``bar_*`` metrics remain the
+    conservative signal-frame objective, usually 5-minute close-to-close. These
+    metrics answer a different question: whether the saved trade log has
+    favorable exposure on the same bar grid used for intrabar execution.
+    """
+    base = bar_objective_metrics(execution_df, trades_df, futures_specs, starting_capital)
+    return {f"execution_{key}": value for key, value in base.items()}
+
+
 def _infer_bar_regime(pre_df: pd.DataFrame) -> pd.Series:
     """
     Infer a (0=range, 1=trend) regime for each bar from the classifier
@@ -302,8 +321,8 @@ def volatility_weighted_bar_metrics(
 
     # Volatility weights
     vol_lookback = max(2, int(vol_lookback_bars))
-    raw_vol = pd.Series(bar_pnl).rolling(vol_lookback, min_periods=2).std().fillna(method="bfill").to_numpy()
-    safe_vol = np.where(np.isfinite(raw_vol) & (raw_vol > 1e-12), raw_vol, np.nanmedian(raw_vol[raw_vol > 1e-12]) if np.any(raw_vol > 1e-12) else 1.0)
+    raw_vol = pd.Series(bar_pnl).rolling(vol_lookback, min_periods=2).std()
+    safe_vol = raw_vol.where(raw_vol.gt(1e-12)).fillna(1.0).to_numpy()
     weights = np.where(np.isfinite(safe_vol), 1.0 / safe_vol if inverse_weight else safe_vol, 1.0)
     weighted_pnl = bar_pnl * weights
 

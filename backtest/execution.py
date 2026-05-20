@@ -105,6 +105,16 @@ class ExecutionMixin:
 
         return managed_levels
 
+    def managed_stop_activation_mode(self) -> str:
+        mode = str(self.strategy_params.get('managed_stop_activation_mode', 'same_bar') or 'same_bar')
+        mode = mode.lower().strip()
+        if mode in {'next_bar', 'prior_bar', 'delayed'}:
+            return 'next_bar'
+        return 'same_bar'
+
+    def managed_stop_uses_current_bar_excursion(self) -> bool:
+        return self.managed_stop_activation_mode() == 'same_bar'
+
 
     def apply_market_structure_stop(
         self,
@@ -274,6 +284,7 @@ class ExecutionMixin:
 
         actual_entry_time = pd.Timestamp(exec_df.iloc[start_idx]['time'])
         deadline = actual_entry_time + pd.Timedelta(minutes=max_hold_minutes)
+        use_current_bar_excursion = self.managed_stop_uses_current_bar_excursion()
 
         for idx in range(start_idx, len(exec_df)):
             bar = exec_df.iloc[idx]
@@ -281,8 +292,9 @@ class ExecutionMixin:
             if bar_time < actual_entry_time:
                 continue
 
-            self.update_trade_excursions(trade, float(bar['high']), float(bar['low']))
             bars_held = max(0, int((bar_time - actual_entry_time).total_seconds() // 300))
+            if use_current_bar_excursion:
+                self.update_trade_excursions(trade, float(bar['high']), float(bar['low']))
             active_levels = self.apply_trade_management(trade, levels, bars_held=bars_held)
 
             exit_flag, exit_reason, resolved_exit_price = self.resolve_intrabar_exit(
@@ -294,6 +306,9 @@ class ExecutionMixin:
             )
             if exit_flag:
                 return bar_time, float(resolved_exit_price), exit_reason
+
+            if not use_current_bar_excursion:
+                self.update_trade_excursions(trade, float(bar['high']), float(bar['low']))
 
             if hawkes_exit_time is not None and bar_time >= hawkes_exit_time:
                 return bar_time, float(bar['open']), "hawkes_vol_exit"
@@ -436,6 +451,31 @@ class ExecutionMixin:
 
         return levels
 
+    def target_trade_through_points(self) -> float:
+        p = self.strategy_params
+        explicit = p.get('target_fill_trade_through_points')
+        if explicit is not None:
+            try:
+                return max(0.0, float(explicit))
+            except (TypeError, ValueError):
+                return 0.0
+        ticks = max(0.0, float(p.get('target_fill_trade_through_ticks', 0) or 0))
+        tick_size = float(p.get('vp_tick_size', p.get('tick_size', 0.25)) or 0.25)
+        return ticks * tick_size
+
+    def favorable_target_hit(
+        self,
+        direction: str,
+        price: float,
+        high_price: float,
+        low_price: float,
+    ) -> bool:
+        mode = str(self.strategy_params.get('target_fill_mode', 'touch') or 'touch').lower()
+        through = self.target_trade_through_points() if mode == 'trade_through' else 0.0
+        if direction == 'long':
+            return high_price >= float(price) + through
+        return low_price <= float(price) - through
+
     def resolve_intrabar_exit(
         self,
         direction: str,
@@ -457,7 +497,7 @@ class ExecutionMixin:
                     adverse_hits.append((reason, price))
             for reason in ('profit_target', 'hard_target'):
                 price = levels.get(reason)
-                if price is not None and high_price >= price:
+                if price is not None and self.favorable_target_hit(direction, price, high_price, low_price):
                     favorable_hits.append((reason, price))
 
             adverse_hit = max(adverse_hits, key=lambda item: item[1]) if adverse_hits else None
@@ -469,7 +509,7 @@ class ExecutionMixin:
                     adverse_hits.append((reason, price))
             for reason in ('profit_target', 'hard_target'):
                 price = levels.get(reason)
-                if price is not None and low_price <= price:
+                if price is not None and self.favorable_target_hit(direction, price, high_price, low_price):
                     favorable_hits.append((reason, price))
 
             adverse_hit = min(adverse_hits, key=lambda item: item[1]) if adverse_hits else None
@@ -492,5 +532,3 @@ class ExecutionMixin:
             return True, favorable_hit[0], favorable_hit[1]
 
         return False, "", None
-
-

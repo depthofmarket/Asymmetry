@@ -25,6 +25,15 @@ from backtest.walkforward import (
     run_walk_forward,
 )
 
+CHART_BG = "#080d14"
+CHART_PANEL = "#111827"
+CHART_GRID = "#2b3a4f"
+CHART_TEXT = "#e5eefb"
+CHART_MUTED = "#94a3b8"
+CHART_GREEN = "#34d399"
+CHART_BLUE = "#60a5fa"
+CHART_AMBER = "#fbbf24"
+
 
 @dataclass(frozen=True)
 class PermutationTestResult:
@@ -45,14 +54,14 @@ def _ensure_dir(path: Path) -> None:
 
 
 def _style_dark_axis(ax) -> None:
-    ax.set_facecolor("#151526")
-    ax.tick_params(colors="#b8bed6")
-    ax.xaxis.label.set_color("#d7dcef")
-    ax.yaxis.label.set_color("#d7dcef")
-    ax.title.set_color("white")
+    ax.set_facecolor(CHART_PANEL)
+    ax.tick_params(colors=CHART_MUTED)
+    ax.xaxis.label.set_color(CHART_TEXT)
+    ax.yaxis.label.set_color(CHART_TEXT)
+    ax.title.set_color(CHART_TEXT)
     for spine in ax.spines.values():
-        spine.set_edgecolor("#38405f")
-    ax.grid(True, color="#69708a", alpha=0.16, linewidth=0.8)
+        spine.set_edgecolor(CHART_GRID)
+    ax.grid(True, color=CHART_GRID, alpha=0.28, linewidth=0.75)
 
 
 def _plot_metric_histogram(
@@ -64,16 +73,29 @@ def _plot_metric_histogram(
 ) -> None:
     vals = np.asarray([x for x in metrics if np.isfinite(x)], dtype=float)
     fig, ax = plt.subplots(figsize=(10.5, 5.2))
-    fig.patch.set_facecolor("#0b0f1a")
+    fig.patch.set_facecolor(CHART_BG)
     if vals.size:
         bins = min(60, max(10, int(np.sqrt(vals.size) * 2)))
-        ax.hist(vals, bins=bins, color="#37d67a", alpha=0.82, edgecolor="#182032", linewidth=0.5)
+        ax.hist(vals, bins=bins, color=CHART_GREEN, alpha=0.82, edgecolor="#182032", linewidth=0.5)
     if np.isfinite(real_metric):
-        ax.axvline(real_metric, color="#f6c945", linestyle="--", linewidth=1.6, alpha=0.95)
+        ax.axvline(real_metric, color=CHART_AMBER, linestyle="--", linewidth=1.6, alpha=0.95)
     ax.set_title(title, fontsize=16, fontweight="bold")
     ax.set_xlabel(metric)
     ax.set_ylabel("Count")
     _style_dark_axis(ax)
+    if np.isfinite(real_metric):
+        ymin, ymax = ax.get_ylim()
+        ax.text(
+            real_metric,
+            ymax - (ymax - ymin) * 0.08,
+            f"real {metric}: {real_metric:.4f}",
+            rotation=90,
+            va="top",
+            ha="right",
+            color=CHART_AMBER,
+            fontsize=9,
+            fontweight="bold",
+        )
     plt.tight_layout()
     plt.savefig(out_path, dpi=160, facecolor=fig.get_facecolor())
     plt.close()
@@ -371,6 +393,9 @@ def run_walk_forward_permutation_test(
     train_years: int = 4,
     test_months: int = 6,
     step_months: int = 6,
+    window_mode: str = "rolling",
+    purge_bars: int | str | None = "auto",
+    embargo_bars: int = 0,
     metric: str = "profit_factor",
     min_trades_train: int = 40,
     min_trades_test: int = 5,
@@ -395,6 +420,9 @@ def run_walk_forward_permutation_test(
             train_years=train_years,
             test_months=test_months,
             step_months=step_months,
+            window_mode=window_mode,
+            purge_bars=purge_bars,
+            embargo_bars=embargo_bars,
             param_grid=param_grid,
             metric=metric,
             min_trades_train=min_trades_train,
@@ -446,6 +474,9 @@ def run_walk_forward_permutation_test(
             train_years=train_years,
             test_months=test_months,
             step_months=step_months,
+            window_mode=window_mode,
+            purge_bars=purge_bars,
+            embargo_bars=embargo_bars,
             param_grid=param_grid,
             metric=metric,
             min_trades_train=min_trades_train,
