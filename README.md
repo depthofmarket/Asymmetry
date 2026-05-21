@@ -19,12 +19,14 @@ Production-grade backtesting framework for NQ futures trading strategies.
 - Realistic commissions & slippage
 - Performance metrics (Sharpe, Sortino, max drawdown)
 - Live-style paper execution runtime with simulated local fills
+- Execution-observation logs for paper/replay decisions, skipped entries, and shortfall summaries
+- Pre-candidate signal research gate for IC, forward-return, stability, and context evidence
 - Live prop-firm guard/ledger for compliant eval and payout-rule paper runs
 
 ## Setup
 1. Install: `pip install -r requirements.txt`
 2. Add NQ data to `data/raw/`
-3. Run: `python3 main_backtest.py`
+3. For orientation, run `python3 main_backtest.py --list-candidates`; run historical backtests only from an explicit research command.
 
 ## Codebase Layout
 - Start with `docs/codebase_map.md` for the repo map.
@@ -34,6 +36,9 @@ Production-grade backtesting framework for NQ futures trading strategies.
 - Historical backtest commands are listed below for you to run in your terminal when needed.
 
 ## Candidate Runs
+There is currently no active validation candidate. Commands below are historical/reproduction entry points, not an active research queue.
+Backtests, full-dataset probes, full-sample signal scans, and candidate sweeps are user-run only unless explicitly approved for automation.
+
 - List variants: `python3 main_backtest.py --list-candidates`
 - Run a variant: `caffeinate -dimsu python3 main_backtest.py --candidate mr_long_only`
 - Frequency probe: `caffeinate -dimsu python3 main_backtest.py --candidate higher_frequency_probe`
@@ -51,12 +56,14 @@ Production-grade backtesting framework for NQ futures trading strategies.
 - Quality cleanup: `caffeinate -dimsu python3 main_backtest.py --candidate edge_vp_hf_gap_cusum_no_mr_long`
 - Delay robustness: `caffeinate -dimsu python3 main_backtest.py --candidate edge_vp_hf_gap_cusum_no_mr_long_delay_1`
 - Frequency probe: `caffeinate -dimsu python3 main_backtest.py --candidate edge_vp_scalp_frequency_gap_cusum_no_mr_long`
-- High-frequency observation probe: `caffeinate -dimsu python3 main_backtest.py --candidate edge_vp_mr_trend_failed_auction_hf_observation_probe --start 2021-01-01`
+- Archived failed-auction high-frequency observation probe: `caffeinate -dimsu python3 main_backtest.py --candidate edge_vp_mr_trend_failed_auction_hf_observation_probe --start 2021-01-01`
 - Fast 2021+ signal-count scan: `python3 scripts/probe_candidate_frequency.py --signals-only --out results/research_master/2021_frequency_signal_probe.csv`
 - 2021+ executed-trade frequency scan: `python3 scripts/probe_candidate_frequency.py --out results/research_master/2021_frequency_probe.csv`
 - Full 2021+ frequency batch: `bash scripts/run_2021_frequency_candidates_batch.sh`
+- Rejected execution-first microstructure probe: `edge_microstructure_liquidity_taking_trend_probe`
 
 Each run writes `research/development_report.md` and `research/research_discipline_gate.md` in its run folder.
+Broad batch scripts are guarded reproduction tools; they are not active research queues while `next_validation_candidates` is empty.
 
 ## Anti-Overfit Validation
 - Treat optimization as hypothesis generation, not proof. A candidate must survive OOS walk-forward, bar-level PF, stress tests, and prop-firm random-walk checks before it is eligible for funded-style behavior.
@@ -66,6 +73,7 @@ Each run writes `research/development_report.md` and `research/research_discipli
 - Each run writes `research/research_discipline_gate.csv`. This is the strict promotion gate: missing permutation evidence, missing bar-exposure audit, missing execution-realism audit, in-sample-only prop evidence, or excessive family run count makes the candidate non-promotable.
 - `research/development_report.csv` treats 5-minute signal-bar PF and `combined_mild` trade stress as hard warnings. The 1-minute `execution_bar_profit_factor` is diagnostic only; it helps separate execution-path edge from signal-bar hindsight.
 - Prop-firm simulations sample calendar-day paths from the first active trade day and include zero-PnL no-trade days. Active-day-only pass rates are not valid eval evidence for sparse strategies.
+- `config/research_freeze.json` currently archives a rejected candidate for reproducibility. A passing freeze check is not an active validation signal until a new signal report, hypothesis, and one-candidate freeze exist.
 - Freeze the candidate before any lockbox or forward-style run:
   `python3 scripts/check_research_freeze.py --manifest config/research_freeze.json --print-command`
 - After a saved development run of the frozen candidate, evaluate it against the pre-declared gates:
@@ -80,7 +88,10 @@ Each run writes `research/development_report.md` and `research/research_discipli
   `python3 scripts/audit_fill_assumptions.py --run-dir results/runs/<run_label> --start 2021-01-01`
 - TBBO-only data is an execution-realism lockbox unless it is converted into bars through the same point-in-time feature pipeline. Use it to audit spread/depth/fill assumptions, not to mine fresh signal filters.
 - The failed-auction quality branch is rejected and removed from the active validation queue. See `docs/research_postmortems/2026-05-20_failed_auction_quality_rejection.md`.
-- The next research branch must start from a written ex-ante premise before testing. See `docs/research_hypotheses/2026-05-20_microstructure_execution_first.md`.
+- The microstructure liquidity-taking trend probe is rejected and removed from the active validation queue.
+- Before creating another candidate, export a prepared point-in-time signal CSV and run the pre-candidate signal report:
+  `python3 scripts/export_prepared_signal_csv.py --candidate <candidate_name> --start 2021-01-01`
+  `python3 scripts/run_signal_research_report.py --signals-csv results/research_master/signal_exports/<artifact>.csv --signal-cols candidate_signal --context-cols setup_tag,direction,signal_type,hour,session_bucket,vwap_side --round-trip-cost-points 1.5`
 - After each approved run, check the saved gate:
   `python3 scripts/check_prop_research_gate.py`
 
@@ -90,7 +101,7 @@ Each run writes `research/development_report.md` and `research/research_discipli
 - Fast quiet replay with custom warmup:
   `python3 scripts/run_paper_trader.py --candidate <candidate_name> --start 2021-01-01 --quiet --warmup-bars 1000`
 - The paper runner simulates fills locally through the same portfolio/execution rules as the backtest; it does not submit broker orders.
-- Paper event and trade logs are written under `results/paper/`.
+- Paper event, trade, execution-observation, and execution-summary logs are written under `results/paper/`.
 
 ## AMP/CQG Live Paper Path
 - Dry-run the AMP-style runner with order-intent audit:
@@ -137,7 +148,7 @@ Each run writes `research/development_report.md` and `research/research_discipli
 ## Conservative Target-Fill Validation
 - Target fills default to legacy touch behavior. Validation candidates can use `target_fill_mode='trade_through'` with `target_fill_trade_through_ticks=1` to require one NQ tick beyond the target before assuming a resting target order was filled.
 - Managed stops default to legacy same-bar activation. Strict validation can use `managed_stop_activation_mode='next_bar'` so only prior completed execution-bar MFE can activate a managed stop on the current bar.
-- The failed-auction managed-stop branch remains in `config/research_freeze.json` only as an archived reproducibility guard. It is not the next validation test.
+- Failed-auction managed-stop variants are archived for reproducibility only. They are not the frozen validation test.
 
 ## IBKR Markov Regime Monitor
 - Optional dependency: install IBKR's `ibapi` package.

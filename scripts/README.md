@@ -18,6 +18,7 @@ Scripts are command-line entry points. Put reusable behavior in `backtest/`, the
 
 - `prepare_options_nq.py`: prepares raw NQ options archives.
 - `build_options_flow_features.py`: builds options-flow confluence features.
+- `export_prepared_signal_csv.py`: exports point-in-time strategy signals and context to a prepared CSV for the pre-candidate signal gate; it does not execute trades.
 
 ## Research And Diagnostics
 
@@ -28,6 +29,7 @@ Scripts are command-line entry points. Put reusable behavior in `backtest/`, the
 - `build_tbbo_execution_stats.py`: builds NQ futures TBBO spread/depth/trade-vs-mid execution stats for fill realism checks.
 - `audit_trades_with_tbbo.py`: joins a saved run's `trades/trade_log.csv` to processed TBBO stats and writes execution-cost audit reports.
 - `run_feature_research_lab.py`: feature-event research reports.
+- `run_signal_research_report.py`: pre-candidate IC, forward-return, stability, and context signal gate from a prepared signal CSV.
 - `export_cusum_event_study.py`: CUSUM event-study export.
 - `export_research_animations.py`: research animation export.
 - `run_market_profile_placebo.py`: market-profile placebo test.
@@ -42,4 +44,4 @@ Scripts are command-line entry points. Put reusable behavior in `backtest/`, the
 - `run_market_profile_first_batch.sh`
 - `run_market_profile_remaining_batch.sh`
 
-Do not run backtests from automation without explicit user instruction. When a backtest is useful, provide the command for the user to run.
+Do not run backtests from automation without explicit user instruction. Broad batch scripts require `ALLOW_BACKTEST_BATCH=1` and should be treated as reproduction tools while the active validation queue is empty. When a backtest is useful, provide the command for the user to run.

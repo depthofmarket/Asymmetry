@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -u
 
+if [[ "${ALLOW_BACKTEST_BATCH:-}" != "1" ]]; then
+  echo "Refusing to run a broad historical candidate batch while the active validation queue is empty."
+  echo "Set ALLOW_BACKTEST_BATCH=1 only for explicit reproduction work."
+  exit 1
+fi
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR" || exit 1
 

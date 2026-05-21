@@ -22,7 +22,7 @@ from config.backtest_config import (
 
 
 DEFAULT_MANIFEST_PATH = Path("config/research_freeze.json")
-DEFAULT_FREEZE_CANDIDATE = "edge_vp_mr_trend_failed_auction_quality_no_mr_long_ib_cusum_wf_stable"
+DEFAULT_FREEZE_CANDIDATE = "edge_microstructure_liquidity_taking_trend_probe"
 
 
 @dataclass(frozen=True)
@@ -39,6 +39,9 @@ class FreezeReport:
     manifest_path: Path
     candidate: str
     phase: str
+    manifest_status: str
+    active_candidate: bool
+    archive_reason: str
     checks: list[FreezeCheck]
 
     @property
@@ -47,11 +50,15 @@ class FreezeReport:
 
     def summary(self) -> str:
         lines = [
-            f"Research freeze: {'PASS' if self.passed else 'FAIL'}",
+            f"Research freeze manifest check: {'PASS' if self.passed else 'FAIL'}",
             f"Manifest: {self.manifest_path}",
+            f"Manifest status: {self.manifest_status}",
             f"Candidate: {self.candidate}",
+            f"Active validation freeze: {'YES' if self.active_candidate else 'NO'}",
             f"Phase: {self.phase}",
         ]
+        if self.archive_reason:
+            lines.append(f"Archive reason: {self.archive_reason}")
         for check in self.checks:
             status = "PASS" if check.passed else "FAIL"
             lines.append(
@@ -65,6 +72,7 @@ def build_freeze_manifest(candidate: str = DEFAULT_FREEZE_CANDIDATE) -> dict[str
     return {
         "schema_version": 1,
         "status": "frozen",
+        "active_candidate": True,
         "candidate": candidate,
         "created_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "candidate_config_sha256": freeze_payload_sha256(payload),
@@ -152,6 +160,10 @@ def verify_freeze(
     path = Path(manifest_path)
     manifest = load_manifest(path)
     candidate = str(manifest["candidate"])
+    manifest_status = str(manifest.get("status", ""))
+    active_candidate = bool(manifest.get("active_candidate", manifest_status == "frozen"))
+    archive_decision = manifest.get("archive_decision", {})
+    archive_reason = str(archive_decision.get("reason", "")) if isinstance(archive_decision, dict) else ""
     current_hash = freeze_payload_sha256(current_freeze_payload(candidate))
     checks = [
         FreezeCheck(
@@ -163,9 +175,16 @@ def verify_freeze(
         ),
         FreezeCheck(
             name="manifest_status",
-            passed=manifest.get("status") == "frozen",
-            value=manifest.get("status"),
-            threshold="frozen",
+            passed=manifest_status in {"frozen", "archived_rejected"},
+            value=manifest_status,
+            threshold="frozen|archived_rejected",
+            source=str(path),
+        ),
+        FreezeCheck(
+            name="active_validation_candidate",
+            passed=isinstance(manifest.get("active_candidate", True), bool),
+            value=active_candidate,
+            threshold="explicit boolean; false means archived/reproducibility only",
             source=str(path),
         ),
     ]
@@ -173,7 +192,15 @@ def verify_freeze(
     if run_dir is not None:
         checks.extend(_evaluate_run(Path(run_dir), manifest, phase))
 
-    return FreezeReport(manifest_path=path, candidate=candidate, phase=phase, checks=checks)
+    return FreezeReport(
+        manifest_path=path,
+        candidate=candidate,
+        phase=phase,
+        manifest_status=manifest_status,
+        active_candidate=active_candidate,
+        archive_reason=archive_reason,
+        checks=checks,
+    )
 
 
 def _evaluate_run(run_dir: Path, manifest: dict[str, Any], phase: str) -> list[FreezeCheck]:
@@ -390,7 +417,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Wrote freeze manifest: {manifest_path}")
 
     if args.print_command:
-        print(f"caffeinate -dimsu python3 main_backtest.py --candidate {args.candidate} --start 2021-01-01")
+        manifest = load_manifest(manifest_path)
+        manifest_status = str(manifest.get("status", ""))
+        active_candidate = bool(manifest.get("active_candidate", manifest_status == "frozen"))
+        candidate = str(manifest.get("candidate", args.candidate))
+        if active_candidate:
+            print(f"caffeinate -dimsu python3 main_backtest.py --candidate {candidate} --start 2021-01-01")
+        else:
+            print("No active frozen candidate. Run the pre-candidate signal gate and write a fresh hypothesis before freezing a new candidate.")
 
     report = verify_freeze(manifest_path, run_dir=args.run_dir, phase=args.phase)
     print(report.summary())

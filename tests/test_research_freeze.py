@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import tempfile
 import unittest
 
@@ -89,6 +90,25 @@ class ResearchFreezeTests(unittest.TestCase):
             self.assertFalse(report.passed)
             failed_names = {check.name for check in report.checks if not check.passed}
             self.assertIn("development_report:bar_profit_factor", failed_names)
+
+    def test_archived_rejected_manifest_is_not_reported_as_active(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest_path = root / "research_freeze.json"
+            manifest = write_manifest(manifest_path, DEFAULT_FREEZE_CANDIDATE)
+            manifest["status"] = "archived_rejected"
+            manifest["active_candidate"] = False
+            manifest["archive_decision"] = {
+                "reason": "rejected development branch; retained only for reproducibility",
+                "rejected_after_run": "example_rejected_run",
+            }
+            manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+            report = verify_freeze(manifest_path)
+
+            self.assertTrue(report.passed, report.summary())
+            self.assertFalse(report.active_candidate)
+            self.assertIn("Active validation freeze: NO", report.summary())
 
 
 if __name__ == "__main__":
