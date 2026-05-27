@@ -33,8 +33,11 @@ BACKTEST_CONFIG = {
 
 OPTIONS_FLOW_CONFIG = {
     'statistics_source': 'data/raw/options_nq/statistics/GLBX-20260505-VT65CHSJE8.zip',
+    'definition_source': 'data/raw/options_nq/definition/GLBX-20260505-KJLD654KQQ.zip',
     'features_path': 'data/processed/options_nq/options_flow_daily.csv',
     'strike_levels_path': 'data/processed/options_nq/options_flow_strike_levels.csv',
+    'dashboard_path': 'data/processed/options_nq/options_flow_dashboard.csv',
+    'dashboard_strike_levels_path': 'data/processed/options_nq/options_flow_dashboard_strike_levels.csv',
     'contract_multiplier': 20.0,
     'risk_free_rate': 0.0,
     'min_dte': 0,
@@ -1543,6 +1546,53 @@ CANDIDATE_CONFIGS[
 )
 
 
+# === Execution-first microstructure candidates ===
+#
+# This family starts from an ex-ante hypothesis document, not from the rejected
+# failed-auction sample.  Keep it deliberately narrow: one fixed parameter point,
+# conservative target fills, next-bar managed stops, and fixed one-contract size.
+MICROSTRUCTURE_EXECUTION_FIRST_CANDIDATES = {
+    'edge_microstructure_liquidity_taking_trend_probe': make_candidate(
+        base=CANDIDATE_CONFIGS['higher_frequency_probe'],
+        allowed_setup_tags=['trend_long', 'trend_short'],
+        allow_long=True,
+        allow_short=True,
+        mr_long_enabled=False,
+        mr_short_enabled=False,
+        trend_long_enabled=True,
+        trend_short_enabled=True,
+        position_sizing_mode='fixed_contracts',
+        fixed_contracts=1,
+        max_contracts=1,
+        max_trades_per_day=5,
+        max_hold_bars=6,
+        trend_trade_start='10:15',
+        trend_trade_end='15:00',
+        target_fill_mode='trade_through',
+        target_fill_trade_through_ticks=1,
+        managed_stop_activation_mode='next_bar',
+        wf_param_grid={
+            'trend_trade_start': ['10:15'],
+            'trend_pullback_buffer_points': [3.0],
+            'max_hold_bars': [6],
+        },
+        wf_random_samples=1,
+        wf_selection_mode='stable',
+        sweep_specs=[
+            {
+                'name': 'fixed_microstructure_probe',
+                'metric': 'bar_profit_factor',
+                'min_trades': 30,
+                'x_param': 'trend_pullback_buffer_points',
+                'x_values': [3.0],
+                'y_param': 'max_hold_bars',
+                'y_values': [6],
+            },
+        ],
+    ),
+}
+CANDIDATE_CONFIGS.update(MICROSTRUCTURE_EXECUTION_FIRST_CANDIDATES)
+
 
 # Optional: walk-forward + parameter sweep tooling
 RESEARCH_CONFIG = {
@@ -1603,6 +1653,12 @@ RESEARCH_CONFIG = {
             'name': 'traders_launch_100k_nyc',
             'account_size': 100_000,
             'eval_cost': 42,
+            'activation_fee': 0,
+            'reset_fee': 0,
+            'max_resets_per_account': 0,
+            'monthly_fee': 0,
+            'account_bundle_cost': 0,
+            'max_accounts': 20,
             'profit_target': 2_000,
             'max_drawdown': 1_000,
             'daily_loss_limit': 0,
@@ -1620,7 +1676,15 @@ RESEARCH_CONFIG = {
             'profit_split_pct': 80,
             'funded_buffer_target': 1_000,
             'minimum_payout': 200,
+            'payout_cap': 0,
+            'payout_cap_period': 'none',
+            'payout_cadence_days': 0,
             'funded_horizon_days': 60,
+            'trading_objective': 'prop_eval_flip',
+            'fill_model': 'prop_demo_fill_assumption',
+            'minimum_trade_sample': 500,
+            'portfolio_account_counts': [1, 5, 10, 20],
+            'portfolio_n_sims': 20_000,
             'surface_n_sims': 1000,
             'sizing_multipliers': [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0],
             'daily_loss_stops': [0, 250, 400, 500, 750],
@@ -1629,6 +1693,47 @@ RESEARCH_CONFIG = {
             'risk_geometry_drawdown_risk_fracs': [0.10, 0.20, 0.30, 0.40, 0.50],
             'risk_geometry_trades_per_day': 1,
             'stop_after_target_until_min_days': True,
+        },
+        {
+            'name': 'generic_static_50k_no_consistency_prop_flip',
+            'account_size': 50_000,
+            'eval_cost': 35,
+            'activation_fee': 85,
+            'reset_fee': 25,
+            'max_resets_per_account': 0,
+            'monthly_fee': 0,
+            'account_bundle_cost': 0,
+            'max_accounts': 20,
+            'profit_target': 3_000,
+            'max_drawdown': 2_500,
+            'daily_loss_limit': 0,
+            'min_trading_days': 1,
+            'max_trading_days': 30,
+            'drawdown_mode': 'static',
+            'drawdown_check': 'eod',
+            'trailing_drawdown_cap_at_initial': False,
+            'consistency_profit_limit_pct': 0,
+            'pnl_multiplier': 1.0,
+            'profit_split_pct': 90,
+            'funded_buffer_target': 2_500,
+            'minimum_payout': 500,
+            'payout_cap': 0,
+            'payout_cap_period': 'none',
+            'payout_cadence_days': 0,
+            'funded_horizon_days': 60,
+            'trading_objective': 'prop_eval_flip',
+            'fill_model': 'prop_demo_fill_assumption',
+            'minimum_trade_sample': 500,
+            'portfolio_account_counts': [1, 5, 10, 20],
+            'portfolio_n_sims': 20_000,
+            'surface_n_sims': 1000,
+            'sizing_multipliers': [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0],
+            'daily_loss_stops': [0, 500, 750, 1000],
+            'daily_profit_locks': [0, 500, 1000, 1500],
+            'risk_geometry_reward_risk': [0.33, 0.5, 1.0, 2.0, 3.0, 4.0],
+            'risk_geometry_drawdown_risk_fracs': [0.10, 0.20, 0.30, 0.40, 0.50],
+            'risk_geometry_trades_per_day': 1,
+            'stop_after_target_until_min_days': False,
         },
     ],
     # Permutation tests from the strategy-development workflow:
@@ -1665,9 +1770,8 @@ RESEARCH_CONFIG = {
         'trend_trade_start': ['10:30', '11:00', '11:30', '12:00'],
         'trend_pullback_buffer_points': [2.0, 2.5, 3.0, 3.5],
     },
-    # Keep the active validation queue empty until a new ex-ante hypothesis is
-    # written down before testing. Do not recycle failed-auction variants from
-    # the same sample.
+    # Active queue is intentionally empty until a fresh pre-candidate signal
+    # report shows raw predictive evidence worth freezing into a candidate.
     'next_validation_candidates': [],
     'rejected_research_families': {
         'failed_auction_quality': {
@@ -1690,6 +1794,35 @@ RESEARCH_CONFIG = {
                 'survives execution realism plus purged/embargoed walk-forward validation',
             ],
         },
+        'microstructure_execution_first': {
+            'status': 'rejected',
+            'decision_date': '2026-05-20',
+            'rejected_after_run': (
+                '20260520_190728_'
+                'edge_microstructure_liquidity_taking_trend_probe_long_short_next_bar_open_hybrid'
+            ),
+            'reason': (
+                'Stopped development run showed no prop-firm viability: 0.0% eval pass, '
+                '0.0% eval-to-first-payout, 99.34% extension-threshold failures, '
+                'trade profit factor 1.05, median trade -92.50, and random-walk/sign-flip '
+                'p-values around 0.34. The long side was negative and the short side was '
+                'not strong enough to justify mining a same-sample variant.'
+            ),
+            'allow_new_variants': False,
+            'revival_requirements': [
+                'new written ex-ante hypothesis not derived from the stopped development run',
+                'pre-candidate signal report with positive IC or forward-return evidence',
+                'separate validation sample before any prop-firm interpretation',
+            ],
+        },
+    },
+    # Disk cleanup should not erase multiple-testing debt. These are
+    # conservative known-run floors for families already explored in this repo.
+    'candidate_family_run_count_floors': {
+        'failed_auction_quality': 10,
+        'failed_auction_frequency': 3,
+        'high_frequency_observation': 1,
+        'microstructure_execution_first': 1,
     },
     'candidate_research_families': {
         'failed_auction_quality': [
@@ -1711,6 +1844,9 @@ RESEARCH_CONFIG = {
         ],
         'high_frequency_observation': [
             'edge_vp_mr_trend_failed_auction_hf_observation_probe',
+        ],
+        'microstructure_execution_first': [
+            'edge_microstructure_liquidity_taking_trend_probe',
         ],
     },
 

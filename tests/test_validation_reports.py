@@ -120,6 +120,7 @@ class ValidationReportTests(unittest.TestCase):
                     "candidate_research_families": {"alpha": ["alpha_one", "alpha_two"]},
                     "next_validation_candidates": ["alpha_one", "alpha_two"],
                     "max_candidate_family_runs_before_holdout": 4,
+                    "candidate_family_run_count_floors": {"alpha": 5},
                 },
                 results_root=root,
             )
@@ -128,6 +129,7 @@ class ValidationReportTests(unittest.TestCase):
 
             self.assertEqual(set(report["candidate"]), {"alpha_one", "alpha_two"})
             self.assertEqual(int(report["saved_run_count"].sum()), 2)
+            self.assertEqual(int(report["effective_family_run_count"].max()), 5)
             current = report[report["is_current"]]
             self.assertEqual(current.iloc[0]["candidate"], "alpha_two")
 
@@ -209,6 +211,11 @@ class ValidationReportTests(unittest.TestCase):
                     {
                         "sample_scope": "walkforward_oos",
                         "expected_net_payout_per_eval_attempt": 10.0,
+                        "trading_objective": "prop_eval_flip",
+                        "fill_model": "prop_demo_fill_assumption",
+                        "trade_sample_size": 20,
+                        "minimum_trade_sample": 500,
+                        "sample_size_warning": "sample_below_minimum_500_trades",
                     }
                 ]
             ).to_csv(research / "walkforward" / "prop_firm" / "walkforward_stitched_summary.csv", index=False)
@@ -237,7 +244,13 @@ class ValidationReportTests(unittest.TestCase):
 
             report = pd.read_csv(paths.csv_path)
             summary = report.loc[report["check"].eq("promotion_eligible")].iloc[0]
+            objective = report.loc[report["check"].eq("prop_trading_objective_declared")].iloc[0]
+            fill_model = report.loc[report["check"].eq("prop_fill_model_declared")].iloc[0]
+            sample_size = report.loc[report["check"].eq("prop_trade_sample_size")].iloc[0]
             self.assertEqual(summary["status"], "PASS")
+            self.assertEqual(objective["status"], "WARN")
+            self.assertEqual(fill_model["status"], "WARN")
+            self.assertEqual(sample_size["status"], "WARN")
 
     def test_research_discipline_report_rejects_missing_defenses(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -21,7 +21,7 @@ cd "$REPO_DIR"
 
 BARS_CSV="${BARS_CSV:-$REPO_DIR/results/live_bars.csv}"
 WARMUP_ROWS="${WARMUP_ROWS:-2500}"
-CANDIDATE="edge_vp_mr_trend_failed_auction_quality_probe"
+CANDIDATE="current"
 PROP_GUARD="${PROP_GUARD:-1}"
 PROP_PROFILE="${PROP_PROFILE:-traders_launch_100k_nyc}"
 PROP_PHASE="${PROP_PHASE:-eval}"

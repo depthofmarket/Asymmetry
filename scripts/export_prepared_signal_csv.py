@@ -125,7 +125,11 @@ def main() -> int:
         f"--signals-csv {paths.signals_csv} "
         f"--signal-cols {','.join(report_signal_cols)} "
         "--context-cols setup_tag,direction,signal_type,hour,session_bucket,vwap_side "
-        "--round-trip-cost-points 1.5"
+        "--entry-price-col open "
+        "--entry-lag-bars 1 "
+        "--exit-price-col close "
+        "--round-trip-cost-points 1.5 "
+        "--stress-round-trip-cost-points 2.0,4.25"
     )
     return 0
 

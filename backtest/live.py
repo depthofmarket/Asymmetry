@@ -14,6 +14,67 @@ from backtest.portfolio import Portfolio, Trade
 from backtest.strategy_runtime import direction_from_signal, setup_tag
 
 
+EXECUTION_OBSERVATION_COLUMNS = [
+    "decision_timestamp",
+    "signal_timestamp",
+    "entry_timestamp",
+    "signal_lag_minutes",
+    "decision_date",
+    "decision_hour",
+    "decision_month",
+    "decision_quarter",
+    "volatility_proxy_points",
+    "volatility_bucket",
+    "setup_tag",
+    "direction",
+    "signal_type",
+    "decision_price",
+    "intended_order_side",
+    "intended_order_type",
+    "assumed_fill_price",
+    "shortfall_points",
+    "shortfall_dollars_per_contract",
+    "contracts",
+    "status",
+    "skip_reason",
+    "bar_open",
+    "bar_high",
+    "bar_low",
+    "bar_close",
+    "bar_volume",
+]
+
+EXECUTION_SUMMARY_COLUMNS = [
+    "group",
+    "value",
+    "observations",
+    "fills",
+    "skips",
+    "fill_rate_pct",
+    "avg_shortfall_points",
+    "median_shortfall_points",
+    "avg_shortfall_dollars_per_contract",
+    "top_skip_reason",
+]
+
+EXECUTION_SUMMARY_GROUPS = [
+    "setup_tag",
+    "direction",
+    "signal_type",
+    "decision_hour",
+    "decision_month",
+    "decision_quarter",
+    "volatility_bucket",
+    "ctx_open_context",
+    "ctx_inside_ib",
+    "ctx_cusum_event",
+    "ctx_cusum_event_direction",
+    "ctx_vwap_side",
+    "ctx_market_memory_state",
+    "ctx_markov_state_label",
+]
+
+
 @dataclass(frozen=True)
 class LiveBar:
     """A completed 1-minute OHLCV bar supplied to the paper runtime."""
@@ -106,6 +167,71 @@ class PaperTradingEvent:
 
 
 @dataclass(frozen=True)
+class ExecutionObservation:
+    """One paper-runtime decision row for execution diagnostics."""
+
+    decision_timestamp: pd.Timestamp
+    signal_timestamp: pd.Timestamp
+    entry_timestamp: pd.Timestamp
+    volatility_proxy_points: float | None
+    volatility_bucket: str
+    setup_tag: str
+    direction: str
+    signal_type: str
+    decision_price: float | None
+    intended_order_side: str
+    intended_order_type: str
+    assumed_fill_price: float | None
+    shortfall_points: float | None
+    shortfall_dollars_per_contract: float | None
+    contracts: int | None
+    status: str
+    skip_reason: str = ""
+    bar_open: float | None = None
+    bar_high: float | None = None
+    bar_low: float | None = None
+    bar_close: float | None = None
+    bar_volume: float | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_record(self) -> dict[str, Any]:
+        decision_ts = pd.Timestamp(self.decision_timestamp)
+        signal_ts = pd.Timestamp(self.signal_timestamp)
+        row = {
+            "decision_timestamp": decision_ts,
+            "signal_timestamp": signal_ts,
+            "entry_timestamp": pd.Timestamp(self.entry_timestamp),
+            "signal_lag_minutes": (decision_ts - signal_ts).total_seconds() / 60.0,
+            "decision_date": decision_ts.date().isoformat(),
+            "decision_hour": int(decision_ts.hour),
+            "decision_month": decision_ts.to_period("M").strftime("%Y-%m"),
+            "decision_quarter": decision_ts.to_period("Q").strftime("%YQ%q"),
+            "volatility_proxy_points": self.volatility_proxy_points,
+            "volatility_bucket": self.volatility_bucket,
+            "setup_tag": self.setup_tag,
+            "direction": self.direction,
+            "signal_type": self.signal_type,
+            "decision_price": self.decision_price,
+            "intended_order_side": self.intended_order_side,
+            "intended_order_type": self.intended_order_type,
+            "assumed_fill_price": self.assumed_fill_price,
+            "shortfall_points": self.shortfall_points,
+            "shortfall_dollars_per_contract": self.shortfall_dollars_per_contract,
+            "contracts": self.contracts,
+            "status": self.status,
+            "skip_reason": self.skip_reason,
+            "bar_open": self.bar_open,
+            "bar_high": self.bar_high,
+            "bar_low": self.bar_low,
+            "bar_close": self.bar_close,
+            "bar_volume": self.bar_volume,
+        }
+        for key, value in self.metadata.items():
+            row[f"ctx_{key}"] = value
+        return row
+
+
+@dataclass(frozen=True)
 class PaperTradingConfig:
     starting_capital: float
     max_drawdown_pct: float | None = None
@@ -158,6 +284,7 @@ class PaperTradingEngine:
         self._last_bar_time: pd.Timestamp | None = None
         self._last_bar_close: float | None = None
         self.events: list[PaperTradingEvent] = []
+        self.execution_observations: list[ExecutionObservation] = []
         self.prop_guard = config.prop_guard
         if config.resume_state and config.state_path:
             state_path = Path(config.state_path)
@@ -187,6 +314,10 @@ class PaperTradingEngine:
 
     def event_log(self) -> pd.DataFrame:
         return pd.DataFrame([event.to_record() for event in self.events])
+
+    def execution_observation_log(self) -> pd.DataFrame:
+        records = [observation.to_record() for observation in self.execution_observations]
+        return _observation_frame(records)
 
     def on_bar(self, record: LiveBar | pd.Series | dict[str, Any]) -> list[PaperTradingEvent]:
         bar = LiveBar.from_record(record)
@@ -310,6 +441,9 @@ class PaperTradingEngine:
             "last_bar_time": self._last_bar_time.isoformat() if self._last_bar_time is not None else None,
             "last_bar_close": self._last_bar_close,
             "events": [_json_safe(event.to_record()) for event in self.events],
+            "execution_observations": [
+                _json_safe(observation.to_record()) for observation in self.execution_observations
+            ],
         }
         if self.prop_guard is not None:
             state["prop_guard"] = _json_safe(self.prop_guard.to_state())
@@ -380,6 +514,11 @@ class PaperTradingEngine:
             )
             for record in state.get("events", [])
             if record.get("timestamp")
+        ]
+        self.execution_observations = [
+            _execution_observation_from_record(record)
+            for record in state.get("execution_observations", [])
+            if record.get("decision_timestamp") and record.get("signal_timestamp")
         ]
         if self.prop_guard is not None and isinstance(state.get("prop_guard"), dict):
             self.prop_guard.load_state(state["prop_guard"])
@@ -555,10 +694,12 @@ class PaperTradingEngine:
         bar: LiveBar,
         engine: BacktestEngine,
     ) -> list[PaperTradingEvent]:
+        context = self._signal_context_metadata(signal, engine)
         entry_block = self._entry_block_reason(bar)
         if entry_block is not None:
             reason, message = entry_block
             self._processed_signal_keys.add(signal.key)
+            self._record_execution_observation(signal, bar, context=context, status="skipped", skip_reason=reason)
             return [
                 PaperTradingEvent(
                     event_type="entry_skipped",
@@ -573,6 +714,7 @@ class PaperTradingEngine:
             ]
 
         if self.config.one_position_at_a_time and self.open_position is not None:
+            self._record_execution_observation(signal, bar, context=context, status="skipped", skip_reason="position_open")
             return [
                 PaperTradingEvent(
                     event_type="entry_skipped",
@@ -591,6 +733,7 @@ class PaperTradingEngine:
         max_trades = int(self.strategy_params.get("max_trades_per_day", 0) or 0)
         if max_trades > 0 and self._daily_trade_count[trade_date] >= max_trades:
             self._processed_signal_keys.add(signal.key)
+            self._record_execution_observation(signal, bar, context=context, status="skipped", skip_reason="daily_trade_limit")
             return [
                 PaperTradingEvent(
                     event_type="entry_skipped",
@@ -607,6 +750,7 @@ class PaperTradingEngine:
         atr = float(signal.signal_row.get("atr", np.nan))
         if not np.isfinite(atr):
             self._processed_signal_keys.add(signal.key)
+            self._record_execution_observation(signal, bar, context=context, status="skipped", skip_reason="missing_atr")
             return [
                 PaperTradingEvent(
                     event_type="entry_skipped",
@@ -623,6 +767,7 @@ class PaperTradingEngine:
         contracts = engine.calculate_contracts(atr, signal.direction, signal.signal_type)
         if contracts <= 0:
             self._processed_signal_keys.add(signal.key)
+            self._record_execution_observation(signal, bar, context=context, status="skipped", skip_reason="zero_contracts")
             return [
                 PaperTradingEvent(
                     event_type="entry_skipped",
@@ -643,11 +788,12 @@ class PaperTradingEngine:
             signal.direction,
             signal_type=signal.signal_type,
             setup_tag=signal.setup_tag,
-            metadata=engine.entry_context_metadata(signal.signal_row),
+            metadata=context,
             current_price=signal.entry_price,
         )
         self._processed_signal_keys.add(signal.key)
         if trade is None:
+            self._record_execution_observation(signal, bar, context=context, status="skipped", skip_reason="risk_control")
             return [
                 PaperTradingEvent(
                     event_type="entry_skipped",
@@ -680,6 +826,14 @@ class PaperTradingEngine:
             entry_row=signal.signal_row,
         )
         self._daily_trade_count[trade_date] += 1
+        self._record_execution_observation(
+            signal,
+            bar,
+            context=context,
+            status="filled",
+            contracts=contracts,
+            assumed_fill_price=signal.entry_price,
+        )
 
         return [
             PaperTradingEvent(
@@ -700,6 +854,76 @@ class PaperTradingEngine:
                 },
             )
         ]
+
+    def _signal_context_metadata(
+        self,
+        signal: ActionableSignal,
+        engine: BacktestEngine,
+    ) -> dict[str, Any]:
+        try:
+            context = dict(engine.entry_context_metadata(signal.signal_row))
+        except Exception:
+            context = {}
+        for key in ("open", "high", "low", "close", "volume", "atr", "vwap"):
+            if key in signal.signal_row.index:
+                context[f"signal_{key}"] = signal.signal_row.get(key)
+        return context
+
+    def _record_execution_observation(
+        self,
+        signal: ActionableSignal,
+        bar: LiveBar,
+        *,
+        context: dict[str, Any],
+        status: str,
+        skip_reason: str = "",
+        contracts: int | None = None,
+        assumed_fill_price: float | None = None,
+    ) -> None:
+        decision_price = float(bar.open)
+        fill_price = None if assumed_fill_price is None else float(assumed_fill_price)
+        shortfall_points = None
+        shortfall_dollars = None
+        if fill_price is not None:
+            if signal.direction == "short":
+                shortfall_points = decision_price - fill_price
+            else:
+                shortfall_points = fill_price - decision_price
+            point_value = float(
+                self.futures_specs.get(
+                    "point_value",
+                    self.futures_specs.get("contract_value", 1.0),
+                )
+            )
+            shortfall_dollars = shortfall_points * point_value
+        volatility_proxy = _volatility_proxy_points(context, bar)
+        self.execution_observations.append(
+            ExecutionObservation(
+                decision_timestamp=pd.Timestamp(bar.time),
+                signal_timestamp=pd.Timestamp(signal.signal_time),
+                entry_timestamp=pd.Timestamp(signal.entry_time),
+                volatility_proxy_points=volatility_proxy,
+                volatility_bucket=_volatility_bucket(volatility_proxy),
+                setup_tag=signal.setup_tag,
+                direction=signal.direction,
+                signal_type=signal.signal_type,
+                decision_price=decision_price,
+                intended_order_side="SELL" if signal.direction == "short" else "BUY",
+                intended_order_type="market",
+                assumed_fill_price=fill_price,
+                shortfall_points=shortfall_points,
+                shortfall_dollars_per_contract=shortfall_dollars,
+                contracts=contracts,
+                status=status,
+                skip_reason=skip_reason,
+                bar_open=float(bar.open),
+                bar_high=float(bar.high),
+                bar_low=float(bar.low),
+                bar_close=float(bar.close),
+                bar_volume=float(bar.volume),
+                metadata=dict(context),
+            )
+        )
 
     def _manage_open_position(
         self,
@@ -827,6 +1051,146 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
+def _observation_frame(records: list[dict[str, Any]]) -> pd.DataFrame:
+    df = pd.DataFrame(records)
+    for column in EXECUTION_OBSERVATION_COLUMNS:
+        if column not in df.columns:
+            df[column] = pd.Series(dtype="object")
+    ordered = list(EXECUTION_OBSERVATION_COLUMNS)
+    ordered.extend(column for column in df.columns if column not in ordered)
+    return df.loc[:, ordered]
+
+
+def summarize_execution_observations(observations: pd.DataFrame) -> pd.DataFrame:
+    if observations is None or observations.empty:
+        return pd.DataFrame(columns=EXECUTION_SUMMARY_COLUMNS)
+
+    df = observations.copy()
+    rows: list[dict[str, Any]] = []
+    for group_col in EXECUTION_SUMMARY_GROUPS:
+        if group_col not in df.columns:
+            continue
+        grouped = df.groupby(group_col, dropna=False)
+        for value, group in grouped:
+            observations_count = int(len(group))
+            fills = int((group.get("status") == "filled").sum())
+            skips = int((group.get("status") == "skipped").sum())
+            shortfall = pd.to_numeric(group.get("shortfall_points"), errors="coerce")
+            shortfall_dollars = pd.to_numeric(
+                group.get("shortfall_dollars_per_contract"),
+                errors="coerce",
+            )
+            skip_reasons = group.loc[group.get("status") == "skipped", "skip_reason"]
+            top_skip_reason = ""
+            if not skip_reasons.empty:
+                counts = skip_reasons.fillna("").astype(str).value_counts()
+                top_skip_reason = str(counts.index[0]) if not counts.empty else ""
+            rows.append(
+                {
+                    "group": group_col,
+                    "value": _summary_value(value),
+                    "observations": observations_count,
+                    "fills": fills,
+                    "skips": skips,
+                    "fill_rate_pct": 100.0 * fills / observations_count if observations_count else 0.0,
+                    "avg_shortfall_points": float(shortfall.mean()) if shortfall.notna().any() else np.nan,
+                    "median_shortfall_points": float(shortfall.median()) if shortfall.notna().any() else np.nan,
+                    "avg_shortfall_dollars_per_contract": (
+                        float(shortfall_dollars.mean()) if shortfall_dollars.notna().any() else np.nan
+                    ),
+                    "top_skip_reason": top_skip_reason,
+                }
+            )
+    return pd.DataFrame(rows, columns=EXECUTION_SUMMARY_COLUMNS)
+
+
+def save_execution_observation_reports(observations: pd.DataFrame, out_dir: Path | str) -> dict[str, Path]:
+    output_dir = Path(out_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    observation_frame = _observation_frame(observations.to_dict("records") if observations is not None else [])
+    summary = summarize_execution_observations(observation_frame)
+    observations_path = output_dir / "execution_observations.csv"
+    summary_path = output_dir / "execution_observation_summary.csv"
+    observation_frame.to_csv(observations_path, index=False)
+    summary.to_csv(summary_path, index=False)
+    return {
+        "observations": observations_path,
+        "summary": summary_path,
+    }
+
+
+def _summary_value(value: Any) -> str:
+    if pd.isna(value):
+        return ""
+    return str(value)
+
+
+def _execution_observation_from_record(record: dict[str, Any]) -> ExecutionObservation:
+    metadata = {
+        key.removeprefix("ctx_"): value
+        for key, value in record.items()
+        if str(key).startswith("ctx_")
+    }
+    volatility_proxy = _none_or_float(record.get("volatility_proxy_points"))
+    raw_bucket = record.get("volatility_bucket")
+    if raw_bucket is None or raw_bucket == "":
+        volatility_bucket = _volatility_bucket(volatility_proxy)
+    else:
+        try:
+            volatility_bucket = _volatility_bucket(volatility_proxy) if pd.isna(raw_bucket) else str(raw_bucket)
+        except (TypeError, ValueError):
+            volatility_bucket = str(raw_bucket)
+    return ExecutionObservation(
+        decision_timestamp=pd.Timestamp(record["decision_timestamp"]),
+        signal_timestamp=pd.Timestamp(record["signal_timestamp"]),
+        entry_timestamp=pd.Timestamp(record.get("entry_timestamp", record["decision_timestamp"])),
+        volatility_proxy_points=volatility_proxy,
+        volatility_bucket=volatility_bucket,
+        setup_tag=str(record.get("setup_tag", "")),
+        direction=str(record.get("direction", "")),
+        signal_type=str(record.get("signal_type", "")),
+        decision_price=_none_or_float(record.get("decision_price")),
+        intended_order_side=str(record.get("intended_order_side", "")),
+        intended_order_type=str(record.get("intended_order_type", "")),
+        assumed_fill_price=_none_or_float(record.get("assumed_fill_price")),
+        shortfall_points=_none_or_float(record.get("shortfall_points")),
+        shortfall_dollars_per_contract=_none_or_float(record.get("shortfall_dollars_per_contract")),
+        contracts=_none_or_int(record.get("contracts")),
+        status=str(record.get("status", "")),
+        skip_reason=str(record.get("skip_reason", "")),
+        bar_open=_none_or_float(record.get("bar_open")),
+        bar_high=_none_or_float(record.get("bar_high")),
+        bar_low=_none_or_float(record.get("bar_low")),
+        bar_close=_none_or_float(record.get("bar_close")),
+        bar_volume=_none_or_float(record.get("bar_volume")),
+        metadata=metadata,
+    )
+
+
+def _volatility_proxy_points(context: dict[str, Any], bar: LiveBar) -> float | None:
+    for key in ("signal_atr", "atr"):
+        try:
+            value = _none_or_float(context.get(key))
+        except (TypeError, ValueError):
+            value = None
+        if value is not None and np.isfinite(value):
+            return float(value)
+    value = float(bar.high) - float(bar.low)
+    if np.isfinite(value):
+        return value
+    return None
+
+
+def _volatility_bucket(value: float | None) -> str:
+    if value is None or not np.isfinite(value):
+        return "unknown"
+    if value < 2.0:
+        return "tight"
+    if value < 6.0:
+        return "normal"
+    return "wide"
+
+
 def _trade_to_record(trade: Trade) -> dict[str, Any]:
     return _json_safe(
         {
@@ -868,10 +1232,20 @@ def _trade_from_record(record: dict[str, Any]) -> Trade:
 def _none_or_float(value: Any) -> float | None:
     if value is None or value == "":
         return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
     return float(value)
 
 
 def _none_or_int(value: Any) -> int | None:
     if value is None or value == "":
         return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
     return int(value)

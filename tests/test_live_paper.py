@@ -6,7 +6,12 @@ import unittest
 
 import pandas as pd
 
-from backtest.live import LiveBar, PaperTradingConfig, PaperTradingEngine
+from backtest.live import (
+    LiveBar,
+    PaperTradingConfig,
+    PaperTradingEngine,
+    summarize_execution_observations,
+)
 from config.backtest_config import FUTURES_SPECS
 
 
@@ -31,6 +36,9 @@ def _minimal_params(**overrides):
 
 
 class StubSignalPaperEngine(PaperTradingEngine):
+    signal_value = 1
+    signal_type = "trend"
+
     def _build_signal_frame(self, *, as_of: pd.Timestamp):
         runtime_engine = self._utility_engine()
         signal_time = pd.Timestamp(as_of).floor("5min") - pd.Timedelta(minutes=5)
@@ -43,12 +51,23 @@ class StubSignalPaperEngine(PaperTradingEngine):
                 "close": [100.5],
                 "volume": [1000],
                 "atr": [1.0],
-                "signal": [1],
-                "signal_type": ["trend"],
+                "signal": [self.signal_value],
+                "signal_type": [self.signal_type],
+                "vwap": [100.25],
+                "vwap_side": ["above_vwap"],
+                "inside_ib": [False],
+                "cusum_event": [True],
+                "cusum_event_direction": [1 if self.signal_value > 0 else -1],
+                "open_context": ["inside_prior_range"],
             }
         )
         self._last_signal_frame = signal_frame
         return runtime_engine, signal_frame
+
+
+class ShortStubSignalPaperEngine(StubSignalPaperEngine):
+    signal_value = -1
+    signal_type = "trend"
 
 
 class PaperTradingRuntimeTests(unittest.TestCase):
@@ -164,6 +183,84 @@ class PaperTradingRuntimeTests(unittest.TestCase):
         self.assertEqual(events[0].event_type, "entry_skipped")
         self.assertEqual(events[0].reason, "no_new_trades_after")
         self.assertEqual(len(engine.portfolio.positions), 0)
+
+    def test_entry_skip_writes_execution_observation(self) -> None:
+        engine = StubSignalPaperEngine(
+            futures_specs=FUTURES_SPECS,
+            strategy_params=_minimal_params(entry_mode="next_bar_open"),
+            config=PaperTradingConfig(
+                starting_capital=100000,
+                warmup_1m_bars=0,
+                no_new_trades_after="10:00",
+            ),
+        )
+
+        engine.on_bar(
+            LiveBar(
+                time=pd.Timestamp("2024-01-03 10:05"),
+                open=101.0,
+                high=101.25,
+                low=100.75,
+                close=101.0,
+                volume=100,
+            )
+        )
+
+        observations = engine.execution_observation_log()
+        self.assertEqual(len(observations), 1)
+        row = observations.iloc[0]
+        self.assertEqual(row["status"], "skipped")
+        self.assertEqual(row["skip_reason"], "no_new_trades_after")
+        self.assertEqual(row["setup_tag"], "trend_long")
+        self.assertEqual(row["decision_timestamp"], pd.Timestamp("2024-01-03 10:05"))
+        self.assertEqual(row["signal_timestamp"], pd.Timestamp("2024-01-03 10:00"))
+        self.assertEqual(row["intended_order_side"], "BUY")
+        self.assertEqual(row["volatility_proxy_points"], 1.0)
+        self.assertEqual(row["volatility_bucket"], "tight")
+
+    def test_entry_fill_writes_long_and_short_execution_observations(self) -> None:
+        scenarios = [
+            (StubSignalPaperEngine, "trend_long", "BUY"),
+            (ShortStubSignalPaperEngine, "trend_short", "SELL"),
+        ]
+        for engine_cls, setup, side in scenarios:
+            with self.subTest(setup=setup):
+                engine = engine_cls(
+                    futures_specs=FUTURES_SPECS,
+                    strategy_params=_minimal_params(entry_mode="next_bar_open", max_hold_bars=0),
+                    config=PaperTradingConfig(starting_capital=100000, warmup_1m_bars=0),
+                )
+
+                engine.on_bar(
+                    LiveBar(
+                        time=pd.Timestamp("2024-01-03 10:05"),
+                        open=101.0,
+                        high=101.25,
+                        low=100.75,
+                        close=101.0,
+                        volume=100,
+                    )
+                )
+
+                observations = engine.execution_observation_log()
+                self.assertEqual(len(observations), 1)
+                row = observations.iloc[0]
+                self.assertEqual(row["status"], "filled")
+                self.assertEqual(row["setup_tag"], setup)
+                self.assertEqual(row["intended_order_side"], side)
+                self.assertEqual(row["decision_price"], 101.0)
+                self.assertEqual(row["assumed_fill_price"], 101.0)
+                self.assertEqual(row["shortfall_points"], 0.0)
+                self.assertEqual(row["shortfall_dollars_per_contract"], 0.0)
+                self.assertEqual(row["contracts"], 1)
+                self.assertEqual(row["volatility_bucket"], "tight")
+
+    def test_execution_observation_summary_handles_empty_log(self) -> None:
+        summary = summarize_execution_observations(pd.DataFrame())
+
+        self.assertTrue(summary.empty)
+        self.assertIn("group", summary.columns)
+        self.assertIn("fill_rate_pct", summary.columns)
 
     def test_emergency_stop_file_flattens_open_position(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

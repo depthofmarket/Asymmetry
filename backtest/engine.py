@@ -869,8 +869,8 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
             # put/gamma support.
             into_call_resistance = call_dist.notna() & call_dist.ge(0) & call_dist.le(room)
             into_put_support = put_dist.notna() & put_dist.ge(0) & put_dist.le(room)
-            near_gamma_above = gamma_above.notna() & gamma_above.le(room)
-            near_gamma_below = gamma_below.notna() & gamma_below.le(room)
+            near_gamma_above = gamma_above.notna() & gamma_above.ge(0) & gamma_above.le(room)
+            near_gamma_below = gamma_below.notna() & gamma_below.ge(0) & gamma_below.le(room)
             env_ok &= ~(positive_gamma & long_signal & (into_call_resistance | near_gamma_above))
             env_ok &= ~(positive_gamma & short_signal & (into_put_support | near_gamma_below))
 
@@ -891,8 +891,8 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
             below_dist = pd.to_numeric(out.get('options_gamma_wall_below_distance', pd.Series(np.nan, index=out.index)), errors='coerce')
             long_signal = scoped & signal.gt(0)
             short_signal = scoped & signal.lt(0)
-            keep &= ~(long_signal & above_dist.notna() & above_dist.le(room))
-            keep &= ~(short_signal & below_dist.notna() & below_dist.le(room))
+            keep &= ~(long_signal & above_dist.notna() & above_dist.ge(0) & above_dist.le(room))
+            keep &= ~(short_signal & below_dist.notna() & below_dist.ge(0) & below_dist.le(room))
         else:
             return out
 

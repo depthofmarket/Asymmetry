@@ -51,6 +51,20 @@ DEFAULT_PROFILE: dict[str, Any] = {
     "stop_after_target_until_min_days": True,
     "pnl_multiplier": 1.0,
     "eval_cost": 0.0,
+    "activation_fee": 0.0,
+    "reset_fee": 0.0,
+    "max_resets_per_account": 0,
+    "monthly_fee": 0.0,
+    "account_bundle_cost": 0.0,
+    "max_accounts": 1,
+    "payout_cap": 0.0,
+    "payout_cap_period": "none",
+    "payout_cadence_days": 0,
+    "trading_objective": "prop_eval_flip",
+    "fill_model": "prop_demo_fill_assumption",
+    "minimum_trade_sample": 500,
+    "portfolio_account_counts": [1, 5, 10, 20, 40],
+    "portfolio_n_sims": 20_000,
     "consistency_profit_limit_pct": 0.0,
     "initial_max_trading_days": 0,
     "extension_trading_days": 0,
@@ -106,6 +120,32 @@ def _ratio_from_pct(value: Any) -> float:
     return max(0.0, ratio)
 
 
+def _positive_int_list(value: Any, default: list[int]) -> list[int]:
+    if value is None:
+        return list(default)
+    if isinstance(value, str):
+        parts = [part.strip() for part in value.replace(";", ",").split(",")]
+    else:
+        try:
+            parts = list(value)
+        except TypeError:
+            parts = [value]
+    out: list[int] = []
+    for part in parts:
+        if part is None:
+            continue
+        text = str(part).strip()
+        if not text:
+            continue
+        try:
+            number = int(float(text))
+        except (TypeError, ValueError):
+            continue
+        if number > 0 and number not in out:
+            out.append(number)
+    return out or list(default)
+
+
 def _normalize_profile(profile: dict[str, Any] | None) -> dict[str, Any]:
     normalized = dict(DEFAULT_PROFILE)
     if profile:
@@ -155,6 +195,26 @@ def _normalize_profile(profile: dict[str, Any] | None) -> dict[str, Any]:
     normalized["pnl_multiplier"] = float(normalized.get("pnl_multiplier", 1.0) or 1.0)
     normalized["eval_cost"] = float(
         normalized.get("eval_cost", normalized.get("cost_per_eval", 0.0)) or 0.0
+    )
+    normalized["activation_fee"] = float(normalized.get("activation_fee", 0.0) or 0.0)
+    normalized["reset_fee"] = float(normalized.get("reset_fee", 0.0) or 0.0)
+    normalized["max_resets_per_account"] = max(0, int(normalized.get("max_resets_per_account", 0) or 0))
+    normalized["monthly_fee"] = float(normalized.get("monthly_fee", 0.0) or 0.0)
+    normalized["account_bundle_cost"] = float(normalized.get("account_bundle_cost", 0.0) or 0.0)
+    normalized["max_accounts"] = max(1, int(normalized.get("max_accounts", 1) or 1))
+    normalized["payout_cap"] = float(normalized.get("payout_cap", 0.0) or 0.0)
+    normalized["payout_cap_period"] = str(normalized.get("payout_cap_period", "none") or "none")
+    normalized["payout_cadence_days"] = max(0, int(normalized.get("payout_cadence_days", 0) or 0))
+    normalized["trading_objective"] = str(normalized.get("trading_objective", "prop_eval_flip") or "prop_eval_flip")
+    normalized["fill_model"] = str(normalized.get("fill_model", "prop_demo_fill_assumption") or "prop_demo_fill_assumption")
+    normalized["minimum_trade_sample"] = max(0, int(normalized.get("minimum_trade_sample", 500) or 0))
+    normalized["portfolio_account_counts"] = _positive_int_list(
+        normalized.get("portfolio_account_counts"),
+        DEFAULT_PROFILE["portfolio_account_counts"],
+    )
+    normalized["portfolio_n_sims"] = max(
+        1,
+        int(normalized.get("portfolio_n_sims", DEFAULT_PROFILE["portfolio_n_sims"]) or 1),
     )
     consistency_value = normalized.get(
         "consistency_profit_limit_pct",
@@ -757,6 +817,8 @@ def _simulate_funded_arrays(
     funded_buffer = float(rules["funded_buffer_target"])
     minimum_payout = float(rules["minimum_payout"])
     profit_split = float(rules["profit_split"])
+    payout_cap = float(rules["payout_cap"])
+    payout_cadence_days = int(rules["payout_cadence_days"])
 
     equity = np.full(n_sims, account_size, dtype=float)
     peak_equity = np.full(n_sims, account_size, dtype=float)
@@ -817,7 +879,10 @@ def _simulate_funded_arrays(
 
         active = status == 0
         withdrawable = equity - payout_floor
-        can_pay = active & (withdrawable >= minimum_payout) & (withdrawable > 0)
+        if payout_cap > 0:
+            withdrawable = np.minimum(withdrawable, payout_cap)
+        cadence_ok = payout_cadence_days <= 1 or (day_idx + 1) % payout_cadence_days == 0
+        can_pay = active & cadence_ok & (withdrawable >= minimum_payout) & (withdrawable > 0)
         gross_payout[can_pay] += withdrawable[can_pay]
         net_payout[can_pay] += withdrawable[can_pay] * profit_split
         payout_count[can_pay] += 1
@@ -864,10 +929,22 @@ def _attach_eval_metadata(records: pd.DataFrame, rules: dict[str, Any]) -> pd.Da
         "drawdown_check": rules["drawdown_check"],
         "pnl_multiplier": float(rules["pnl_multiplier"]),
         "eval_cost": float(rules["eval_cost"]),
+        "activation_fee": float(rules["activation_fee"]),
+        "reset_fee": float(rules["reset_fee"]),
+        "max_resets_per_account": int(rules["max_resets_per_account"]),
+        "monthly_fee": float(rules["monthly_fee"]),
+        "account_bundle_cost": float(rules["account_bundle_cost"]),
+        "max_accounts": int(rules["max_accounts"]),
         "profit_split_pct": float(rules["profit_split_pct"]),
         "funded_buffer_target": float(rules["funded_buffer_target"]),
         "minimum_payout": float(rules["minimum_payout"]),
+        "payout_cap": float(rules["payout_cap"]),
+        "payout_cap_period": rules["payout_cap_period"],
+        "payout_cadence_days": int(rules["payout_cadence_days"]),
         "funded_horizon_days": int(rules["funded_horizon_days"]),
+        "trading_objective": rules["trading_objective"],
+        "fill_model": rules["fill_model"],
+        "minimum_trade_sample": int(rules["minimum_trade_sample"]),
     }.items():
         records[key] = value
     return records
@@ -885,10 +962,22 @@ def _attach_funded_metadata(records: pd.DataFrame, rules: dict[str, Any]) -> pd.
         "drawdown_mode": rules["drawdown_mode"],
         "drawdown_check": rules["drawdown_check"],
         "pnl_multiplier": float(rules["pnl_multiplier"]),
+        "activation_fee": float(rules["activation_fee"]),
+        "reset_fee": float(rules["reset_fee"]),
+        "max_resets_per_account": int(rules["max_resets_per_account"]),
+        "monthly_fee": float(rules["monthly_fee"]),
+        "account_bundle_cost": float(rules["account_bundle_cost"]),
+        "max_accounts": int(rules["max_accounts"]),
         "profit_split_pct": float(rules["profit_split_pct"]),
         "funded_buffer_target": float(rules["funded_buffer_target"]),
         "minimum_payout": float(rules["minimum_payout"]),
+        "payout_cap": float(rules["payout_cap"]),
+        "payout_cap_period": rules["payout_cap_period"],
+        "payout_cadence_days": int(rules["payout_cadence_days"]),
         "funded_horizon_days": int(rules["funded_horizon_days"]),
+        "trading_objective": rules["trading_objective"],
+        "fill_model": rules["fill_model"],
+        "minimum_trade_sample": int(rules["minimum_trade_sample"]),
     }.items():
         records[key] = value
     return records
@@ -1094,6 +1183,8 @@ def _evaluate_funded_path(daily_pnls: Any, profile: dict[str, Any]) -> dict[str,
     minimum_payout = float(rules["minimum_payout"])
     profit_split = float(rules["profit_split"])
     horizon_days = int(rules["funded_horizon_days"])
+    payout_cap = float(rules["payout_cap"])
+    payout_cadence_days = int(rules["payout_cadence_days"])
 
     equity = account_size
     peak_equity = account_size
@@ -1156,7 +1247,10 @@ def _evaluate_funded_path(daily_pnls: Any, profile: dict[str, Any]) -> dict[str,
             break
 
         withdrawable = equity - payout_floor
-        if withdrawable >= minimum_payout and withdrawable > 0:
+        if payout_cap > 0:
+            withdrawable = min(withdrawable, payout_cap)
+        cadence_ok = payout_cadence_days <= 1 or (day_idx + 1) % payout_cadence_days == 0
+        if cadence_ok and withdrawable >= minimum_payout and withdrawable > 0:
             gross_payout += withdrawable
             net_payout += withdrawable * profit_split
             payout_count += 1
@@ -1236,8 +1330,26 @@ def _summarize_simulations(
         passes = group.loc[pass_mask]
         pass_probability = float(pass_mask.mean()) if n else 0.0
         eval_cost = float(group["eval_cost"].iloc[0]) if "eval_cost" in group.columns else 0.0
+        activation_fee = float(group["activation_fee"].iloc[0]) if "activation_fee" in group.columns else 0.0
+        reset_fee = float(group["reset_fee"].iloc[0]) if "reset_fee" in group.columns else 0.0
+        max_resets_per_account = (
+            int(group["max_resets_per_account"].iloc[0]) if "max_resets_per_account" in group.columns else 0
+        )
+        monthly_fee = float(group["monthly_fee"].iloc[0]) if "monthly_fee" in group.columns else 0.0
+        account_bundle_cost = float(group["account_bundle_cost"].iloc[0]) if "account_bundle_cost" in group.columns else 0.0
+        max_accounts = int(group["max_accounts"].iloc[0]) if "max_accounts" in group.columns else 1
         expected_attempts_to_pass = 1.0 / pass_probability if pass_probability > 0 else np.inf
         expected_eval_cost_to_pass = eval_cost / pass_probability if pass_probability > 0 else np.inf
+        expected_activation_cost_per_eval_attempt = pass_probability * activation_fee
+        expected_monthly_cost_per_eval_attempt = monthly_fee
+        expected_all_in_cost_per_eval_attempt = (
+            eval_cost + expected_monthly_cost_per_eval_attempt + expected_activation_cost_per_eval_attempt
+        )
+        expected_all_in_cost_to_pass = (
+            (eval_cost + monthly_fee) / pass_probability + activation_fee
+            if pass_probability > 0
+            else np.inf
+        )
 
         funded = (
             funded_simulations.loc[funded_simulations["profile"].eq(profile)]
@@ -1252,6 +1364,25 @@ def _summarize_simulations(
         median_gross_payout = float(funded["gross_payout"].median()) if not funded.empty else np.nan
         avg_net_payout = float(funded["net_payout"].mean()) if not funded.empty else np.nan
         median_net_payout = float(funded["net_payout"].median()) if not funded.empty else np.nan
+        positive_net_payouts = (
+            pd.to_numeric(funded["net_payout"], errors="coerce")
+            if not funded.empty and "net_payout" in funded.columns
+            else pd.Series(dtype=float)
+        )
+        positive_net_payouts = positive_net_payouts.loc[positive_net_payouts > 0.0]
+        avg_net_payout_when_positive = (
+            float(positive_net_payouts.mean()) if not positive_net_payouts.empty else np.nan
+        )
+        payoff_ratio_to_all_in_cost = (
+            avg_net_payout_when_positive / expected_all_in_cost_per_eval_attempt
+            if expected_all_in_cost_per_eval_attempt > 0 and not np.isnan(avg_net_payout_when_positive)
+            else np.nan
+        )
+        break_even_eval_to_first_payout_probability = (
+            expected_all_in_cost_per_eval_attempt / avg_net_payout_when_positive
+            if not np.isnan(avg_net_payout_when_positive) and avg_net_payout_when_positive > 0
+            else np.nan
+        )
         median_days_to_first_payout = (
             float(funded["first_payout_day"].dropna().median())
             if not funded.empty and funded["first_payout_day"].notna().any()
@@ -1267,13 +1398,29 @@ def _summarize_simulations(
             if not np.isnan(first_payout_probability)
             else np.nan
         )
+        expected_attempts_to_first_payout = (
+            1.0 / probability_eval_to_first_payout
+            if probability_eval_to_first_payout and probability_eval_to_first_payout > 0
+            else np.inf
+        )
+        expected_passes_to_first_payout = (
+            pass_probability / probability_eval_to_first_payout
+            if probability_eval_to_first_payout and probability_eval_to_first_payout > 0
+            else np.inf
+        )
         expected_eval_cost_to_first_payout = (
             eval_cost / probability_eval_to_first_payout
             if probability_eval_to_first_payout and probability_eval_to_first_payout > 0
             else np.inf
         )
+        expected_all_in_cost_to_first_payout = (
+            (eval_cost + monthly_fee) * expected_attempts_to_first_payout
+            + activation_fee * expected_passes_to_first_payout
+            if np.isfinite(expected_attempts_to_first_payout) and np.isfinite(expected_passes_to_first_payout)
+            else np.inf
+        )
         expected_net_payout_per_eval_attempt = (
-            pass_probability * avg_net_payout - eval_cost
+            pass_probability * avg_net_payout - expected_all_in_cost_per_eval_attempt
             if not np.isnan(avg_net_payout)
             else np.nan
         )
@@ -1317,8 +1464,31 @@ def _summarize_simulations(
             "median_max_drawdown_dollars": float(group["max_drawdown_dollars"].median()),
             "p95_max_drawdown_dollars": float(group["max_drawdown_dollars"].quantile(0.95)),
             "eval_cost": eval_cost,
+            "activation_fee": activation_fee,
+            "reset_fee": reset_fee,
+            "max_resets_per_account": max_resets_per_account,
+            "monthly_fee": monthly_fee,
+            "account_bundle_cost": account_bundle_cost,
+            "max_accounts": max_accounts,
+            "payout_cap": float(group["payout_cap"].iloc[0]) if "payout_cap" in group.columns else 0.0,
+            "payout_cap_period": str(group["payout_cap_period"].iloc[0])
+            if "payout_cap_period" in group.columns
+            else "none",
+            "payout_cadence_days": int(group["payout_cadence_days"].iloc[0])
+            if "payout_cadence_days" in group.columns
+            else 0,
+            "trading_objective": str(group["trading_objective"].iloc[0])
+            if "trading_objective" in group.columns
+            else "prop_eval_flip",
+            "fill_model": str(group["fill_model"].iloc[0])
+            if "fill_model" in group.columns
+            else "prop_demo_fill_assumption",
             "expected_attempts_to_pass": float(expected_attempts_to_pass),
             "expected_eval_cost_to_pass": float(expected_eval_cost_to_pass),
+            "expected_all_in_cost_to_pass": float(expected_all_in_cost_to_pass),
+            "expected_activation_cost_per_eval_attempt": float(expected_activation_cost_per_eval_attempt),
+            "expected_monthly_cost_per_eval_attempt": float(expected_monthly_cost_per_eval_attempt),
+            "expected_all_in_cost_per_eval_attempt": float(expected_all_in_cost_per_eval_attempt),
             "funded_horizon_days": int(group["funded_horizon_days"].iloc[0])
             if "funded_horizon_days" in group.columns
             else np.nan,
@@ -1334,10 +1504,22 @@ def _summarize_simulations(
             "probability_eval_to_first_payout_pct": float(probability_eval_to_first_payout * 100.0)
             if not np.isnan(probability_eval_to_first_payout)
             else np.nan,
+            "break_even_eval_to_first_payout_probability_pct": float(
+                break_even_eval_to_first_payout_probability * 100.0
+            )
+            if not np.isnan(break_even_eval_to_first_payout_probability)
+            else np.nan,
+            "payoff_ratio_to_all_in_cost": float(payoff_ratio_to_all_in_cost)
+            if not np.isnan(payoff_ratio_to_all_in_cost)
+            else np.nan,
+            "expected_attempts_to_first_payout": float(expected_attempts_to_first_payout),
+            "expected_passes_to_first_payout": float(expected_passes_to_first_payout),
             "expected_eval_cost_to_first_payout": float(expected_eval_cost_to_first_payout),
+            "expected_all_in_cost_to_first_payout": float(expected_all_in_cost_to_first_payout),
             "avg_gross_payout": avg_gross_payout,
             "median_gross_payout": median_gross_payout,
             "avg_net_payout_after_split": avg_net_payout,
+            "avg_net_payout_when_positive": avg_net_payout_when_positive,
             "median_net_payout_after_split": median_net_payout,
             "expected_net_payout_per_eval_attempt": expected_net_payout_per_eval_attempt,
             "median_days_to_first_payout": median_days_to_first_payout,
@@ -1382,6 +1564,25 @@ def _summarize_simulations(
             "minimum_payout": float(group["minimum_payout"].iloc[0])
             if "minimum_payout" in group.columns
             else 0.0,
+            "firm_selection_warning": _firm_selection_warning(
+                drawdown_mode=str(group["drawdown_mode"].iloc[0])
+                if "drawdown_mode" in group.columns
+                else "static",
+                drawdown_check=str(group["drawdown_check"].iloc[0])
+                if "drawdown_check" in group.columns
+                else "intraday",
+                consistency_pct=float(group["consistency_profit_limit_pct"].iloc[0])
+                if "consistency_profit_limit_pct" in group.columns
+                else 0.0,
+                cost_to_payout_ratio=(
+                    1.0 / payoff_ratio_to_all_in_cost
+                    if not np.isnan(payoff_ratio_to_all_in_cost) and payoff_ratio_to_all_in_cost > 0
+                    else np.nan
+                ),
+                payout_cadence_days=int(group["payout_cadence_days"].iloc[0])
+                if "payout_cadence_days" in group.columns
+                else 0,
+            ),
         })
 
     return pd.DataFrame(rows)
@@ -1850,6 +2051,58 @@ def _attempt_curve(summary: pd.DataFrame, funded_simulations: pd.DataFrame, prof
     return pd.DataFrame(rows)
 
 
+def _attach_sample_size_metadata(
+    frame: pd.DataFrame,
+    profiles: list[dict[str, Any]],
+    *,
+    trade_sample_size: int,
+) -> pd.DataFrame:
+    if frame.empty or "profile" not in frame.columns:
+        return frame
+    out = frame.copy()
+    rules_by_profile = {_normalize_profile(profile)["name"]: _normalize_profile(profile) for profile in profiles}
+    minimum_samples: list[int] = []
+    warnings: list[str] = []
+    account_counts: list[str] = []
+    for profile in out["profile"].astype(str):
+        rules = rules_by_profile.get(profile, _normalize_profile({}))
+        minimum = int(rules["minimum_trade_sample"])
+        minimum_samples.append(minimum)
+        account_counts.append(",".join(str(int(v)) for v in rules["portfolio_account_counts"]))
+        warnings.append(
+            f"sample_below_minimum_{minimum}_trades"
+            if minimum > 0 and int(trade_sample_size) < minimum
+            else ""
+        )
+    out["trade_sample_size"] = int(trade_sample_size)
+    out["minimum_trade_sample"] = minimum_samples
+    out["sample_size_warning"] = warnings
+    out["portfolio_account_counts"] = account_counts
+    return out
+
+
+def _firm_selection_warning(
+    *,
+    drawdown_mode: str,
+    drawdown_check: str,
+    consistency_pct: float,
+    cost_to_payout_ratio: float,
+    payout_cadence_days: int,
+) -> str:
+    warnings: list[str] = []
+    mode = str(drawdown_mode).lower()
+    check = str(drawdown_check).lower()
+    if check == "intraday" or "trailing" in mode:
+        warnings.append("drawdown_structure_penalizes_variance")
+    if 0.0 < float(consistency_pct) <= 50.0:
+        warnings.append("consistency_rule_blocks_fast_resolution")
+    if np.isfinite(cost_to_payout_ratio) and cost_to_payout_ratio > 0.15:
+        warnings.append("cost_to_payout_ratio_above_15pct")
+    if int(payout_cadence_days) > 14:
+        warnings.append("slow_payout_cadence")
+    return ";".join(warnings)
+
+
 def _sample_eval_equity_paths(
     daily_paths: pd.DataFrame,
     profile: dict[str, Any],
@@ -2085,6 +2338,22 @@ def _annotated_heatmap(
         return
 
     data = pivot.to_numpy(dtype=float)
+    finite = data[np.isfinite(data)]
+    if finite.size == 0:
+        _style_chart_axis(ax, grid=False)
+        ax.text(
+            0.5,
+            0.5,
+            "No finite metric values",
+            ha="center",
+            va="center",
+            color=CHART_MUTED,
+            transform=ax.transAxes,
+        )
+        ax.set_title(title, color=CHART_TEXT)
+        ax.set_axis_off()
+        return
+
     masked = np.ma.masked_invalid(data)
     image = ax.imshow(masked, aspect="auto", cmap=cmap, vmin=vmin, vmax=vmax)
     ax.set_title(title, fontsize=13, fontweight="bold", color=CHART_TEXT)
@@ -2098,7 +2367,6 @@ def _annotated_heatmap(
     _style_chart_colorbar(cbar)
     _style_chart_axis(ax, grid=False)
 
-    finite = data[np.isfinite(data)]
     center = float(np.nanmedian(finite)) if finite.size else 0.0
     for row_idx in range(data.shape[0]):
         for col_idx in range(data.shape[1]):
@@ -2150,11 +2418,18 @@ def _plot_prop_firm_dashboard(
     _style_chart_axis(ax, grid=False)
     ax.set_axis_off()
     ax.set_title("Decision KPIs", color=CHART_TEXT, fontweight="bold", loc="left", pad=10)
+    pass_probability = _coerce_finite(row.get("pass_probability_pct"))
+    payout_probability = _coerce_finite(row.get("probability_eval_to_first_payout_pct"))
+    median_pass_days = _finite_or_nan(row.get("median_days_to_pass"))
     cards = [
-        ("Eval pass", f"{_coerce_finite(row.get('pass_probability_pct')):.1f}%", CHART_GREEN),
-        ("First payout", f"{_coerce_finite(row.get('probability_eval_to_first_payout_pct')):.1f}%", CHART_CYAN),
-        ("EV / eval", f"${_coerce_finite(row.get('expected_net_payout_per_eval_attempt')):,.0f}", CHART_BLUE),
-        ("Median pass days", f"{_coerce_finite(row.get('median_days_to_pass')):.0f}d", CHART_YELLOW),
+        ("Eval pass", f"{pass_probability:.1f}%", CHART_GREEN if pass_probability > 0 else CHART_RED),
+        ("First payout", f"{payout_probability:.1f}%", CHART_CYAN if payout_probability > 0 else CHART_RED),
+        ("EV / eval", _format_money_or_na(row.get("expected_net_payout_per_eval_attempt")), CHART_BLUE),
+        (
+            "Median pass days",
+            f"{median_pass_days:.0f}d" if np.isfinite(median_pass_days) else "N/A",
+            CHART_YELLOW if np.isfinite(median_pass_days) else CHART_MUTED,
+        ),
     ]
     for idx, (label, value, color) in enumerate(cards):
         x0 = 0.04 + (idx % 2) * 0.48
@@ -2178,6 +2453,17 @@ def _plot_prop_firm_dashboard(
             color=color,
             fontsize=25,
             fontweight="bold",
+            ha="left",
+            va="center",
+        )
+    if pass_probability <= 0:
+        ax.text(
+            0.04,
+            0.05,
+            "No passing eval simulations. Pass-time and cost-to-pass fields are intentionally N/A.",
+            transform=ax.transAxes,
+            color=CHART_MUTED,
+            fontsize=9.5,
             ha="left",
             va="center",
         )
@@ -2209,11 +2495,17 @@ def _plot_prop_firm_dashboard(
         ("Avg funded payout", "avg_net_payout_after_split"),
     ]
     labels = [label for label, col in money_metrics if col in row.index]
-    values = [_coerce_finite(row[col]) for _, col in money_metrics if col in row.index]
+    values = [_finite_or_nan(row[col]) for _, col in money_metrics if col in row.index]
+    finite_pairs = [(label, value) for label, value in zip(labels, values) if np.isfinite(value)]
+    labels = [label for label, _ in finite_pairs]
+    values = [value for _, value in finite_pairs]
     bar_colors = [CHART_GREEN if value >= 0 else CHART_RED for value in values]
-    ax.bar(labels, values, color=bar_colors, alpha=0.86)
-    ax.axhline(0, color=CHART_MUTED, linewidth=0.8)
-    ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f"${value:,.0f}"))
+    if values:
+        ax.bar(labels, values, color=bar_colors, alpha=0.86)
+        ax.axhline(0, color=CHART_MUTED, linewidth=0.8)
+        ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f"${value:,.0f}"))
+    else:
+        ax.text(0.5, 0.5, "No finite cost or payout values", ha="center", va="center", color=CHART_MUTED, transform=ax.transAxes)
     ax.set_title("Cost And Payout Economics", fontweight="bold")
     ax.tick_params(axis="x", rotation=10)
     for idx, value in enumerate(values):
@@ -2580,6 +2872,25 @@ def _coerce_finite(value: Any, default: float = 0.0) -> float:
     return number if np.isfinite(number) else default
 
 
+def _finite_or_nan(value: Any) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return np.nan
+    return number if np.isfinite(number) else np.nan
+
+
+def _format_finite(value: Any, fmt: str, *, missing: str = "N/A") -> str:
+    number = _finite_or_nan(value)
+    if not np.isfinite(number):
+        return missing
+    return fmt.format(number)
+
+
+def _format_money_or_na(value: Any, *, missing: str = "N/A") -> str:
+    return _format_finite(value, "${:,.0f}", missing=missing)
+
+
 def _plot_strategy_equity_chart(
     trades: pd.DataFrame,
     profiles: list[dict[str, Any]],
@@ -2854,9 +3165,19 @@ def _plot_payout_analysis_chart(
         if min_payout > 0:
             ax.axvline(min_payout, color=CHART_YELLOW, linestyle="--", linewidth=1.5, label=f"Min payout ${min_payout:,.0f}")
         ax.legend(facecolor=CHART_PANEL, edgecolor=CHART_SPINE, labelcolor=CHART_TEXT)
+    else:
+        ax.text(
+            0.5,
+            0.5,
+            "No funded payout simulations above zero",
+            ha="center",
+            va="center",
+            color=CHART_MUTED,
+            transform=ax.transAxes,
+        )
     ax.xaxis.set_major_formatter(FuncFormatter(_money_formatter))
     ax.set_title(
-        f"Payout Distribution | Avg: ${float(payout_values.mean()) if not payout_values.empty else 0:,.0f}",
+        f"Payout Distribution | Avg: {_format_money_or_na(payout_values.mean() if not payout_values.empty else np.nan)}",
         fontsize=15,
     )
     ax.set_xlabel("Payout amount ($)")
@@ -2899,6 +3220,16 @@ def _plot_payout_analysis_chart(
         ax.hist(first_payout_days, bins=min(35, max(8, int(np.sqrt(len(first_payout_days)) * 2))), color=CHART_BLUE, alpha=0.78)
         ax.axvline(first_payout_days.median(), color=CHART_CYAN, linewidth=1.7, label=f"Median {first_payout_days.median():.0f}d")
         ax.legend(facecolor=CHART_PANEL, edgecolor=CHART_SPINE, labelcolor=CHART_TEXT)
+    else:
+        ax.text(
+            0.5,
+            0.5,
+            "No first-payout events",
+            ha="center",
+            va="center",
+            color=CHART_MUTED,
+            transform=ax.transAxes,
+        )
     ax.set_title("Days To First Funded Payout", fontsize=15)
     ax.set_xlabel("Funded trading days")
     ax.set_ylabel("Count")
@@ -2907,12 +3238,12 @@ def _plot_payout_analysis_chart(
     ax = axes[1, 1]
     ax.set_axis_off()
     table_rows = [
-        ("Avg Payout (when achieved)", f"${float(payout_values.mean()) if not payout_values.empty else 0:,.0f}"),
-        ("Median Payout", f"${float(payout_values.median()) if not payout_values.empty else 0:,.0f}"),
-        ("Challenge Cost", f"${_coerce_finite(row.get('eval_cost')):,.0f}"),
-        ("EV per Eval Attempt", f"${_coerce_finite(row.get('expected_net_payout_per_eval_attempt')):,.0f}"),
-        ("Expected Cost To First Payout", f"${_coerce_finite(row.get('expected_eval_cost_to_first_payout')):,.0f}"),
-        ("Avg Days To First Payout", f"{_coerce_finite(row.get('avg_days_to_first_payout')):.1f}"),
+        ("Avg Payout (when achieved)", _format_money_or_na(payout_values.mean() if not payout_values.empty else np.nan)),
+        ("Median Payout", _format_money_or_na(payout_values.median() if not payout_values.empty else np.nan)),
+        ("Challenge Cost", _format_money_or_na(row.get("eval_cost"))),
+        ("EV per Eval Attempt", _format_money_or_na(row.get("expected_net_payout_per_eval_attempt"))),
+        ("Expected Cost To First Payout", _format_money_or_na(row.get("expected_eval_cost_to_first_payout"))),
+        ("Avg Days To First Payout", _format_finite(row.get("avg_days_to_first_payout"), "{:.1f}")),
     ]
     table = ax.table(
         cellText=table_rows,
@@ -3203,14 +3534,25 @@ def _write_markdown_report(path: Path, summary: pd.DataFrame, chart_paths: dict[
             "sample_scope",
             "evidence_grade",
             "profile",
+            "trading_objective",
+            "fill_model",
             "pass_probability_pct",
             "expected_eval_cost_to_pass",
+            "expected_all_in_cost_to_pass",
             "probability_eval_to_first_payout_pct",
+            "break_even_eval_to_first_payout_probability_pct",
+            "payoff_ratio_to_all_in_cost",
             "expected_eval_cost_to_first_payout",
+            "expected_all_in_cost_to_first_payout",
             "avg_net_payout_after_split",
+            "avg_net_payout_when_positive",
             "expected_net_payout_per_eval_attempt",
             "median_days_to_pass",
             "median_trading_days_to_pass",
+            "trade_sample_size",
+            "minimum_trade_sample",
+            "sample_size_warning",
+            "firm_selection_warning",
             "calendar_history_days",
             "active_history_days",
             "historical_active_day_pct",
@@ -3221,6 +3563,33 @@ def _write_markdown_report(path: Path, summary: pd.DataFrame, chart_paths: dict[
         lines.append("")
         lines.append(summary.loc[:, [c for c in display_cols if c in summary.columns]].to_string(index=False))
         lines.append("")
+        if "pass_probability_pct" in summary.columns:
+            pass_values = pd.to_numeric(summary["pass_probability_pct"], errors="coerce").fillna(0.0)
+        else:
+            pass_values = pd.Series(0.0, index=summary.index)
+        zero_pass_profiles = summary.loc[pass_values.le(0.0)]
+        if not zero_pass_profiles.empty:
+            lines.append("## No-Pass State")
+            lines.append("")
+            for _, row in zero_pass_profiles.iterrows():
+                failure_drivers = []
+                for label, col in [
+                    ("extension threshold", "extension_threshold_fail_probability_pct"),
+                    ("timeout", "timeout_probability_pct"),
+                    ("max drawdown", "max_drawdown_fail_probability_pct"),
+                    ("daily loss", "daily_loss_fail_probability_pct"),
+                    ("consistency", "consistency_block_probability_pct"),
+                ]:
+                    value = _finite_or_nan(row.get(col))
+                    if np.isfinite(value) and value > 0:
+                        failure_drivers.append(f"{label}: {value:.1f}%")
+                driver_text = "; ".join(failure_drivers) if failure_drivers else "no dominant recorded failure driver"
+                lines.append(
+                    f"- `{row['profile']}` produced no passing eval simulations. "
+                    f"Pass-time and cost-to-pass fields should be read as N/A. "
+                    f"Failure drivers: {driver_text}."
+                )
+            lines.append("")
         lines.append("## Assumptions")
         lines.append("")
         for _, row in summary.iterrows():
@@ -3230,7 +3599,10 @@ def _write_markdown_report(path: Path, summary: pd.DataFrame, chart_paths: dict[
                 f"daily loss=${row['daily_loss_limit']:,.0f}, days={int(row['min_trading_days'])}-{int(row['max_trading_days'])}, "
                 f"drawdown mode={row['drawdown_mode']}/{row.get('drawdown_check', 'intraday')}, "
                 f"pnl multiplier={row.get('pnl_multiplier', 1.0):.2f}, eval cost=${row.get('eval_cost', 0.0):,.2f}, "
-                f"profit split={row.get('profit_split_pct', 100.0):.0f}%."
+                f"activation=${row.get('activation_fee', 0.0):,.2f}, monthly=${row.get('monthly_fee', 0.0):,.2f}, "
+                f"resets={int(row.get('max_resets_per_account', 0))} at ${row.get('reset_fee', 0.0):,.2f}, "
+                f"max accounts={int(row.get('max_accounts', 1))}, profit split={row.get('profit_split_pct', 100.0):.0f}%, "
+                f"objective={row.get('trading_objective', 'prop_eval_flip')}, fill model={row.get('fill_model', 'prop_demo_fill_assumption')}."
             )
     if chart_paths:
         lines.extend(["", "## Charts", ""])
@@ -3376,6 +3748,23 @@ def export_prop_firm_report(
         seed=seed + 4_000_003,
     )
     attempt_curve = _attempt_curve(summary, funded_simulations, normalized_profiles)
+    trade_sample_size = int(len(trades))
+    summary = _attach_sample_size_metadata(summary, normalized_profiles, trade_sample_size=trade_sample_size)
+    sizing_surface = _attach_sample_size_metadata(
+        sizing_surface,
+        normalized_profiles,
+        trade_sample_size=trade_sample_size,
+    )
+    daily_rules_surface = _attach_sample_size_metadata(
+        daily_rules_surface,
+        normalized_profiles,
+        trade_sample_size=trade_sample_size,
+    )
+    trade_geometry = _attach_sample_size_metadata(
+        trade_geometry,
+        normalized_profiles,
+        trade_sample_size=trade_sample_size,
+    )
 
     summary_csv = out_dir / f"{artifact_name}_summary.csv"
     simulations_csv = out_dir / f"{artifact_name}_simulations.csv"

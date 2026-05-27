@@ -89,9 +89,11 @@ Broad batch scripts are guarded reproduction tools; they are not active research
 - TBBO-only data is an execution-realism lockbox unless it is converted into bars through the same point-in-time feature pipeline. Use it to audit spread/depth/fill assumptions, not to mine fresh signal filters.
 - The failed-auction quality branch is rejected and removed from the active validation queue. See `docs/research_postmortems/2026-05-20_failed_auction_quality_rejection.md`.
 - The microstructure liquidity-taking trend probe is rejected and removed from the active validation queue.
-- Before creating another candidate, export a prepared point-in-time signal CSV and run the pre-candidate signal report:
-  `python3 scripts/export_prepared_signal_csv.py --candidate <candidate_name> --start 2021-01-01`
-  `python3 scripts/run_signal_research_report.py --signals-csv results/research_master/signal_exports/<artifact>.csv --signal-cols candidate_signal --context-cols setup_tag,direction,signal_type,hour,session_bucket,vwap_side --round-trip-cost-points 1.5`
+- Before creating another candidate, re-score the saved power-hour export with the event-enhanced temporal signal gate:
+  `python3.12 scripts/run_temporal_signal_research_report.py --signals-csv results/research_master/signal_exports/power_hour_continuation_dev_2010_2024.csv --signal-cols candidate_signal,power_hour_score --context-cols setup_tag,direction,signal_type,hour,session_bucket,vwap_side,closing_flow_side,close_location,momentum_state,power_hour_pattern --splits legacy_context:2010-01-01:2015-12-31,transition:2016-01-01:2020-12-31,recent_development:2021-01-01:2024-12-31 --primary-split recent_development --supporting-splits transition --entry-price-col open --entry-lag-bars 1 --exit-price-col close --round-trip-cost-points 1.5 --event-bootstrap-samples 2000 --event-placebo-samples 2000 --artifact-name power_hour_continuation_event_temporal_gate`
+- The opening compression breakout signal gate is rejected. See `docs/research_postmortems/2026-05-21_compression_breakout_signal_gate_rejection.md`.
+- The RTH gap-and-go signal gate is rejected. See `docs/research_postmortems/2026-05-21_gap_go_signal_gate_rejection.md`.
+- The power-hour signal gate is rejected. See `docs/research_postmortems/2026-05-22_power_hour_signal_gate_rejection.md`.
 - After each approved run, check the saved gate:
   `python3 scripts/check_prop_research_gate.py`
 
@@ -129,21 +131,39 @@ Broad batch scripts are guarded reproduction tools; they are not active research
 - Prepare raw Databento options archives: `python3 scripts/prepare_options_nq.py`
 - Compressed statistics archives are supported directly as `*.statistics.csv.zst` members inside ZIP files.
 - A lightweight symlink is enough for large archives under `data/raw/options_nq/statistics/`; the ZIP does not need to be duplicated.
-- Build options-flow confluence features: `python3 scripts/build_options_flow_features.py --min-dte 0 --max-dte 120 --strike-window-points 600 --min-open-interest 1`
+- Build daily options-flow confluence features plus GEX-service-style strike surfaces: `python3 scripts/build_options_flow_features.py --min-dte 0 --max-dte 120 --strike-window-points 600 --min-open-interest 1`
+- The daily file is the compact backtest join artifact; `options_flow_strike_levels.csv` is the all-expiry per-date/per-strike surface.
+- `options_flow_dashboard.csv` and `options_flow_dashboard_strike_levels.csv` split the same features into `0dte`, `1_7dte`, `8_30dte`, `31_120dte`, and `all` buckets so intraday 0DTE gamma is not mixed with longer OI/DEX context.
 - Test gamma-environment confluence: `python3 main_backtest.py --candidate options_flow_gamma_environment`
 
 ## NQ TBBO Execution Data
 - TBBO futures data is for execution realism, not edge mining. Use it to audit spread, top-book depth, and trade-price-vs-mid assumptions around candidate signals.
 - Build minute and daily execution stats from a Databento `tbbo` archive:
   `python3 scripts/build_tbbo_execution_stats.py --source /Users/novo/Downloads/GLBX-20260513-FXJ4VJE8JE.zip`
+- Merge a new TBBO archive into existing processed stats:
+  `python3.12 -u scripts/build_tbbo_execution_stats.py --source /Users/novo/Downloads/<tbbo>.zip --merge-existing`
 - Smoke a single member before processing the full archive:
   `python3 scripts/build_tbbo_execution_stats.py --source /Users/novo/Downloads/GLBX-20260513-FXJ4VJE8JE.zip --max-files 1 --rows-per-file 50000 --out /tmp/tbbo_minute_smoke.csv --daily-out /tmp/tbbo_daily_smoke.csv`
 - The builder defaults to NQ outright futures symbols and excludes calendar spreads; use `--symbol-regex` to override.
 - Outputs default to `data/processed/tbbo/tbbo_minute_execution_stats.csv` and `data/processed/tbbo/tbbo_daily_execution_stats.csv`.
+- Build realized aggressive-flow stats from Databento `trades` archives:
+  `python3.12 -u scripts/build_aggressive_flow_stats.py --source /Users/novo/Downloads/<trades>.zip --merge-existing`
+- Aggressive-flow stats keep raw Databento `A`/`B` side columns. Verify the exchange/vendor convention before mapping them to human labels like at-bid or at-ask in a strategy.
+- Build a baseline execution-cost report from processed TBBO stats:
+  `python3.12 scripts/audit_tbbo_execution_baseline.py`
 - Audit a completed run's trade log against the processed TBBO minute stats:
   `python3 scripts/audit_trades_with_tbbo.py --run-dir results/runs/<run_label>`
 - Audit target-fill cost sensitivity on a completed run without rerunning the strategy:
   `python3 scripts/audit_execution_realism.py --run-dir results/runs/<run_label> --candidate <candidate_name>`
+
+## Research Protocol Control
+- The agentic research-control layer lives in `backtest/research_protocol.py` with the CLI wrapper `scripts/check_research_protocol.py`.
+- Use it to write and verify experiment manifests, config/file fingerprints, LLM/evaluation blinding rules, and saved-artifact gates. It does not run a backtest.
+- TBBO sources should be declared with `sample_role=tbbo` and `purpose=execution_audit`; declaring TBBO as alpha-mining evidence fails the protocol gate.
+- Example manifest creation:
+  `python3 scripts/check_research_protocol.py --write-manifest --manifest config/research_protocol.json --phase hypothesis --data-source tbbo_minute_stats:data/processed/tbbo/tbbo_minute_execution_stats.csv:tbbo:execution_audit:false`
+- Check a saved run against the manifest without replaying strategy logic:
+  `python3 scripts/check_research_protocol.py --manifest config/research_protocol.json --run-dir results/runs/<run_label> --out-dir results/runs/<run_label>/research`
 
 ## Conservative Target-Fill Validation
 - Target fills default to legacy touch behavior. Validation candidates can use `target_fill_mode='trade_through'` with `target_fill_trade_through_ticks=1` to require one NQ tick beyond the target before assuming a resting target order was filled.

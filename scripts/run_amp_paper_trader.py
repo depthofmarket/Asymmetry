@@ -13,7 +13,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from backtest.live import PaperTradingConfig, PaperTradingEngine, PaperTradingEvent
+from backtest.live import (
+    PaperTradingConfig,
+    PaperTradingEngine,
+    PaperTradingEvent,
+    save_execution_observation_reports,
+)
 from backtest.live_brokers import (
     CqgWebApiBroker,
     CsvOrderAuditBroker,
@@ -37,7 +42,7 @@ from config.backtest_config import BACKTEST_CONFIG, CANDIDATE_CONFIGS, FUTURES_S
 from main_backtest import load_data, resolve_max_drawdown_pct, slugify
 
 
-DEFAULT_PAPER_CANDIDATE = "edge_vp_mr_trend_failed_auction_quality_probe"
+DEFAULT_PAPER_CANDIDATE = "current"
 
 
 def parse_args() -> argparse.Namespace:
@@ -330,12 +335,14 @@ def main() -> int:
 
     events = engine.event_log()
     trades = engine.trade_log()
+    observations = engine.execution_observation_log()
     events_path = run_dir / "events.csv"
     trades_path = run_dir / "trades.csv"
     status_path = run_dir / "runtime_status.csv"
     events.to_csv(events_path, index=False)
     trades.to_csv(trades_path, index=False)
     pd.DataFrame(runtime_status_rows).to_csv(status_path, index=False)
+    observation_paths = save_execution_observation_reports(observations, run_dir)
     prop_ledger_path = None
     if engine.prop_guard is not None:
         prop_ledger_path = run_dir / "prop_attempt_ledger.csv"
@@ -350,6 +357,8 @@ def main() -> int:
     print(f"MTM equity:    ${mtm_equity:,.2f}")
     print(f"Events CSV:    {events_path}")
     print(f"Trades CSV:    {trades_path}")
+    print(f"Obs CSV:       {observation_paths['observations']}")
+    print(f"Obs summary:   {observation_paths['summary']}")
     print(f"Status CSV:    {status_path}")
     if prop_ledger_path is not None:
         print(f"Prop ledger:   {prop_ledger_path}")

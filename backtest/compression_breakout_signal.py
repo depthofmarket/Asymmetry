@@ -1,0 +1,243 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Iterable
+
+import numpy as np
+import pandas as pd
+
+from backtest.signal_export import DEFAULT_CONTEXT_COLUMNS, prepare_signal_export_frame
+
+
+DEFAULT_COMPRESSION_BREAKOUT_FEATURE_COLUMNS = (
+    "compression_breakout_score",
+    "compression_range_ratio",
+    "event_range_multiple",
+    "event_volume_multiple",
+    "event_close_position",
+    "breakout_distance_points",
+    "session_vwap_distance_points",
+)
+
+
+DEFAULT_COMPRESSION_BREAKOUT_CONTEXT_COLUMNS = (
+    *DEFAULT_CONTEXT_COLUMNS,
+    "compression_breakout_side",
+    "compression_pattern",
+)
+
+
+@dataclass(frozen=True)
+class CompressionBreakoutSignalConfig:
+    compression_lookback_bars: int = 15
+    range_lookback_bars: int = 60
+    volume_lookback_bars: int = 60
+    max_compression_range_ratio: float = 0.85
+    expansion_range_multiple: float = 1.8
+    expansion_volume_multiple: float = 1.2
+    breakout_buffer_points: float = 0.25
+    close_position_long_min: float = 0.75
+    close_position_short_max: float = 0.25
+    min_vwap_distance_points: float = 0.0
+    trade_start: str = "09:45"
+    trade_end: str = "11:30"
+
+
+def build_compression_breakout_signal_export(
+    data: pd.DataFrame,
+    *,
+    config: CompressionBreakoutSignalConfig | None = None,
+    signal_col_name: str = "candidate_signal",
+    feature_cols: Iterable[str] = DEFAULT_COMPRESSION_BREAKOUT_FEATURE_COLUMNS,
+    context_cols: Iterable[str] = DEFAULT_COMPRESSION_BREAKOUT_CONTEXT_COLUMNS,
+) -> pd.DataFrame:
+    signal_frame = build_compression_breakout_signal_frame(data, config=config)
+    return prepare_signal_export_frame(
+        signal_frame,
+        signal_col_name=signal_col_name,
+        feature_cols=feature_cols,
+        context_cols=context_cols,
+    )
+
+
+def build_compression_breakout_signal_frame(
+    data: pd.DataFrame,
+    *,
+    config: CompressionBreakoutSignalConfig | None = None,
+) -> pd.DataFrame:
+    cfg = config or CompressionBreakoutSignalConfig()
+    _validate_config(cfg)
+    df = _base_ohlcv_frame(data)
+
+    bar_range = (df["high"] - df["low"]).clip(lower=0.0)
+    true_range = _true_range(df)
+    range_ref = true_range.rolling(cfg.range_lookback_bars, min_periods=cfg.range_lookback_bars).median().shift(1)
+    volume_ref = df["volume"].rolling(cfg.volume_lookback_bars, min_periods=cfg.volume_lookback_bars).median().shift(1)
+    compression_ref = (
+        true_range.rolling(cfg.compression_lookback_bars, min_periods=cfg.compression_lookback_bars).median().shift(1)
+    )
+    compression_high = df["high"].rolling(cfg.compression_lookback_bars, min_periods=cfg.compression_lookback_bars).max().shift(1)
+    compression_low = df["low"].rolling(cfg.compression_lookback_bars, min_periods=cfg.compression_lookback_bars).min().shift(1)
+
+    compression_ratio = _safe_divide(compression_ref, range_ref)
+    range_multiple = _safe_divide(true_range, range_ref)
+    volume_multiple = _safe_divide(df["volume"], volume_ref)
+    close_position = _safe_divide(df["close"] - df["low"], bar_range).clip(lower=0.0, upper=1.0)
+
+    compressed = compression_ratio.le(cfg.max_compression_range_ratio)
+    expansion = (
+        range_ref.notna()
+        & volume_ref.notna()
+        & compressed
+        & range_multiple.ge(cfg.expansion_range_multiple)
+        & volume_multiple.ge(cfg.expansion_volume_multiple)
+    )
+    break_up = df["high"].gt(compression_high + cfg.breakout_buffer_points)
+    break_down = df["low"].lt(compression_low - cfg.breakout_buffer_points)
+
+    vwap = _session_vwap(df)
+    vwap_distance = df["close"] - vwap
+    in_time = _time_window(df["time"], cfg.trade_start, cfg.trade_end)
+
+    long_signal = (
+        expansion
+        & break_up
+        & in_time
+        & close_position.ge(cfg.close_position_long_min)
+        & vwap_distance.ge(cfg.min_vwap_distance_points)
+    )
+    short_signal = (
+        expansion
+        & break_down
+        & in_time
+        & close_position.le(cfg.close_position_short_max)
+        & vwap_distance.le(-cfg.min_vwap_distance_points)
+    )
+
+    breakout_distance = np.where(
+        long_signal,
+        df["high"] - compression_high,
+        np.where(short_signal, compression_low - df["low"], np.nan),
+    )
+    score = _breakout_score(
+        compression_ratio=compression_ratio,
+        range_multiple=range_multiple,
+        volume_multiple=volume_multiple,
+        breakout_distance_points=breakout_distance,
+        close_position=np.where(long_signal, close_position, 1.0 - close_position),
+        cfg=cfg,
+    )
+
+    signal = pd.Series(0.0, index=df.index)
+    signal.loc[long_signal] = 1.0
+    signal.loc[short_signal] = -1.0
+    signed_score = pd.Series(0.0, index=df.index)
+    signed_score.loc[long_signal] = score.loc[long_signal]
+    signed_score.loc[short_signal] = -score.loc[short_signal]
+
+    out = df.copy()
+    out["signal"] = signal
+    out["signal_type"] = np.where(signal.ne(0), "compression_breakout", "")
+    out["compression_breakout_score"] = signed_score.fillna(0.0)
+    out["compression_breakout_side"] = np.where(long_signal, "up_breakout", np.where(short_signal, "down_breakout", ""))
+    out["compression_pattern"] = np.where(signal.ne(0), "compressed_expansion_breakout", "")
+    out["compression_range_ratio"] = compression_ratio
+    out["event_range_multiple"] = range_multiple
+    out["event_volume_multiple"] = volume_multiple
+    out["event_close_position"] = close_position
+    out["breakout_distance_points"] = breakout_distance
+    out["session_vwap_distance_points"] = vwap_distance
+    out["vwap_side"] = np.where(vwap_distance.ge(0.0), "above_vwap", "below_vwap")
+    return out
+
+
+def _base_ohlcv_frame(data: pd.DataFrame) -> pd.DataFrame:
+    required = ["time", "open", "high", "low", "close", "volume"]
+    missing = [col for col in required if col not in data.columns]
+    if missing:
+        raise ValueError(f"bar data missing required columns: {missing}")
+    df = data.loc[:, required].copy()
+    df["time"] = pd.to_datetime(df["time"], errors="coerce")
+    for col in ["open", "high", "low", "close", "volume"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df = df.dropna(subset=["time", "open", "high", "low", "close", "volume"])
+    return df.sort_values("time").reset_index(drop=True)
+
+
+def _true_range(df: pd.DataFrame) -> pd.Series:
+    prev_close = df["close"].shift(1)
+    parts = pd.concat(
+        [
+            df["high"] - df["low"],
+            (df["high"] - prev_close).abs(),
+            (df["low"] - prev_close).abs(),
+        ],
+        axis=1,
+    )
+    return parts.max(axis=1).clip(lower=0.0)
+
+
+def _session_vwap(df: pd.DataFrame) -> pd.Series:
+    typical = (df["high"] + df["low"] + df["close"]) / 3.0
+    dollar_volume = typical * df["volume"]
+    session = df["time"].dt.date
+    cum_dollar = dollar_volume.groupby(session).cumsum()
+    cum_volume = df["volume"].groupby(session).cumsum()
+    return _safe_divide(cum_dollar, cum_volume).fillna(df["close"])
+
+
+def _time_window(times: pd.Series, start: str, end: str) -> pd.Series:
+    minutes = pd.to_datetime(times).dt.hour * 60 + pd.to_datetime(times).dt.minute
+    start_min = _parse_hhmm(start)
+    end_min = _parse_hhmm(end)
+    if start_min <= end_min:
+        return minutes.ge(start_min) & minutes.le(end_min)
+    return minutes.ge(start_min) | minutes.le(end_min)
+
+
+def _parse_hhmm(value: str) -> int:
+    hour, minute = str(value).split(":", 1)
+    return int(hour) * 60 + int(minute)
+
+
+def _safe_divide(numerator: pd.Series | np.ndarray, denominator: pd.Series | np.ndarray) -> pd.Series:
+    num = pd.Series(numerator)
+    den = pd.Series(denominator)
+    result = num / den.replace(0.0, np.nan)
+    return result.replace([np.inf, -np.inf], np.nan)
+
+
+def _breakout_score(
+    *,
+    compression_ratio: pd.Series,
+    range_multiple: pd.Series,
+    volume_multiple: pd.Series,
+    breakout_distance_points: np.ndarray,
+    close_position: np.ndarray,
+    cfg: CompressionBreakoutSignalConfig,
+) -> pd.Series:
+    compression_component = (cfg.max_compression_range_ratio - compression_ratio).clip(lower=0.0).fillna(0.0)
+    range_component = range_multiple.clip(lower=0.0).fillna(0.0)
+    volume_component = volume_multiple.clip(lower=0.0).fillna(0.0)
+    breakout_component = pd.Series(breakout_distance_points).clip(lower=0.0).fillna(0.0) / max(
+        cfg.breakout_buffer_points,
+        0.25,
+    )
+    close_component = pd.Series(close_position).clip(lower=0.0, upper=1.0).fillna(0.0)
+    score = (compression_component + range_component + volume_component + breakout_component + close_component) / 5.0
+    return score.clip(lower=0.0)
+
+
+def _validate_config(cfg: CompressionBreakoutSignalConfig) -> None:
+    if cfg.compression_lookback_bars <= 0:
+        raise ValueError("compression_lookback_bars must be positive")
+    if cfg.range_lookback_bars <= 0:
+        raise ValueError("range_lookback_bars must be positive")
+    if cfg.volume_lookback_bars <= 0:
+        raise ValueError("volume_lookback_bars must be positive")
+    if cfg.max_compression_range_ratio <= 0:
+        raise ValueError("max_compression_range_ratio must be positive")
+    if cfg.expansion_range_multiple <= 0:
+        raise ValueError("expansion_range_multiple must be positive")
+    if cfg.expansion_volume_multiple <= 0:
+        raise ValueError("expansion_volume_multiple must be positive")

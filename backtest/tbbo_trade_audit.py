@@ -110,7 +110,10 @@ def summarize_tbbo_trade_audit(audited: pd.DataFrame) -> pd.DataFrame:
         "pnl_with_tbbo_median_spread_cost",
         "pnl_with_tbbo_p95_spread_cost",
         "pnl_with_tbbo_p95_trade_vs_mid_cost",
+        "pnl_with_tbbo_p95_trade_vs_mid_and_limit_opportunity_cost",
         "assumed_slippage_points",
+        "limit_exit_opportunity_stress_points",
+        "limit_exit_opportunity_stress_dollars",
         "tbbo_median_round_trip_spread_cost_points",
         "tbbo_p95_round_trip_spread_cost_points",
         "tbbo_p95_trade_vs_mid_round_trip_points",
@@ -140,9 +143,12 @@ def summarize_tbbo_trade_audit_by_setup(audited: pd.DataFrame) -> pd.DataFrame:
                 "pnl",
                 "pnl_with_tbbo_median_spread_cost",
                 "pnl_with_tbbo_p95_spread_cost",
+                "pnl_with_tbbo_p95_trade_vs_mid_cost",
+                "pnl_with_tbbo_p95_trade_vs_mid_and_limit_opportunity_cost",
                 "median_assumed_slippage_points",
                 "median_tbbo_median_round_trip_spread_cost_points",
                 "median_tbbo_p95_round_trip_spread_cost_points",
+                "median_limit_exit_opportunity_stress_points",
             ]
         )
     for col in ("setup_tag", "direction"):
@@ -154,6 +160,11 @@ def summarize_tbbo_trade_audit_by_setup(audited: pd.DataFrame) -> pd.DataFrame:
         pnl=("pnl", "sum"),
         pnl_with_tbbo_median_spread_cost=("pnl_with_tbbo_median_spread_cost", "sum"),
         pnl_with_tbbo_p95_spread_cost=("pnl_with_tbbo_p95_spread_cost", "sum"),
+        pnl_with_tbbo_p95_trade_vs_mid_cost=("pnl_with_tbbo_p95_trade_vs_mid_cost", "sum"),
+        pnl_with_tbbo_p95_trade_vs_mid_and_limit_opportunity_cost=(
+            "pnl_with_tbbo_p95_trade_vs_mid_and_limit_opportunity_cost",
+            "sum",
+        ),
         median_assumed_slippage_points=("assumed_slippage_points", "median"),
         median_tbbo_median_round_trip_spread_cost_points=(
             "tbbo_median_round_trip_spread_cost_points",
@@ -163,6 +174,7 @@ def summarize_tbbo_trade_audit_by_setup(audited: pd.DataFrame) -> pd.DataFrame:
             "tbbo_p95_round_trip_spread_cost_points",
             "median",
         ),
+        median_limit_exit_opportunity_stress_points=("limit_exit_opportunity_stress_points", "median"),
     ).reset_index()
 
 
@@ -217,6 +229,17 @@ def _prepare_minute_stats(minute_stats: pd.DataFrame) -> pd.DataFrame:
         "median_abs_trade_price_vs_mid",
         "p95_abs_trade_price_vs_mid",
         "mean_trade_price_vs_mid",
+        "median_opposite_best_size",
+        "p25_opposite_best_size",
+        "median_trade_size_to_opposite_best_size",
+        "p95_trade_size_to_opposite_best_size",
+        "top_book_depth_exhausted_trade_count",
+        "top_book_depth_exhausted_trade_size",
+        "top_book_excess_trade_size",
+        "top_book_depth_exhausted_trade_pct",
+        "top_book_depth_exhausted_size_share",
+        "zero_impact_depth_supported_trade_count",
+        "zero_impact_depth_supported_trade_pct",
         "raw_b_side_count",
         "raw_a_side_count",
     ]
@@ -279,6 +302,17 @@ def _attach_event_stats(
             "median_abs_trade_price_vs_mid",
             "p95_abs_trade_price_vs_mid",
             "mean_trade_price_vs_mid",
+            "median_opposite_best_size",
+            "p25_opposite_best_size",
+            "median_trade_size_to_opposite_best_size",
+            "p95_trade_size_to_opposite_best_size",
+            "top_book_depth_exhausted_trade_count",
+            "top_book_depth_exhausted_trade_size",
+            "top_book_excess_trade_size",
+            "top_book_depth_exhausted_trade_pct",
+            "top_book_depth_exhausted_size_share",
+            "zero_impact_depth_supported_trade_count",
+            "zero_impact_depth_supported_trade_pct",
             "raw_b_side_count",
             "raw_a_side_count",
         ]
@@ -363,6 +397,18 @@ def _add_cost_estimates(audited: pd.DataFrame, *, futures_specs: Mapping[str, fl
         out[dollars_col] = out[points_col] * contracts * contract_value
         out[f"{stem}_cost_minus_assumed_points"] = out[points_col] - out["assumed_slippage_points"]
         out[f"pnl_with_{stem}_cost"] = out["pnl"] + out["assumed_slippage_dollars"] - out[dollars_col]
+
+    exit_p95_trade_vs_mid = pd.to_numeric(out.get("exit_tbbo_p95_abs_trade_price_vs_mid"), errors="coerce")
+    exit_half_spread = pd.to_numeric(out.get("exit_tbbo_median_half_spread_points"), errors="coerce")
+    limit_opportunity = (exit_p95_trade_vs_mid - exit_half_spread).clip(lower=0.0)
+    is_limit_exit = out["reason"].astype(str).isin(LIMIT_EXIT_REASONS)
+    out["limit_exit_opportunity_stress_points"] = np.where(is_limit_exit, limit_opportunity, 0.0)
+    out["limit_exit_opportunity_stress_dollars"] = (
+        out["limit_exit_opportunity_stress_points"] * contracts * contract_value
+    )
+    out["pnl_with_tbbo_p95_trade_vs_mid_and_limit_opportunity_cost"] = (
+        out["pnl_with_tbbo_p95_trade_vs_mid_cost"] - out["limit_exit_opportunity_stress_dollars"]
+    )
     return out
 
 

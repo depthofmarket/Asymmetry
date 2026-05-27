@@ -586,6 +586,10 @@ def export_multiple_testing_debt_report(
     family_name, family_candidates = _candidate_family(str(candidate_name), configured, research_config)
     planned = [str(name) for name in research_config.get("next_validation_candidates", [])]
     max_family_runs = int(research_config.get("max_candidate_family_runs_before_holdout", 4))
+    run_count_floors = research_config.get("candidate_family_run_count_floors", {})
+    known_family_run_count_floor = 0
+    if isinstance(run_count_floors, dict):
+        known_family_run_count_floor = int(run_count_floors.get(family_name, 0) or 0)
 
     rows: list[dict[str, Any]] = []
     for name in family_candidates:
@@ -599,11 +603,15 @@ def export_multiple_testing_debt_report(
                 "saved_run_count": saved_runs,
                 "configured_family_candidates": len(family_candidates),
                 "configured_total_candidates": len(configured),
+                "known_family_run_count_floor": known_family_run_count_floor,
             }
         )
 
     family_saved_runs = int(sum(int(row["saved_run_count"]) for row in rows))
-    status = "WARN" if family_saved_runs > max_family_runs else "PASS"
+    effective_family_run_count = max(family_saved_runs, known_family_run_count_floor)
+    for row in rows:
+        row["effective_family_run_count"] = effective_family_run_count
+    status = "WARN" if effective_family_run_count > max_family_runs else "PASS"
     pd.DataFrame(rows).to_csv(csv_path, index=False)
 
     lines = [
@@ -614,6 +622,8 @@ def export_multiple_testing_debt_report(
         f"- Family: {family_name}",
         f"- Configured family variants: {len(family_candidates)}",
         f"- Saved runs in family: {family_saved_runs}",
+        f"- Known family run-count floor: {known_family_run_count_floor}",
+        f"- Effective family run count: {effective_family_run_count}",
         f"- Family saved-run warning threshold: {max_family_runs}",
         f"- Status: {status}",
         "",
@@ -814,7 +824,10 @@ def export_research_discipline_report(
     debt_path = run_dir / "research" / "multiple_testing_debt.csv"
     if debt_path.exists():
         debt = pd.read_csv(debt_path)
-        family_runs = int(pd.to_numeric(debt.get("saved_run_count", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
+        if "effective_family_run_count" in debt.columns:
+            family_runs = int(pd.to_numeric(debt["effective_family_run_count"], errors="coerce").fillna(0).max())
+        else:
+            family_runs = int(pd.to_numeric(debt.get("saved_run_count", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
         family_variants_value = _safe_float(
             pd.to_numeric(debt.get("configured_family_candidates", pd.Series(dtype=float)), errors="coerce").max(),
             0.0,
@@ -930,6 +943,61 @@ def export_research_discipline_report(
             "In-sample prop pass rates remain research_only.",
         )
         add("prop_firm", "prop_expected_net_payout", ev, "> 0", bool(np.isfinite(ev) and ev > 0.0), prop_summary_path)
+        objective = str(row.get("trading_objective", "missing")).strip() or "missing"
+        add(
+            "prop_firm",
+            "prop_trading_objective_declared",
+            objective,
+            "explicit and not mistaken for live edge",
+            objective not in {"missing", "prop_eval_flip"},
+            prop_summary_path,
+            "Prop-eval flip economics are allowed for research, but they are not live-edge validation.",
+            severity="warning",
+        )
+        fill_model = str(row.get("fill_model", "missing")).strip() or "missing"
+        add(
+            "prop_firm",
+            "prop_fill_model_declared",
+            fill_model,
+            "realistic fill evidence required before promotion",
+            fill_model not in {"missing", "prop_demo_fill_assumption"},
+            prop_summary_path,
+            "Demo-fill prop math must stay separate from TBBO or other execution-realism evidence.",
+            severity="warning",
+        )
+        sample_warning = str(row.get("sample_size_warning", "")).strip()
+        trade_sample = _safe_float(row.get("trade_sample_size"))
+        minimum_sample = _safe_float(row.get("minimum_trade_sample"))
+        sample_ok = (
+            not sample_warning
+            and np.isfinite(trade_sample)
+            and (
+                not np.isfinite(minimum_sample)
+                or minimum_sample <= 0
+                or trade_sample >= minimum_sample
+            )
+        )
+        add(
+            "prop_firm",
+            "prop_trade_sample_size",
+            trade_sample if np.isfinite(trade_sample) else "missing",
+            minimum_sample if np.isfinite(minimum_sample) else "declared minimum",
+            bool(sample_ok),
+            prop_summary_path,
+            sample_warning or "Small prop samples make pass-rate and payout EV unstable.",
+            severity="warning",
+        )
+        firm_warning = str(row.get("firm_selection_warning", "")).strip()
+        add(
+            "prop_firm",
+            "prop_firm_selection_fit",
+            firm_warning or "none",
+            "no structural warnings",
+            not firm_warning,
+            prop_summary_path,
+            "The convexity model prefers low C/U, fast payouts, non-trailing drawdown, and weak/no consistency rules.",
+            severity="warning",
+        )
 
     prop_random_path = _first_existing(
         [

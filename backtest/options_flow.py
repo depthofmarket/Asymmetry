@@ -29,6 +29,15 @@ STAT_TYPE_COLUMNS = {
 }
 
 
+OPTIONS_DTE_BUCKETS: tuple[tuple[str, float | None, float | None, int], ...] = (
+    ("0dte", 0.0, 1.0, 0),
+    ("1_7dte", 1.0, 8.0, 1),
+    ("8_30dte", 8.0, 31.0, 2),
+    ("31_120dte", 31.0, 121.0, 3),
+    ("all", None, None, 99),
+)
+
+
 @dataclass(frozen=True)
 class OptionsFlowBuildConfig:
     contract_multiplier: float = 20.0
@@ -193,6 +202,67 @@ def _filtered_statistics_members(
     return filtered_members
 
 
+def _filtered_definition_members(
+    source: Path | str,
+    *,
+    start: str | pd.Timestamp | None = None,
+    end: str | pd.Timestamp | None = None,
+    max_files: int | None = None,
+) -> list[str]:
+    source_path = Path(source)
+    start_date = pd.Timestamp(start).date() if start is not None else None
+    end_date = pd.Timestamp(end).date() if end is not None else None
+    members = schema_members(source_path, "definition")
+    filtered_members: list[str] = []
+    for member in members:
+        date = _date_from_member(member)
+        if date is not None:
+            if start_date is not None and date < start_date:
+                continue
+            if end_date is not None and date > end_date:
+                continue
+        filtered_members.append(member)
+        if max_files is not None and len(filtered_members) >= int(max_files):
+            break
+    return filtered_members
+
+
+def _definition_member_by_date(source: Path | str) -> dict[Any, str]:
+    return {
+        _date_from_member(member): member
+        for member in schema_members(Path(source), "definition")
+        if _date_from_member(member) is not None
+    }
+
+
+def _read_definition_frame(
+    source: Path | str,
+    member: str,
+    *,
+    zip_file: zipfile.ZipFile | None = None,
+) -> pd.DataFrame:
+    source_path = Path(source)
+    usecols = [
+        "ts_event",
+        "instrument_id",
+        "raw_symbol",
+        "symbol",
+        "instrument_class",
+        "underlying",
+        "strike_price",
+        "expiration",
+        "activation",
+    ]
+    frame = _read_csv_member(
+        source_path,
+        member,
+        usecols=lambda col: col in usecols,
+        zip_file=zip_file,
+    )
+    frame["source_member"] = member
+    return normalize_definition_frame(frame)
+
+
 def iter_statistics_frames(
     source: Path | str,
     *,
@@ -266,6 +336,23 @@ def normalize_statistics_frame(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def normalize_definition_frame(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    for col in ("ts_event", "expiration", "activation"):
+        if col in out.columns:
+            out[col] = pd.to_datetime(out[col], utc=True, errors="coerce")
+    for col in ("instrument_id", "strike_price"):
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce")
+    if "symbol" in out.columns:
+        out["symbol"] = out["symbol"].astype(str)
+    if "raw_symbol" in out.columns:
+        out["raw_symbol"] = out["raw_symbol"].astype(str)
+    if "instrument_class" in out.columns:
+        out["instrument_class"] = out["instrument_class"].astype(str).str.upper().str[0]
+    return out
+
+
 def statistics_snapshot(statistics: pd.DataFrame) -> pd.DataFrame:
     if statistics.empty:
         return pd.DataFrame()
@@ -296,6 +383,12 @@ def statistics_snapshot(statistics: pd.DataFrame) -> pd.DataFrame:
     stats = stats.dropna(subset=["symbol", "trade_date", "stat_name", "stat_value"])
     stats = stats.sort_values(["symbol", "trade_date", "stat_name", "ts_event"])
     last = stats.groupby(["symbol", "trade_date", "stat_name"], sort=False).tail(1)
+    instrument_ids = (
+        stats.sort_values(["symbol", "trade_date", "ts_event"])
+        .groupby(["symbol", "trade_date"], sort=False)["instrument_id"]
+        .last()
+        .reset_index()
+    )
     pivot = (
         last.pivot_table(
             index=["symbol", "trade_date"],
@@ -306,6 +399,7 @@ def statistics_snapshot(statistics: pd.DataFrame) -> pd.DataFrame:
         .reset_index()
         .rename_axis(None, axis=1)
     )
+    pivot = pivot.merge(instrument_ids, on=["symbol", "trade_date"], how="left")
     availability = (
         stats.groupby("trade_date", dropna=False)["ts_event"]
         .max()
@@ -320,7 +414,40 @@ def statistics_snapshot(statistics: pd.DataFrame) -> pd.DataFrame:
     return pivot
 
 
-def add_option_metadata(snapshot: pd.DataFrame) -> pd.DataFrame:
+def definition_snapshot(definitions: pd.DataFrame) -> pd.DataFrame:
+    if definitions.empty:
+        return pd.DataFrame()
+    defs = normalize_definition_frame(definitions)
+    source_date = (
+        defs["source_member"].map(_date_from_member)
+        if "source_member" in defs.columns
+        else pd.Series(pd.NaT, index=defs.index)
+    )
+    ts_event_date = pd.to_datetime(defs.get("ts_event"), utc=True, errors="coerce").dt.date
+    defs["trade_date"] = source_date.where(pd.notna(source_date), ts_event_date)
+    defs = defs.dropna(subset=["instrument_id", "trade_date", "strike_price"])
+    if defs.empty:
+        return pd.DataFrame()
+    defs = defs.sort_values(["instrument_id", "trade_date", "ts_event"])
+    last = defs.groupby(["instrument_id", "trade_date"], sort=False).tail(1).copy()
+    out = pd.DataFrame(
+        {
+            "instrument_id": pd.to_numeric(last["instrument_id"], errors="coerce"),
+            "trade_date": last["trade_date"],
+            "definition_symbol": last.get("symbol", pd.Series(np.nan, index=last.index)).astype(str),
+            "definition_raw_symbol": last.get("raw_symbol", pd.Series(np.nan, index=last.index)).astype(str),
+            "definition_option_type": last.get("instrument_class", pd.Series(np.nan, index=last.index)).astype(str).str.upper().str[0],
+            "definition_strike": pd.to_numeric(last["strike_price"], errors="coerce"),
+            "definition_expiration": _normalize_feature_time(last["expiration"])
+            if "expiration" in last.columns
+            else pd.NaT,
+        }
+    )
+    out.loc[~out["definition_option_type"].isin(["C", "P"]), "definition_option_type"] = np.nan
+    return out.dropna(subset=["instrument_id", "trade_date"])
+
+
+def add_option_metadata(snapshot: pd.DataFrame, definitions: pd.DataFrame | None = None) -> pd.DataFrame:
     if snapshot.empty:
         return snapshot.copy()
     out = snapshot.copy()
@@ -339,6 +466,36 @@ def add_option_metadata(snapshot: pd.DataFrame) -> pd.DataFrame:
     out["option_type"] = option_type
     out["strike"] = pd.to_numeric(strike, errors="coerce")
     out["estimated_expiration"] = pd.to_datetime(expiration, errors="coerce")
+    if definitions is not None and not definitions.empty and "instrument_id" in out.columns:
+        defs = definition_snapshot(definitions)
+        if not defs.empty:
+            out["instrument_id"] = pd.to_numeric(out["instrument_id"], errors="coerce")
+            out["trade_date"] = pd.to_datetime(out["trade_date"], errors="coerce").dt.date
+            defs["trade_date"] = pd.to_datetime(defs["trade_date"], errors="coerce").dt.date
+            out = out.merge(
+                defs,
+                on=["instrument_id", "trade_date"],
+                how="left",
+            )
+            out["option_type"] = out["definition_option_type"].where(
+                out["definition_option_type"].isin(["C", "P"]),
+                out["option_type"],
+            )
+            out["strike"] = out["definition_strike"].where(out["definition_strike"].notna(), out["strike"])
+            out["estimated_expiration"] = out["definition_expiration"].where(
+                out["definition_expiration"].notna(),
+                out["estimated_expiration"],
+            )
+            out = out.drop(
+                columns=[
+                    "definition_symbol",
+                    "definition_raw_symbol",
+                    "definition_option_type",
+                    "definition_strike",
+                    "definition_expiration",
+                ],
+                errors="ignore",
+            )
     out["dte"] = (
         (out["estimated_expiration"] - pd.to_datetime(out["available_time"]))
         .dt.total_seconds()
@@ -431,25 +588,112 @@ def compute_option_greeks(snapshot: pd.DataFrame, config: OptionsFlowBuildConfig
     return out
 
 
+def _options_for_dte_bucket(options: pd.DataFrame, min_dte: float | None, max_dte: float | None) -> pd.DataFrame:
+    if min_dte is None and max_dte is None:
+        return options.copy()
+    dte = pd.to_numeric(options["dte"], errors="coerce")
+    mask = dte.notna()
+    if min_dte is not None:
+        mask &= dte.ge(float(min_dte))
+    if max_dte is not None:
+        mask &= dte.lt(float(max_dte))
+    return options.loc[mask].copy()
+
+
+def _add_bucket_columns(
+    frame: pd.DataFrame,
+    *,
+    bucket: str,
+    min_dte: float | None,
+    max_dte: float | None,
+    priority: int,
+) -> pd.DataFrame:
+    if frame.empty:
+        return frame
+    out = frame.copy()
+    insert_at = 1 if "options_trade_date" in out.columns else 0
+    out.insert(insert_at, "options_dte_bucket", bucket)
+    out.insert(insert_at + 1, "options_dte_min", min_dte)
+    out.insert(insert_at + 2, "options_dte_max_exclusive", max_dte)
+    out.insert(insert_at + 3, "options_dte_bucket_priority", priority)
+    return out
+
+
+def _aggregate_options_dashboard(options: pd.DataFrame, cfg: OptionsFlowBuildConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
+    daily_frames: list[pd.DataFrame] = []
+    strike_frames: list[pd.DataFrame] = []
+    for bucket, min_dte, max_dte, priority in OPTIONS_DTE_BUCKETS:
+        bucket_options = _options_for_dte_bucket(options, min_dte, max_dte)
+        if bucket_options.empty:
+            continue
+        daily = _aggregate_options_flow(bucket_options, cfg)
+        if daily.empty:
+            continue
+        daily = _add_bucket_columns(
+            daily,
+            bucket=bucket,
+            min_dte=min_dte,
+            max_dte=max_dte,
+            priority=priority,
+        )
+        strikes = _aggregate_options_strike_levels(bucket_options, daily)
+        strikes = _add_bucket_columns(
+            strikes,
+            bucket=bucket,
+            min_dte=min_dte,
+            max_dte=max_dte,
+            priority=priority,
+        )
+        daily_frames.append(daily)
+        if not strikes.empty:
+            strike_frames.append(strikes)
+    dashboard = pd.concat(daily_frames, ignore_index=True) if daily_frames else pd.DataFrame()
+    dashboard_strikes = pd.concat(strike_frames, ignore_index=True) if strike_frames else pd.DataFrame()
+    if not dashboard.empty:
+        dashboard = dashboard.sort_values(["options_available_time", "options_dte_bucket_priority"]).reset_index(drop=True)
+    if not dashboard_strikes.empty:
+        dashboard_strikes = dashboard_strikes.sort_values(
+            ["options_available_time", "options_dte_bucket_priority", "options_strike"]
+        ).reset_index(drop=True)
+    return dashboard, dashboard_strikes
+
+
+def build_options_flow_feature_sets(
+    statistics: pd.DataFrame,
+    futures_bars: pd.DataFrame,
+    config: OptionsFlowBuildConfig | None = None,
+    definitions: pd.DataFrame | None = None,
+) -> dict[str, pd.DataFrame]:
+    futures_prices = _prepare_futures_prices(futures_bars)
+    return _build_options_flow_feature_sets_from_statistics(statistics, futures_prices, config, definitions)
+
+
 def build_options_flow_features(
     statistics: pd.DataFrame,
     futures_bars: pd.DataFrame,
     config: OptionsFlowBuildConfig | None = None,
+    definitions: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    futures_prices = _prepare_futures_prices(futures_bars)
-    return _build_options_flow_features_from_statistics(statistics, futures_prices, config)
+    feature_sets = build_options_flow_feature_sets(statistics, futures_bars, config, definitions)
+    return feature_sets["daily"], feature_sets["strike_levels"]
 
 
-def _build_options_flow_features_from_statistics(
+def _build_options_flow_feature_sets_from_statistics(
     statistics: pd.DataFrame,
     futures_prices: pd.DataFrame,
     config: OptionsFlowBuildConfig | None = None,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+    definitions: pd.DataFrame | None = None,
+) -> dict[str, pd.DataFrame]:
     cfg = config or OptionsFlowBuildConfig()
     snapshot = statistics_snapshot(statistics)
     if snapshot.empty:
-        return pd.DataFrame(), pd.DataFrame()
-    options = add_option_metadata(snapshot)
+        return {
+            "daily": pd.DataFrame(),
+            "strike_levels": pd.DataFrame(),
+            "dashboard": pd.DataFrame(),
+            "dashboard_strike_levels": pd.DataFrame(),
+        }
+    options = add_option_metadata(snapshot, definitions)
     options = _attach_underlying_price(options, futures_prices)
     for col in ("settlement_price", "cleared_volume", "open_interest", "official_iv", "official_delta"):
         if col not in options.columns:
@@ -464,12 +708,22 @@ def _build_options_flow_features_from_statistics(
     if cfg.strike_window_points and cfg.strike_window_points > 0:
         options = options.loc[(options["strike"] - options["underlying_price"]).abs().le(float(cfg.strike_window_points))]
     if options.empty:
-        return pd.DataFrame(), pd.DataFrame()
+        return {
+            "daily": pd.DataFrame(),
+            "strike_levels": pd.DataFrame(),
+            "dashboard": pd.DataFrame(),
+            "dashboard_strike_levels": pd.DataFrame(),
+        }
 
     options = compute_option_greeks(options, cfg)
     options = options.dropna(subset=["gamma", "delta", "implied_volatility"])
     if options.empty:
-        return pd.DataFrame(), pd.DataFrame()
+        return {
+            "daily": pd.DataFrame(),
+            "strike_levels": pd.DataFrame(),
+            "dashboard": pd.DataFrame(),
+            "dashboard_strike_levels": pd.DataFrame(),
+        }
     sign = np.where(options["option_type"].eq("C"), 1.0, float(cfg.put_gamma_sign))
     oi = options["open_interest"].fillna(0).astype(float)
     f = options["underlying_price"].astype(float)
@@ -480,7 +734,29 @@ def _build_options_flow_features_from_statistics(
     options["vega_exposure"] = options["vega"].astype(float) * oi * multiplier
 
     daily = _aggregate_options_flow(options, cfg)
-    return daily, options
+    strike_levels = _aggregate_options_strike_levels(options, daily)
+    dashboard, dashboard_strike_levels = _aggregate_options_dashboard(options, cfg)
+    return {
+        "daily": daily,
+        "strike_levels": strike_levels,
+        "dashboard": dashboard,
+        "dashboard_strike_levels": dashboard_strike_levels,
+    }
+
+
+def _build_options_flow_features_from_statistics(
+    statistics: pd.DataFrame,
+    futures_prices: pd.DataFrame,
+    config: OptionsFlowBuildConfig | None = None,
+    definitions: pd.DataFrame | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    feature_sets = _build_options_flow_feature_sets_from_statistics(
+        statistics,
+        futures_prices,
+        config,
+        definitions,
+    )
+    return feature_sets["daily"], feature_sets["strike_levels"]
 
 
 def _nearest_wall(strikes: pd.Series, reference: float, side: str) -> float:
@@ -577,17 +853,180 @@ def _aggregate_options_flow(options: pd.DataFrame, cfg: OptionsFlowBuildConfig) 
     return pd.DataFrame(rows).sort_values("options_available_time").reset_index(drop=True)
 
 
+def _weighted_average(values: pd.Series, weights: pd.Series) -> float:
+    numeric_values = pd.to_numeric(values, errors="coerce")
+    numeric_weights = pd.to_numeric(weights, errors="coerce").fillna(0.0)
+    valid = numeric_values.notna() & numeric_weights.gt(0.0)
+    if valid.any():
+        return float(np.average(numeric_values.loc[valid], weights=numeric_weights.loc[valid]))
+    return float(numeric_values.mean()) if numeric_values.notna().any() else np.nan
+
+
+def _strike_role(
+    strike: float,
+    *,
+    gamma_wall: float,
+    call_wall: float,
+    put_wall: float,
+    gamma_above: float,
+    gamma_below: float,
+) -> str:
+    roles: list[str] = []
+    checks = [
+        ("gamma_wall", gamma_wall),
+        ("call_wall", call_wall),
+        ("put_wall", put_wall),
+        ("nearest_gamma_above", gamma_above),
+        ("nearest_gamma_below", gamma_below),
+    ]
+    for name, level in checks:
+        if pd.notna(level) and math.isclose(float(strike), float(level), abs_tol=1e-9):
+            roles.append(name)
+    return "|".join(roles) if roles else "level"
+
+
+def _aggregate_options_strike_levels(options: pd.DataFrame, daily: pd.DataFrame) -> pd.DataFrame:
+    """Build a by-strike GEX surface from option-level rows.
+
+    The daily feature file is the compact point-in-time join artifact for
+    backtests. This strike-level file is the research surface: one row per
+    trade date and strike, with calls and puts split out like a GEX dashboard.
+    """
+    if options.empty:
+        return pd.DataFrame()
+
+    daily_lookup: dict[Any, pd.Series] = {}
+    if not daily.empty and "options_trade_date" in daily.columns:
+        for row in daily.itertuples(index=False):
+            daily_lookup[str(getattr(row, "options_trade_date"))] = pd.Series(row._asdict())
+
+    rows: list[dict[str, Any]] = []
+    for (trade_date, strike), group in options.groupby(["trade_date", "strike"], sort=True):
+        calls = group.loc[group["option_type"].eq("C")]
+        puts = group.loc[group["option_type"].eq("P")]
+        underlying = float(group["underlying_price"].median())
+        trade_date_key = str(trade_date)
+        daily_row = daily_lookup.get(trade_date_key, pd.Series(dtype=object))
+        gamma_wall = pd.to_numeric(daily_row.get("options_gamma_wall_strike", np.nan), errors="coerce")
+        call_wall = pd.to_numeric(daily_row.get("options_call_wall_strike", np.nan), errors="coerce")
+        put_wall = pd.to_numeric(daily_row.get("options_put_wall_strike", np.nan), errors="coerce")
+        gamma_above = pd.to_numeric(daily_row.get("options_gamma_wall_above", np.nan), errors="coerce")
+        gamma_below = pd.to_numeric(daily_row.get("options_gamma_wall_below", np.nan), errors="coerce")
+
+        call_oi = float(calls["open_interest"].sum())
+        put_oi = float(puts["open_interest"].sum())
+        call_volume = float(calls.get("cleared_volume", pd.Series(dtype=float)).fillna(0.0).sum())
+        put_volume = float(puts.get("cleared_volume", pd.Series(dtype=float)).fillna(0.0).sum())
+        call_gex = float(calls["gamma_exposure"].sum())
+        put_gex = float(puts["gamma_exposure"].sum())
+        call_dex = float(calls["delta_exposure"].sum())
+        put_dex = float(puts["delta_exposure"].sum())
+
+        rows.append(
+            {
+                "options_trade_date": trade_date_key,
+                "options_available_time": group["available_time"].max(),
+                "options_underlying_price": underlying,
+                "options_strike": float(strike),
+                "options_distance_from_underlying_points": float(strike) - underlying,
+                "options_distance_from_underlying_pct": (float(strike) / underlying - 1.0)
+                if underlying > 0
+                else np.nan,
+                "options_contracts": int(group["symbol"].nunique()),
+                "options_total_oi": call_oi + put_oi,
+                "options_call_oi": call_oi,
+                "options_put_oi": put_oi,
+                "options_net_call_put_oi": call_oi - put_oi,
+                "options_cleared_volume": call_volume + put_volume,
+                "options_call_volume": call_volume,
+                "options_put_volume": put_volume,
+                "options_net_call_put_volume": call_volume - put_volume,
+                "options_net_gex": call_gex + put_gex,
+                "options_abs_gex": float(group["abs_gamma_exposure"].sum()),
+                "options_call_gex": call_gex,
+                "options_put_gex": put_gex,
+                "options_net_dex": call_dex + put_dex,
+                "options_call_dex": call_dex,
+                "options_put_dex": put_dex,
+                "options_vega_exposure": float(group["vega_exposure"].sum()),
+                "options_avg_iv": _weighted_average(group["implied_volatility"], group["open_interest"]),
+                "options_call_avg_iv": _weighted_average(calls["implied_volatility"], calls["open_interest"])
+                if not calls.empty
+                else np.nan,
+                "options_put_avg_iv": _weighted_average(puts["implied_volatility"], puts["open_interest"])
+                if not puts.empty
+                else np.nan,
+                "options_call_avg_delta": _weighted_average(calls["delta"], calls["open_interest"])
+                if not calls.empty
+                else np.nan,
+                "options_put_avg_delta": _weighted_average(puts["delta"], puts["open_interest"])
+                if not puts.empty
+                else np.nan,
+                "options_is_gamma_wall": bool(pd.notna(gamma_wall) and math.isclose(float(strike), float(gamma_wall), abs_tol=1e-9)),
+                "options_is_call_wall": bool(pd.notna(call_wall) and math.isclose(float(strike), float(call_wall), abs_tol=1e-9)),
+                "options_is_put_wall": bool(pd.notna(put_wall) and math.isclose(float(strike), float(put_wall), abs_tol=1e-9)),
+                "options_is_nearest_gamma_above": bool(
+                    pd.notna(gamma_above) and math.isclose(float(strike), float(gamma_above), abs_tol=1e-9)
+                ),
+                "options_is_nearest_gamma_below": bool(
+                    pd.notna(gamma_below) and math.isclose(float(strike), float(gamma_below), abs_tol=1e-9)
+                ),
+                "options_strike_role": _strike_role(
+                    float(strike),
+                    gamma_wall=gamma_wall,
+                    call_wall=call_wall,
+                    put_wall=put_wall,
+                    gamma_above=gamma_above,
+                    gamma_below=gamma_below,
+                ),
+            }
+        )
+
+    return (
+        pd.DataFrame(rows)
+        .sort_values(["options_available_time", "options_strike"])
+        .reset_index(drop=True)
+    )
+
+
 def build_options_flow_features_from_source(
     statistics_source: Path | str,
     futures_bars: pd.DataFrame,
     config: OptionsFlowBuildConfig | None = None,
     *,
+    definition_source: Path | str | None = None,
     start: str | pd.Timestamp | None = None,
     end: str | pd.Timestamp | None = None,
     max_files: int | None = None,
     rows_per_file: int | None = None,
     progress_every: int | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    feature_sets = build_options_flow_feature_sets_from_source(
+        statistics_source,
+        futures_bars,
+        config,
+        definition_source=definition_source,
+        start=start,
+        end=end,
+        max_files=max_files,
+        rows_per_file=rows_per_file,
+        progress_every=progress_every,
+    )
+    return feature_sets["daily"], feature_sets["strike_levels"]
+
+
+def build_options_flow_feature_sets_from_source(
+    statistics_source: Path | str,
+    futures_bars: pd.DataFrame,
+    config: OptionsFlowBuildConfig | None = None,
+    *,
+    definition_source: Path | str | None = None,
+    start: str | pd.Timestamp | None = None,
+    end: str | pd.Timestamp | None = None,
+    max_files: int | None = None,
+    rows_per_file: int | None = None,
+    progress_every: int | None = None,
+) -> dict[str, pd.DataFrame]:
     members = _filtered_statistics_members(
         statistics_source,
         start=start,
@@ -595,46 +1034,107 @@ def build_options_flow_features_from_source(
         max_files=max_files,
     )
     if not members:
-        return pd.DataFrame(), pd.DataFrame()
+        return {
+            "daily": pd.DataFrame(),
+            "strike_levels": pd.DataFrame(),
+            "dashboard": pd.DataFrame(),
+            "dashboard_strike_levels": pd.DataFrame(),
+        }
 
     futures_prices = _prepare_futures_prices(futures_bars)
     daily_frames: list[pd.DataFrame] = []
     strike_frames: list[pd.DataFrame] = []
+    dashboard_frames: list[pd.DataFrame] = []
+    dashboard_strike_frames: list[pd.DataFrame] = []
     total_strike_rows = 0
+    total_dashboard_rows = 0
+    total_dashboard_strike_rows = 0
     total_members = len(members)
     should_log_progress = progress_every is not None and int(progress_every) > 0
+    definition_members_by_date = _definition_member_by_date(definition_source) if definition_source else {}
+    definition_zip: zipfile.ZipFile | None = None
+    definition_source_path = Path(definition_source) if definition_source else None
+    if definition_source_path is not None and definition_source_path.suffix.lower() == ".zip":
+        definition_zip = zipfile.ZipFile(definition_source_path)
 
-    for index, frame in enumerate(
-        iter_statistics_frames(
-            statistics_source,
-            start=start,
-            end=end,
-            max_files=max_files,
-            rows_per_file=rows_per_file,
-        ),
-        start=1,
-    ):
-        daily, strikes = _build_options_flow_features_from_statistics(frame, futures_prices, config)
-        if not daily.empty:
-            daily_frames.append(daily)
-        if not strikes.empty:
-            strike_frames.append(strikes)
-            total_strike_rows += len(strikes)
-        if should_log_progress and (index == 1 or index == total_members or index % int(progress_every) == 0):
-            print(
-                f"[options-flow] processed {index}/{total_members} members; "
-                f"feature days={sum(len(df) for df in daily_frames):,}; strike rows={total_strike_rows:,}",
-                flush=True,
-            )
+    try:
+        for index, (member, frame) in enumerate(
+            zip(
+                members,
+                iter_statistics_frames(
+                    statistics_source,
+                    start=start,
+                    end=end,
+                    max_files=max_files,
+                    rows_per_file=rows_per_file,
+                ),
+                strict=False,
+            ),
+            start=1,
+        ):
+            definitions = pd.DataFrame()
+            if definition_source_path is not None:
+                definition_member = definition_members_by_date.get(_date_from_member(member))
+                if definition_member is not None:
+                    definitions = _read_definition_frame(
+                        definition_source_path,
+                        definition_member,
+                        zip_file=definition_zip,
+                    )
+            feature_sets = _build_options_flow_feature_sets_from_statistics(frame, futures_prices, config, definitions)
+            daily = feature_sets["daily"]
+            strikes = feature_sets["strike_levels"]
+            dashboard = feature_sets["dashboard"]
+            dashboard_strikes = feature_sets["dashboard_strike_levels"]
+            if not daily.empty:
+                daily_frames.append(daily)
+            if not strikes.empty:
+                strike_frames.append(strikes)
+                total_strike_rows += len(strikes)
+            if not dashboard.empty:
+                dashboard_frames.append(dashboard)
+                total_dashboard_rows += len(dashboard)
+            if not dashboard_strikes.empty:
+                dashboard_strike_frames.append(dashboard_strikes)
+                total_dashboard_strike_rows += len(dashboard_strikes)
+            if should_log_progress and (index == 1 or index == total_members or index % int(progress_every) == 0):
+                print(
+                    f"[options-flow] processed {index}/{total_members} members; "
+                    f"feature days={sum(len(df) for df in daily_frames):,}; "
+                    f"strike rows={total_strike_rows:,}; "
+                    f"dashboard rows={total_dashboard_rows:,}; "
+                    f"dashboard strike rows={total_dashboard_strike_rows:,}",
+                    flush=True,
+                )
+    finally:
+        if definition_zip is not None:
+            definition_zip.close()
 
     daily_out = pd.concat(daily_frames, ignore_index=True) if daily_frames else pd.DataFrame()
     if not daily_out.empty and "options_available_time" in daily_out.columns:
         daily_out = daily_out.sort_values("options_available_time").reset_index(drop=True)
 
     strike_out = pd.concat(strike_frames, ignore_index=True) if strike_frames else pd.DataFrame()
-    if not strike_out.empty and "available_time" in strike_out.columns:
-        strike_out = strike_out.sort_values("available_time").reset_index(drop=True)
-    return daily_out, strike_out
+    if not strike_out.empty and "options_available_time" in strike_out.columns:
+        strike_out = strike_out.sort_values(["options_available_time", "options_strike"]).reset_index(drop=True)
+    dashboard_out = pd.concat(dashboard_frames, ignore_index=True) if dashboard_frames else pd.DataFrame()
+    if not dashboard_out.empty and "options_available_time" in dashboard_out.columns:
+        dashboard_out = dashboard_out.sort_values(
+            ["options_available_time", "options_dte_bucket_priority"]
+        ).reset_index(drop=True)
+    dashboard_strike_out = (
+        pd.concat(dashboard_strike_frames, ignore_index=True) if dashboard_strike_frames else pd.DataFrame()
+    )
+    if not dashboard_strike_out.empty and "options_available_time" in dashboard_strike_out.columns:
+        dashboard_strike_out = dashboard_strike_out.sort_values(
+            ["options_available_time", "options_dte_bucket_priority", "options_strike"]
+        ).reset_index(drop=True)
+    return {
+        "daily": daily_out,
+        "strike_levels": strike_out,
+        "dashboard": dashboard_out,
+        "dashboard_strike_levels": dashboard_strike_out,
+    }
 
 
 def add_options_flow_features(
@@ -663,4 +1163,21 @@ def add_options_flow_features(
         right_on="options_available_time",
         direction="backward",
     )
+    if "close" in merged.columns:
+        price = pd.to_numeric(merged["close"], errors="coerce")
+        wall_strikes = {
+            "options_gamma_wall_distance": ("options_gamma_wall_strike", "strike_minus_price"),
+            "options_gamma_wall_above_distance": ("options_gamma_wall_above", "strike_minus_price"),
+            "options_gamma_wall_below_distance": ("options_gamma_wall_below", "price_minus_strike"),
+            "options_call_wall_distance": ("options_call_wall_strike", "strike_minus_price"),
+            "options_put_wall_distance": ("options_put_wall_strike", "price_minus_strike"),
+        }
+        for distance_col, (strike_col, mode) in wall_strikes.items():
+            if strike_col not in merged.columns:
+                continue
+            strike = pd.to_numeric(merged[strike_col], errors="coerce")
+            if mode == "strike_minus_price":
+                merged[distance_col] = strike - price
+            else:
+                merged[distance_col] = price - strike
     return merged.sort_values("time").reset_index(drop=True)

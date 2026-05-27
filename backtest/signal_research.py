@@ -20,6 +20,7 @@ DEFAULT_EXCLUDED_SIGNAL_COLUMNS = {
     "vwap",
     "atr",
 }
+MAX_MONTE_CARLO_DRAW_CELLS = 5_000_000
 
 
 @dataclass(frozen=True)
@@ -60,13 +61,24 @@ def run_signal_research_report(
     context_cols: Iterable[str] = (),
     time_col: str = "time",
     price_col: str = "close",
+    entry_price_col: str | None = None,
+    exit_price_col: str | None = None,
+    entry_lag_bars: int = 0,
     horizons_bars: Iterable[int] = DEFAULT_HORIZONS_BARS,
     period: str = "Q",
     round_trip_cost_points: float = 0.0,
+    stress_round_trip_cost_points: Iterable[float] = (),
     min_obs: int = 100,
     min_active_obs: int = 30,
     min_abs_ic: float = 0.02,
     min_positive_period_pct: float = 55.0,
+    min_event_hit_rate_pct: float = 52.0,
+    min_event_bootstrap_ci_low_points: float = 0.0,
+    min_event_placebo_edge_points: float = 0.0,
+    max_event_placebo_p_value: float = 0.10,
+    event_bootstrap_samples: int = 1000,
+    event_placebo_samples: int = 1000,
+    event_random_seed: int = 7,
 ) -> SignalResearchPaths:
     df = data.copy()
     out_path = Path(out_dir)
@@ -74,6 +86,15 @@ def run_signal_research_report(
 
     if price_col not in df.columns:
         raise ValueError(f"price column not found: {price_col}")
+    entry_col = entry_price_col or price_col
+    exit_col = exit_price_col or price_col
+    if entry_col not in df.columns:
+        raise ValueError(f"entry price column not found: {entry_col}")
+    if exit_col not in df.columns:
+        raise ValueError(f"exit price column not found: {exit_col}")
+    entry_lag = int(entry_lag_bars)
+    if entry_lag < 0:
+        raise ValueError("entry_lag_bars must be non-negative")
 
     context_cols = [col for col in context_cols if col in df.columns]
     selected_signals = list(signal_cols) if signal_cols is not None else infer_signal_columns(
@@ -89,6 +110,8 @@ def run_signal_research_report(
         raise ValueError("no signal columns supplied or inferred")
 
     df[price_col] = pd.to_numeric(df[price_col], errors="coerce")
+    df[entry_col] = pd.to_numeric(df[entry_col], errors="coerce")
+    df[exit_col] = pd.to_numeric(df[exit_col], errors="coerce")
     if time_col in df.columns:
         times = pd.to_datetime(df[time_col], errors="coerce")
     else:
@@ -98,11 +121,20 @@ def run_signal_research_report(
     summary_rows: list[dict[str, object]] = []
     period_rows: list[dict[str, object]] = []
     context_rows: list[dict[str, object]] = []
+    rng = np.random.default_rng(int(event_random_seed))
+    stress_costs = _normalize_stress_costs(
+        primary_cost=float(round_trip_cost_points),
+        stress_costs=stress_round_trip_cost_points,
+    )
 
     for horizon in [int(item) for item in horizons_bars]:
         if horizon <= 0:
             continue
-        forward_return = df[price_col].shift(-horizon) - df[price_col]
+        if entry_lag > horizon:
+            continue
+        entry_price = df[entry_col].shift(-entry_lag)
+        exit_price = df[exit_col].shift(-horizon)
+        forward_return = exit_price - entry_price
         for signal_col in selected_signals:
             signal = pd.to_numeric(df[signal_col], errors="coerce")
             direction = np.sign(signal)
@@ -118,7 +150,23 @@ def run_signal_research_report(
             hit_rate = float((active_raw > 0).mean() * 100.0) if not active_raw.empty else np.nan
             long_mask = active_mask & direction.gt(0)
             short_mask = active_mask & direction.lt(0)
+            event_median_after_cost = _finite_median(active_signed)
+            event_ci_low, event_ci_high = _bootstrap_mean_ci(
+                active_signed,
+                samples=int(event_bootstrap_samples),
+                confidence=0.95,
+                rng=rng,
+            )
+            placebo_mean, placebo_edge, placebo_p_value = _placebo_event_test(
+                forward_return.loc[valid_mask],
+                direction.loc[active_mask],
+                observed_mean=_finite_mean(active_signed),
+                round_trip_cost_points=float(round_trip_cost_points),
+                samples=int(event_placebo_samples),
+                rng=rng,
+            )
 
+            current_period_rows: list[dict[str, object]] = []
             for period_value, idx in active_mask.groupby(period_labels).groups.items():
                 period_mask = active_mask.loc[idx]
                 if not bool(period_mask.any()):
@@ -128,8 +176,9 @@ def run_signal_research_report(
                 period_valid = period_signal.notna() & period_forward.notna()
                 period_direction = direction.loc[idx]
                 period_active = period_direction.ne(0) & period_valid
-                period_signed = (period_direction * period_forward - float(round_trip_cost_points)).loc[period_active]
-                period_rows.append(
+                period_raw_signed = (period_direction * period_forward).loc[period_active]
+                period_signed = period_raw_signed - float(round_trip_cost_points)
+                period_row = (
                     {
                         "signal": signal_col,
                         "horizon_bars": horizon,
@@ -142,8 +191,15 @@ def run_signal_research_report(
                         else np.nan,
                     }
                 )
+                period_rows.append(period_row)
+                current_period_rows.append(
+                    {
+                        **period_row,
+                        "_raw_mean_signed_return_points": _finite_mean(period_raw_signed),
+                    }
+                )
 
-            signal_periods = pd.DataFrame([row for row in period_rows if row["signal"] == signal_col and row["horizon_bars"] == horizon])
+            signal_periods = pd.DataFrame(current_period_rows)
             period_count = int(len(signal_periods))
             positive_ic_period_pct = (
                 float((pd.to_numeric(signal_periods["ic"], errors="coerce") > 0).mean() * 100.0)
@@ -170,6 +226,15 @@ def run_signal_research_report(
             long_mean = _finite_mean(forward_return.loc[long_mask])
             short_mean = _finite_mean((-forward_return).loc[short_mask])
             signed_mean_after_cost = _finite_mean(active_signed)
+            stress_metrics = _cost_stress_metrics(
+                active_raw,
+                signal_periods,
+                stress_costs=stress_costs,
+                primary_cost=float(round_trip_cost_points),
+                min_positive_period_pct=float(min_positive_period_pct),
+                min_event_bootstrap_ci_low_points=float(min_event_bootstrap_ci_low_points),
+                event_ci_low=event_ci_low,
+            )
             eligible = (
                 int(valid_mask.sum()) >= int(min_obs)
                 and int(active_mask.sum()) >= int(min_active_obs)
@@ -179,32 +244,60 @@ def run_signal_research_report(
                 and signed_mean_after_cost > 0
                 and np.isfinite(positive_signed_period_pct)
                 and positive_signed_period_pct >= float(min_positive_period_pct)
+                and bool(stress_metrics["stress_cost_survives"])
+            )
+            event_eligible = (
+                int(valid_mask.sum()) >= int(min_obs)
+                and int(active_mask.sum()) >= int(min_active_obs)
+                and np.isfinite(signed_mean_after_cost)
+                and signed_mean_after_cost > 0
+                and np.isfinite(hit_rate)
+                and hit_rate >= float(min_event_hit_rate_pct)
+                and np.isfinite(positive_signed_period_pct)
+                and positive_signed_period_pct >= float(min_positive_period_pct)
+                and np.isfinite(worst_period_signed)
+                and np.isfinite(event_ci_low)
+                and event_ci_low > float(min_event_bootstrap_ci_low_points)
+                and np.isfinite(placebo_edge)
+                and placebo_edge > float(min_event_placebo_edge_points)
+                and np.isfinite(placebo_p_value)
+                and placebo_p_value <= float(max_event_placebo_p_value)
+                and bool(stress_metrics["stress_event_cost_survives"])
             )
 
+            summary_row = {
+                "signal": signal_col,
+                "horizon_bars": horizon,
+                "n_obs": int(valid_mask.sum()),
+                "n_active": int(active_mask.sum()),
+                "active_pct": float(active_mask.mean() * 100.0),
+                "ic": ic,
+                "abs_ic": abs(ic) if np.isfinite(ic) else np.nan,
+                "ic_suspicious_gt_0_10": bool(np.isfinite(ic) and abs(ic) >= 0.10),
+                "mean_forward_return_points": _finite_mean(active_forward),
+                "mean_signed_return_points": _finite_mean(active_raw),
+                "mean_signed_return_after_cost_points": signed_mean_after_cost,
+                "median_signed_return_after_cost_points": event_median_after_cost,
+                "hit_rate_pct": hit_rate,
+                "long_n": int(long_mask.sum()),
+                "long_mean_forward_return_points": long_mean,
+                "short_n": int(short_mask.sum()),
+                "short_mean_signed_forward_return_points": short_mean,
+                "period_count": period_count,
+                "positive_ic_period_pct": positive_ic_period_pct,
+                "positive_signed_period_pct": positive_signed_period_pct,
+                "worst_period_signed_return_after_cost_points": worst_period_signed,
+                "bootstrap_mean_ci_low_points": event_ci_low,
+                "bootstrap_mean_ci_high_points": event_ci_high,
+                "placebo_mean_signed_return_after_cost_points": placebo_mean,
+                "placebo_edge_points": placebo_edge,
+                "placebo_p_value": placebo_p_value,
+                "eligible_for_candidate": bool(eligible),
+                "event_eligible_for_candidate": bool(event_eligible),
+            }
+            summary_row.update(stress_metrics)
             summary_rows.append(
-                {
-                    "signal": signal_col,
-                    "horizon_bars": horizon,
-                    "n_obs": int(valid_mask.sum()),
-                    "n_active": int(active_mask.sum()),
-                    "active_pct": float(active_mask.mean() * 100.0),
-                    "ic": ic,
-                    "abs_ic": abs(ic) if np.isfinite(ic) else np.nan,
-                    "ic_suspicious_gt_0_10": bool(np.isfinite(ic) and abs(ic) >= 0.10),
-                    "mean_forward_return_points": _finite_mean(active_forward),
-                    "mean_signed_return_points": _finite_mean(active_raw),
-                    "mean_signed_return_after_cost_points": signed_mean_after_cost,
-                    "hit_rate_pct": hit_rate,
-                    "long_n": int(long_mask.sum()),
-                    "long_mean_forward_return_points": long_mean,
-                    "short_n": int(short_mask.sum()),
-                    "short_mean_signed_forward_return_points": short_mean,
-                    "period_count": period_count,
-                    "positive_ic_period_pct": positive_ic_period_pct,
-                    "positive_signed_period_pct": positive_signed_period_pct,
-                    "worst_period_signed_return_after_cost_points": worst_period_signed,
-                    "eligible_for_candidate": bool(eligible),
-                }
+                summary_row
             )
 
             for context_col in context_cols:
@@ -225,8 +318,8 @@ def run_signal_research_report(
                     )
 
     summary = pd.DataFrame(summary_rows).sort_values(
-        ["eligible_for_candidate", "mean_signed_return_after_cost_points", "abs_ic"],
-        ascending=[False, False, False],
+        ["eligible_for_candidate", "event_eligible_for_candidate", "mean_signed_return_after_cost_points", "abs_ic"],
+        ascending=[False, False, False, False],
     )
     period_stability = pd.DataFrame(period_rows)
     context_summary = pd.DataFrame(context_rows)
@@ -242,11 +335,21 @@ def run_signal_research_report(
     _write_signal_research_report(
         report_md,
         summary,
+        entry_price_col=entry_col,
+        exit_price_col=exit_col,
+        entry_lag_bars=entry_lag,
         round_trip_cost_points=round_trip_cost_points,
+        stress_round_trip_cost_points=stress_costs,
         min_obs=min_obs,
         min_active_obs=min_active_obs,
         min_abs_ic=min_abs_ic,
         min_positive_period_pct=min_positive_period_pct,
+        min_event_hit_rate_pct=min_event_hit_rate_pct,
+        min_event_bootstrap_ci_low_points=min_event_bootstrap_ci_low_points,
+        min_event_placebo_edge_points=min_event_placebo_edge_points,
+        max_event_placebo_p_value=max_event_placebo_p_value,
+        event_bootstrap_samples=event_bootstrap_samples,
+        event_placebo_samples=event_placebo_samples,
     )
     return SignalResearchPaths(
         summary_csv=summary_csv,
@@ -276,15 +379,205 @@ def _finite_mean(series: pd.Series) -> float:
     return float(values.mean()) if not values.empty else np.nan
 
 
+def _finite_median(series: pd.Series) -> float:
+    values = pd.to_numeric(series, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+    return float(values.median()) if not values.empty else np.nan
+
+
+def coerce_bool_series(series: pd.Series) -> pd.Series:
+    if pd.api.types.is_bool_dtype(series):
+        return series.fillna(False).astype(bool)
+    if pd.api.types.is_numeric_dtype(series):
+        return pd.to_numeric(series, errors="coerce").fillna(0).ne(0)
+    normalized = series.fillna("").astype(str).str.strip().str.lower()
+    return normalized.isin({"true", "1", "yes", "y", "t"})
+
+
+def _normalize_stress_costs(*, primary_cost: float, stress_costs: Iterable[float]) -> tuple[float, ...]:
+    cleaned: list[float] = []
+    for raw in stress_costs:
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if not np.isfinite(value):
+            continue
+        if value <= float(primary_cost):
+            continue
+        if value not in cleaned:
+            cleaned.append(value)
+    return tuple(sorted(cleaned))
+
+
+def _cost_stress_metrics(
+    active_raw_signed: pd.Series,
+    signal_periods: pd.DataFrame,
+    *,
+    stress_costs: tuple[float, ...],
+    primary_cost: float,
+    min_positive_period_pct: float,
+    min_event_bootstrap_ci_low_points: float,
+    event_ci_low: float,
+) -> dict[str, object]:
+    if not stress_costs:
+        return {
+            "stress_round_trip_cost_points": "",
+            "stress_max_round_trip_cost_points": np.nan,
+            "stress_min_mean_signed_return_after_cost_points": np.nan,
+            "stress_min_median_signed_return_after_cost_points": np.nan,
+            "stress_min_positive_signed_period_pct": np.nan,
+            "stress_min_worst_period_signed_return_after_cost_points": np.nan,
+            "stress_min_bootstrap_mean_ci_low_points": np.nan,
+            "stress_cost_survives": True,
+            "stress_event_cost_survives": True,
+            "stress_failure_reason": "",
+        }
+
+    active_raw = pd.to_numeric(active_raw_signed, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+    raw_period_means = (
+        pd.to_numeric(signal_periods.get("_raw_mean_signed_return_points", pd.Series(dtype=float)), errors="coerce")
+        .replace([np.inf, -np.inf], np.nan)
+        .dropna()
+    )
+    mean_values: list[float] = []
+    median_values: list[float] = []
+    positive_period_values: list[float] = []
+    worst_period_values: list[float] = []
+    ci_low_values: list[float] = []
+    stress_cost_passes: list[bool] = []
+    stress_event_passes: list[bool] = []
+    failure_reasons: list[str] = []
+
+    for cost in stress_costs:
+        signed = active_raw - float(cost)
+        mean_after_cost = _finite_mean(signed)
+        median_after_cost = _finite_median(signed)
+        if raw_period_means.empty:
+            positive_period_pct = np.nan
+            worst_period = np.nan
+        else:
+            period_after_cost = raw_period_means - float(cost)
+            positive_period_pct = float(period_after_cost.gt(0.0).mean() * 100.0)
+            worst_period = float(period_after_cost.min())
+        ci_low = event_ci_low - (float(cost) - float(primary_cost)) if np.isfinite(event_ci_low) else np.nan
+
+        mean_values.append(mean_after_cost)
+        median_values.append(median_after_cost)
+        positive_period_values.append(positive_period_pct)
+        worst_period_values.append(worst_period)
+        ci_low_values.append(ci_low)
+
+        cost_pass = (
+            np.isfinite(mean_after_cost)
+            and mean_after_cost > 0.0
+            and np.isfinite(positive_period_pct)
+            and positive_period_pct >= float(min_positive_period_pct)
+        )
+        event_pass = cost_pass and np.isfinite(ci_low) and ci_low > float(min_event_bootstrap_ci_low_points)
+        stress_cost_passes.append(bool(cost_pass))
+        stress_event_passes.append(bool(event_pass))
+        if not cost_pass:
+            failure_reasons.append(f"{cost:g}pt_mean_or_period")
+        elif not event_pass:
+            failure_reasons.append(f"{cost:g}pt_bootstrap_ci")
+
+    return {
+        "stress_round_trip_cost_points": ",".join(f"{cost:g}" for cost in stress_costs),
+        "stress_max_round_trip_cost_points": float(max(stress_costs)),
+        "stress_min_mean_signed_return_after_cost_points": _finite_min(mean_values),
+        "stress_min_median_signed_return_after_cost_points": _finite_min(median_values),
+        "stress_min_positive_signed_period_pct": _finite_min(positive_period_values),
+        "stress_min_worst_period_signed_return_after_cost_points": _finite_min(worst_period_values),
+        "stress_min_bootstrap_mean_ci_low_points": _finite_min(ci_low_values),
+        "stress_cost_survives": bool(all(stress_cost_passes)),
+        "stress_event_cost_survives": bool(all(stress_event_passes)),
+        "stress_failure_reason": ";".join(failure_reasons),
+    }
+
+
+def _finite_min(values: Iterable[float]) -> float:
+    clean = pd.to_numeric(pd.Series(list(values)), errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+    return float(clean.min()) if not clean.empty else np.nan
+
+
+def _bootstrap_mean_ci(
+    series: pd.Series,
+    *,
+    samples: int,
+    confidence: float,
+    rng: np.random.Generator,
+) -> tuple[float, float]:
+    values = pd.to_numeric(series, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna().to_numpy(dtype=float)
+    if values.size == 0 or samples <= 0:
+        return np.nan, np.nan
+    sample_count = int(samples)
+    chunk_size = max(1, min(sample_count, MAX_MONTE_CARLO_DRAW_CELLS // max(1, int(values.size))))
+    means = np.empty(sample_count, dtype=float)
+    offset = 0
+    while offset < sample_count:
+        chunk_count = min(chunk_size, sample_count - offset)
+        draw_idx = rng.integers(0, values.size, size=(chunk_count, values.size))
+        means[offset : offset + chunk_count] = values[draw_idx].mean(axis=1)
+        offset += chunk_count
+    alpha = max(0.0, min(1.0, 1.0 - float(confidence)))
+    return (
+        float(np.quantile(means, alpha / 2.0)),
+        float(np.quantile(means, 1.0 - alpha / 2.0)),
+    )
+
+
+def _placebo_event_test(
+    forward_return: pd.Series,
+    active_direction: pd.Series,
+    *,
+    observed_mean: float,
+    round_trip_cost_points: float,
+    samples: int,
+    rng: np.random.Generator,
+) -> tuple[float, float, float]:
+    returns = pd.to_numeric(forward_return, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna().to_numpy(dtype=float)
+    directions = pd.to_numeric(active_direction, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna().to_numpy(dtype=float)
+    directions = np.sign(directions[directions != 0])
+    if returns.size == 0 or directions.size == 0 or samples <= 0 or not np.isfinite(observed_mean):
+        return np.nan, np.nan, np.nan
+
+    n_active = int(directions.size)
+    sample_count = int(samples)
+    chunk_size = max(1, min(sample_count, MAX_MONTE_CARLO_DRAW_CELLS // max(1, n_active)))
+    placebo_means = np.empty(sample_count, dtype=float)
+    offset = 0
+    while offset < sample_count:
+        chunk_count = min(chunk_size, sample_count - offset)
+        sampled_returns = returns[rng.integers(0, returns.size, size=(chunk_count, n_active))]
+        placebo_means[offset : offset + chunk_count] = (
+            sampled_returns * directions.reshape(1, -1) - float(round_trip_cost_points)
+        ).mean(axis=1)
+        offset += chunk_count
+    placebo_mean = float(np.mean(placebo_means))
+    edge = float(observed_mean - placebo_mean)
+    p_value = float(np.mean(placebo_means >= float(observed_mean))) if float(observed_mean) > placebo_mean else 1.0
+    return placebo_mean, edge, p_value
+
+
 def _write_signal_research_report(
     path: Path,
     summary: pd.DataFrame,
     *,
+    entry_price_col: str,
+    exit_price_col: str,
+    entry_lag_bars: int,
     round_trip_cost_points: float,
+    stress_round_trip_cost_points: Iterable[float],
     min_obs: int,
     min_active_obs: int,
     min_abs_ic: float,
     min_positive_period_pct: float,
+    min_event_hit_rate_pct: float,
+    min_event_bootstrap_ci_low_points: float,
+    min_event_placebo_edge_points: float,
+    max_event_placebo_p_value: float,
+    event_bootstrap_samples: int,
+    event_placebo_samples: int,
 ) -> None:
     lines = [
         "# Signal Research Gate",
@@ -298,19 +591,53 @@ def _write_signal_research_report(
         f"- Minimum absolute IC: {min_abs_ic:.4f}",
         f"- Minimum positive signed-period share: {min_positive_period_pct:.1f}%",
         f"- Round-trip cost deducted from signed returns: {round_trip_cost_points:.4f} points",
+        f"- Stress round-trip costs: {_format_stress_costs(stress_round_trip_cost_points)}",
+        f"- Entry price: `{entry_price_col}` shifted {entry_lag_bars} bar(s) after the signal row",
+        f"- Exit price: `{exit_price_col}` shifted by each horizon from the signal row",
+        f"- Event gate minimum hit rate: {min_event_hit_rate_pct:.1f}%",
+        f"- Event gate minimum bootstrap CI low: {min_event_bootstrap_ci_low_points:.4f} points",
+        f"- Event gate minimum placebo edge: {min_event_placebo_edge_points:.4f} points",
+        f"- Event gate maximum placebo p-value: {max_event_placebo_p_value:.4f}",
+        f"- Event bootstrap/placebo samples: {event_bootstrap_samples}/{event_placebo_samples}",
         "",
     ]
     if summary.empty:
         lines.extend(["## Verdict", "", "No signal rows were generated.", ""])
     else:
-        eligible = summary.loc[summary["eligible_for_candidate"].astype(bool)]
+        eligible = summary.loc[coerce_bool_series(summary["eligible_for_candidate"])]
         lines.extend(["## Verdict", ""])
         if eligible.empty:
             lines.append("No signal passed the pre-candidate gate. Do not create a strategy candidate from this input.")
         else:
             lines.append("At least one signal passed the pre-candidate gate. Treat it as a hypothesis, not validation.")
+        event_eligible = summary.loc[
+            coerce_bool_series(summary.get("event_eligible_for_candidate", pd.Series(False, index=summary.index)))
+        ]
+        if stress_round_trip_cost_points:
+            stress_survivors = summary.loc[
+                coerce_bool_series(summary.get("stress_cost_survives", pd.Series(False, index=summary.index)))
+            ]
+            stress_event_survivors = summary.loc[
+                coerce_bool_series(summary.get("stress_event_cost_survives", pd.Series(False, index=summary.index)))
+            ]
+            lines.extend(["", "## Cost Stress Verdict", ""])
+            if stress_survivors.empty:
+                lines.append("No signal survived all configured stress costs. Do not create a strategy candidate from base-cost evidence alone.")
+            else:
+                lines.append("At least one signal survived all configured stress costs. This is still hypothesis evidence, not validation.")
+            if event_eligible.empty:
+                lines.append("No event-gate row survived the base event gate.")
+            elif stress_event_survivors.empty:
+                lines.append("At least one row passed the base event gate, but no event-gate row survived all stress costs.")
+            else:
+                lines.append("At least one event-gate row survived all configured stress costs.")
+        lines.extend(["", "## Event Gate Verdict", ""])
+        if event_eligible.empty:
+            lines.append("No signal passed the event-signal gate. Sparse event expectancy is not strong enough for candidate promotion.")
+        else:
+            lines.append("At least one signal passed the event-signal gate. Treat it as a candidate hypothesis, not validation.")
         lines.append("")
-        suspicious = summary.loc[summary["ic_suspicious_gt_0_10"].astype(bool)]
+        suspicious = summary.loc[coerce_bool_series(summary["ic_suspicious_gt_0_10"])]
         if not suspicious.empty:
             lines.extend(
                 [
@@ -328,12 +655,30 @@ def _write_signal_research_report(
             "active_pct",
             "ic",
             "mean_signed_return_after_cost_points",
+            "median_signed_return_after_cost_points",
             "hit_rate_pct",
             "positive_signed_period_pct",
+            "bootstrap_mean_ci_low_points",
+            "stress_round_trip_cost_points",
+            "stress_min_mean_signed_return_after_cost_points",
+            "stress_min_positive_signed_period_pct",
+            "stress_min_bootstrap_mean_ci_low_points",
+            "stress_cost_survives",
+            "stress_event_cost_survives",
+            "placebo_edge_points",
+            "placebo_p_value",
             "eligible_for_candidate",
+            "event_eligible_for_candidate",
         ]
         lines.extend(["## Top Rows", ""])
         lines.append(summary.loc[:, [col for col in display_cols if col in summary.columns]].head(20).to_string(index=False))
         lines.append("")
 
     path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _format_stress_costs(stress_round_trip_cost_points: Iterable[float]) -> str:
+    costs = list(stress_round_trip_cost_points)
+    if not costs:
+        return "none"
+    return ", ".join(f"{float(cost):.4f} points" for cost in costs)

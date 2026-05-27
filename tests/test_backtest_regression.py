@@ -296,6 +296,29 @@ class CandidateConfigTests(unittest.TestCase):
         self.assertFalse(family["allow_new_variants"])
         self.assertFalse(active & failed_auction_candidates)
 
+    def test_microstructure_candidate_is_rejected_and_not_active(self):
+        name = "edge_microstructure_liquidity_taking_trend_probe"
+        candidate = CANDIDATE_CONFIGS[name]
+        family = RESEARCH_CONFIG["rejected_research_families"]["microstructure_execution_first"]
+
+        self.assertEqual(RESEARCH_CONFIG["next_validation_candidates"], [])
+        self.assertIn(name, RESEARCH_CONFIG["candidate_research_families"]["microstructure_execution_first"])
+        self.assertEqual(RESEARCH_CONFIG["candidate_family_run_count_floors"]["microstructure_execution_first"], 1)
+        self.assertEqual(family["status"], "rejected")
+        self.assertFalse(family["allow_new_variants"])
+        self.assertNotEqual(candidate.get("mr_signal_mode"), "failed_auction_acceptance")
+        self.assertEqual(candidate["allowed_setup_tags"], ["trend_long", "trend_short"])
+        self.assertFalse(candidate["mr_long_enabled"])
+        self.assertFalse(candidate["mr_short_enabled"])
+        self.assertEqual(candidate["position_sizing_mode"], "fixed_contracts")
+        self.assertEqual(candidate["fixed_contracts"], 1)
+        self.assertEqual(candidate["max_contracts"], 1)
+        self.assertEqual(candidate["target_fill_mode"], "trade_through")
+        self.assertEqual(candidate["target_fill_trade_through_ticks"], 1)
+        self.assertEqual(candidate["managed_stop_activation_mode"], "next_bar")
+        self.assertEqual(candidate["wf_random_samples"], 1)
+        self.assertEqual(candidate["wf_param_grid"]["trend_trade_start"], ["10:15"])
+
     def test_composed_candidates_have_correct_entry_context(self):
         candidates_requiring_vwap_cross = [
             "edge_vp_no_trend_vwap_cross",

@@ -10,6 +10,7 @@ import pandas as pd
 from backtest.prop_firm import (
     evaluate_prop_firm_path,
     export_prop_firm_report,
+    _evaluate_funded_path,
     _simulate_eval_arrays,
     _simulate_funded_arrays,
     _normalize_profile,
@@ -235,6 +236,9 @@ class PropFirmAnalyticsTests(unittest.TestCase):
             self.assertEqual(float(summary.loc[0, "pass_probability_pct"]), 0.0)
             self.assertEqual(int(summary.loc[0, "calendar_history_days"]), 11)
             self.assertEqual(int(summary.loc[0, "active_history_days"]), 2)
+            report_text = paths.report_md.read_text(encoding="utf-8")
+            self.assertIn("No-Pass State", report_text)
+            self.assertIn("produced no passing eval simulations", report_text)
 
     def test_walkforward_export_marks_validation_scope(self) -> None:
         trades = pd.DataFrame(
@@ -351,7 +355,85 @@ class PropFirmAnalyticsTests(unittest.TestCase):
             self.assertEqual(float(summary.loc[0, "first_payout_probability_pct"]), 100.0)
             self.assertEqual(float(summary.loc[0, "avg_gross_payout"]), 2_000.0)
             self.assertEqual(float(summary.loc[0, "avg_net_payout_after_split"]), 1_600.0)
+            self.assertEqual(float(summary.loc[0, "avg_net_payout_when_positive"]), 1_600.0)
+            self.assertAlmostEqual(float(summary.loc[0, "break_even_eval_to_first_payout_probability_pct"]), 2.625)
+            self.assertAlmostEqual(float(summary.loc[0, "payoff_ratio_to_all_in_cost"]), 1600.0 / 42.0)
             self.assertEqual(float(summary.loc[0, "expected_net_payout_per_eval_attempt"]), 1_558.0)
+
+    def test_export_includes_all_in_prop_costs_and_sample_warning(self) -> None:
+        trades = pd.DataFrame(
+            [
+                {
+                    "exit_time": pd.Timestamp("2024-01-02 10:00") + pd.Timedelta(days=day),
+                    "pnl": 1_000.0,
+                }
+                for day in range(3)
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = export_prop_firm_report(
+                trades,
+                out_dir=Path(tmp),
+                artifact_name="prop",
+                profiles=[
+                    {
+                        "name": "all_in_eval",
+                        "account_size": 100_000,
+                        "eval_cost": 50,
+                        "activation_fee": 100,
+                        "monthly_fee": 10,
+                        "profit_target": 1_000,
+                        "max_drawdown": 5_000,
+                        "daily_loss_limit": 0,
+                        "min_trading_days": 1,
+                        "max_trading_days": 3,
+                        "profit_split_pct": 100,
+                        "funded_buffer_target": 500,
+                        "minimum_payout": 100,
+                        "funded_horizon_days": 1,
+                        "minimum_trade_sample": 10,
+                        "portfolio_account_counts": "1,5",
+                    }
+                ],
+                n_sims=10,
+                seed=3,
+                enable_surfaces=False,
+            )
+
+            summary = pd.read_csv(paths.summary_csv)
+            self.assertEqual(float(summary.loc[0, "expected_eval_cost_to_pass"]), 50.0)
+            self.assertEqual(float(summary.loc[0, "expected_all_in_cost_to_pass"]), 160.0)
+            self.assertEqual(float(summary.loc[0, "expected_all_in_cost_per_eval_attempt"]), 160.0)
+            self.assertEqual(float(summary.loc[0, "avg_net_payout_after_split"]), 500.0)
+            self.assertEqual(float(summary.loc[0, "avg_net_payout_when_positive"]), 500.0)
+            self.assertEqual(float(summary.loc[0, "break_even_eval_to_first_payout_probability_pct"]), 32.0)
+            self.assertEqual(float(summary.loc[0, "expected_net_payout_per_eval_attempt"]), 340.0)
+            self.assertEqual(int(summary.loc[0, "trade_sample_size"]), 3)
+            self.assertEqual(int(summary.loc[0, "minimum_trade_sample"]), 10)
+            self.assertEqual(summary.loc[0, "sample_size_warning"], "sample_below_minimum_10_trades")
+            self.assertEqual(summary.loc[0, "portfolio_account_counts"], "1,5")
+
+    def test_funded_payout_cap_and_cadence_limit_withdrawals(self) -> None:
+        result = _evaluate_funded_path(
+            [1_000.0, 1_000.0, 1_000.0],
+            {
+                "account_size": 50_000,
+                "max_drawdown": 5_000,
+                "daily_loss_limit": 0,
+                "funded_buffer_target": 0,
+                "minimum_payout": 100,
+                "profit_split_pct": 100,
+                "funded_horizon_days": 3,
+                "payout_cap": 500,
+                "payout_cadence_days": 2,
+            },
+        )
+
+        self.assertEqual(float(result["gross_payout"]), 500.0)
+        self.assertEqual(float(result["net_payout"]), 500.0)
+        self.assertEqual(int(result["payout_count"]), 1)
+        self.assertEqual(float(result["first_payout_day"]), 2.0)
 
     def test_export_includes_surface_rows(self) -> None:
         trades = pd.DataFrame(

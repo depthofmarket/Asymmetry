@@ -38,13 +38,14 @@ Before any candidate from this track can be promoted:
 5. Multiple-testing debt is within the configured family limit or the next evidence comes from untouched holdout/paper.
 6. Prop-firm approval uses OOS or lockbox scope, not development in-sample scope.
 
-## First Practical Work
+## Current Practical Work
 
-The next code work should improve observation and execution measurement before creating a new candidate:
+The first candidate from this track, `edge_microstructure_liquidity_taking_trend_probe`, is rejected. The next step is not a second candidate. The next step is a pre-candidate signal report:
 
-- Compare paper/replay order intent against simulated fills.
-- Log decision price, intended entry, actual fill proxy, spread/slippage estimate, and bar context.
-- Summarize fill shortfall by setup, direction, hour, volatility, and liquidity context.
-- Use these diagnostics to decide whether a new signal hypothesis is worth formal testing.
+- Export a prepared point-in-time signal CSV with `scripts/export_prepared_signal_csv.py`.
+- Measure raw IC against forward returns.
+- Measure signed forward return after conservative cost assumptions.
+- Check period stability before trusting aggregate expectancy.
+- Group by context only as diagnosis; do not turn a winning slice into a same-sample candidate.
 
-Only after those measurements are clean should we define the first candidate in `CANDIDATE_CONFIGS`.
+Do not add another candidate from this track until a signal report and a fresh ex-ante hypothesis both exist.

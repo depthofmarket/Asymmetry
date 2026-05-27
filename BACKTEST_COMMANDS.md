@@ -8,14 +8,45 @@ cd /Users/novo/trading_strategy/nq-scalper-backtest
 
 ## Current Freeze Manifest
 
-There is no active validation candidate. Do not run another historical candidate until a pre-candidate signal report and a written hypothesis exist.
+There is no active validation candidate. Do not run another historical candidate until a pre-candidate signal report and a written hypothesis justify one.
+
+There is no active pre-candidate signal gate queued.
 
 `config/research_freeze.json` is an archived rejected-candidate snapshot. A passing freeze check means reproducibility only; it is not an active run instruction.
+
+The 2026-05-22 event-gate metric audit tightened report boolean handling and event Monte Carlo implementation. It did not create a new run instruction.
+
+The 2026-05-24 rejection map / feature inventory is saved at:
+
+```text
+docs/research_postmortems/2026-05-24_signal_gate_rejection_map_and_feature_inventory.md
+```
+
+Recommended next work is a fresh ex-ante structural hypothesis or a narrow platform audit, not another historical candidate run.
+
+Future signal gates should include cost-stress survival:
+
+```text
+--stress-round-trip-cost-points 2.0,4.25
+```
+
+Latest TBBO baseline report:
+
+```text
+results/research_master/tbbo_execution_baseline/tbbo_execution_baseline.md
+```
 
 Rejected latest branch:
 
 ```text
 edge_microstructure_liquidity_taking_trend_probe
+liquidity_absorption_2021_signal_gate
+compression_breakout_2021_signal_gate
+gap_go_temporal_gate
+power_hour_continuation_temporal_gate
+power_hour_continuation_event_temporal_gate
+memory_impulse_event_temporal_gate
+options_gamma_wall_dev_2010_2024_event_temporal_gate
 ```
 
 ## Pre-Run Checks
@@ -29,27 +60,90 @@ python3 scripts/check_research_freeze.py \
   --manifest config/research_freeze.json
 ```
 
-## Pre-Candidate Signal Gate
+## Event-Enhanced Temporal Signal Gate
 
-First export a prepared point-in-time signal CSV. This builds signal rows and context from the existing strategy-brain seam, but it does not execute trades:
+No pre-candidate signal gate is currently queued. For later hypotheses, use this event-enhanced temporal gate template only after replacing placeholders:
 
-```bash
-python3 scripts/export_prepared_signal_csv.py \
-  --candidate <candidate_name> \
-  --start 2021-01-01
-```
-
-Then run the signal gate. It reads the prepared CSV and writes IC, forward-return, period-stability, and context diagnostics. It does not replay strategy logic or create trades.
+The report writes the legacy IC gate plus the event gate: active-event mean/median, bootstrap CI, placebo comparison, hit rate, period stability, and temporal event eligibility.
 
 ```bash
-python3 scripts/run_signal_research_report.py \
-  --signals-csv results/research_master/signal_exports/<artifact>.csv \
-  --signal-cols candidate_signal \
+python3.12 scripts/run_temporal_signal_research_report.py \
+  --signals-csv results/research_master/signal_exports/<hypothesis>_dev_2010_2024.csv \
+  --signal-cols candidate_signal,<score_column> \
   --context-cols setup_tag,direction,signal_type,hour,session_bucket,vwap_side \
-  --round-trip-cost-points 1.5
+  --splits legacy_context:2010-01-01:2015-12-31,transition:2016-01-01:2020-12-31,recent_development:2021-01-01:2024-12-31 \
+  --primary-split recent_development \
+  --supporting-splits transition \
+  --entry-price-col open \
+  --entry-lag-bars 1 \
+  --exit-price-col close \
+  --round-trip-cost-points 1.5 \
+  --stress-round-trip-cost-points 2.0,4.25 \
+  --event-bootstrap-samples 2000 \
+  --event-placebo-samples 2000 \
+  --artifact-name <hypothesis>_event_temporal_gate
 ```
 
-Running the export over a full historical range is still a full-sample signal scan. Treat it as testing debt, not validation. Codex should not run it without explicit instruction.
+The gate should score from next-bar open to the horizon close, not signal-bar close to horizon close. Running the report over historical data is still a signal scan. Treat it as testing debt, not validation. Codex should not run it without explicit instruction.
+
+Latest rejected signal gate:
+
+```text
+results/research_master/signal_research/liquidity_absorption_2021_signal_gate_next_bar_open.md
+```
+
+Latest rejected compression breakout signal gate:
+
+```text
+results/research_master/signal_research/compression_breakout_2021_signal_gate.md
+```
+
+Latest rejected gap-and-go signal gate:
+
+```text
+results/research_master/signal_research/gap_go_temporal_gate_temporal.md
+```
+
+Latest rejected power-hour signal gate:
+
+```text
+results/research_master/signal_research/power_hour_continuation_temporal_gate_temporal.md
+results/research_master/signal_research/power_hour_continuation_event_temporal_gate_temporal.md
+```
+
+Latest rejected memory-impulse signal gate:
+
+```text
+results/research_master/signal_research/memory_impulse_event_temporal_gate_temporal.md
+```
+
+Latest rejected options gamma-wall signal gate:
+
+```text
+results/research_master/signal_research/options_gamma_wall_dev_2010_2024_event_temporal_gate_temporal.md
+```
+
+Do not rerun or mutate this into a candidate unless a real implementation bug is found or a new ex-ante hypothesis is written before touching the same sample again.
+
+## Next Non-Backtest Work
+
+Audit the existing TBBO trade-audit path:
+
+```text
+scripts/audit_tbbo_execution_baseline.py
+scripts/audit_trades_with_tbbo.py
+backtest/tbbo_trade_audit.py
+data/processed/tbbo/tbbo_minute_execution_stats.csv
+data/processed/tbbo/tbbo_daily_execution_stats.csv
+```
+
+This is for spread, depth, fill shortfall, and cost realism. Do not use TBBO as a filter-mining surface.
+
+Regenerate the baseline report with:
+
+```bash
+python3.12 scripts/audit_tbbo_execution_baseline.py
+```
 
 ## Saved-Run Audit Sequence
 

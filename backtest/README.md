@@ -11,7 +11,9 @@ This package is organized by runtime responsibility. Keep reusable logic here an
 - `execution_realism.py`: saved trade-log sensitivity and bar-joined fill-assumption checks for target-fill, same-minute exits, and lower-bound ordering ambiguity.
 - `strategy_runtime.py`: signal-event extraction shared by backtest and live-style paper execution.
 - `objectives.py`: signal-bar, execution-bar, and regime-weighted scoring helpers.
+- `aggressive_flow.py`: realized trade-side `A`/`B` flow aggregation from Databento trades archives.
 - `tbbo_execution.py`: TBBO spread/depth/trade-vs-mid aggregation for execution realism checks.
+- `tbbo_execution_baseline.py`: active-contract TBBO baseline summaries for cost-model calibration.
 - `tbbo_trade_audit.py`: joins saved trade logs to processed TBBO stats to test fill/slippage assumptions.
 
 ## Live And Paper Runtime
@@ -36,6 +38,7 @@ Feature code that adds columns to bar data currently lives in:
 - `market_structure.py`
 - `markov_regime.py`
 - `options_flow.py`
+  Builds point-in-time daily options-flow features plus all-expiry and DTE-bucketed by-strike GEX surfaces; use `0dte` for intraday gamma research and longer buckets mainly for OI/DEX context.
 - `point_in_time.py`
 - `volume_spread.py`
 
@@ -50,7 +53,9 @@ Research, diagnostics, and experiment reporting currently live in:
 - `online_regime_leakage.py`
 - `permutation.py`
 - `placebo.py`
+- `prop_attempt_portfolio.py`
 - `prop_firm.py`
+- `research_protocol.py`
 - `simulations.py`
 - `sweep.py`
 - `validation.py`
@@ -60,5 +65,7 @@ Research, diagnostics, and experiment reporting currently live in:
 Keep these as analysis/reporting code. If a research result becomes part of execution, move only the reusable runtime primitive into core or the flat live runtime modules.
 
 `validation.py` owns the saved anti-overfit reports: development gates, optimization stability, and multiple-testing debt. These reports should consume completed run artifacts or existing walk-forward objects; they should not launch new backtests.
+
+`research_protocol.py` owns the agentic research-control layer: experiment manifests, LLM/evaluation blinding checks, config/file fingerprints, audit JSONL events, and saved-artifact protocol gates. It should stay above strategy logic and below human decisions; it records what the research process was allowed to see, not whether a candidate is profitable.
 
 `walkforward.py` owns time-series validation. Its default format is rolling forward-chain with a purged train tail and an embargo gap before each OOS fold. Use the anchored mode only when the relationship is intentionally assumed to be stable across the full history.

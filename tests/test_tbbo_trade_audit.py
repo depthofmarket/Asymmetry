@@ -19,6 +19,8 @@ def _minute_stats() -> pd.DataFrame:
                 "p95_spread_points": 1.00,
                 "trade_count": 100,
                 "p95_abs_trade_price_vs_mid": 0.50,
+                "top_book_depth_exhausted_trade_pct": 0.10,
+                "zero_impact_depth_supported_trade_pct": 0.80,
             },
             {
                 "symbol": "NQH6",
@@ -29,6 +31,8 @@ def _minute_stats() -> pd.DataFrame:
                 "p95_spread_points": 1.00,
                 "trade_count": 110,
                 "p95_abs_trade_price_vs_mid": 0.50,
+                "top_book_depth_exhausted_trade_pct": 0.20,
+                "zero_impact_depth_supported_trade_pct": 0.70,
             },
             {
                 "symbol": "NQM6",
@@ -39,6 +43,8 @@ def _minute_stats() -> pd.DataFrame:
                 "p95_spread_points": 4.00,
                 "trade_count": 2,
                 "p95_abs_trade_price_vs_mid": 2.00,
+                "top_book_depth_exhausted_trade_pct": 1.00,
+                "zero_impact_depth_supported_trade_pct": 0.00,
             },
         ]
     )
@@ -80,6 +86,9 @@ class TbboTradeAuditTests(unittest.TestCase):
         self.assertAlmostEqual(float(row["tbbo_median_round_trip_spread_cost_points"]), 0.50)
         self.assertAlmostEqual(float(row["assumed_slippage_points"]), 0.25)
         self.assertAlmostEqual(float(row["pnl_with_tbbo_median_spread_cost"]), 95.0)
+        self.assertAlmostEqual(float(row["limit_exit_opportunity_stress_points"]), 0.25)
+        self.assertAlmostEqual(float(row["pnl_with_tbbo_p95_trade_vs_mid_and_limit_opportunity_cost"]), 80.0)
+        self.assertAlmostEqual(float(row["entry_tbbo_top_book_depth_exhausted_trade_pct"]), 0.10)
 
     def test_audit_reports_window_coverage(self) -> None:
         audit = build_tbbo_trade_audit(_trades(), _minute_stats())
@@ -89,6 +98,10 @@ class TbboTradeAuditTests(unittest.TestCase):
         self.assertEqual(int(summary["tbbo_window_trades"]), 1)
         self.assertEqual(int(summary["entry_exit_matched_trades"]), 1)
         self.assertAlmostEqual(float(summary["entry_exit_match_rate_in_window"]), 1.0)
+        self.assertAlmostEqual(
+            float(summary["matched_median_pnl_with_tbbo_p95_trade_vs_mid_and_limit_opportunity_cost"]),
+            80.0,
+        )
 
 
 if __name__ == "__main__":

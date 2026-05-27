@@ -43,8 +43,9 @@ Execution realism did not rescue the branch:
 
 ## Decision Rules
 
-- The active validation queue is cleared.
+- The failed-auction candidates are removed from the active validation queue.
 - Failed-auction quality is listed in `RESEARCH_CONFIG["rejected_research_families"]`.
+- Failed-auction quality has a known family run-count floor in `RESEARCH_CONFIG["candidate_family_run_count_floors"]` so deleted result folders do not reduce multiple-testing debt.
 - Saved-run discipline gates must fail promotion for this family.
 - Old candidate definitions stay in the repo for reproducibility only.
 - A revival requires a new ex-ante hypothesis, untouched holdout or paper evidence, and survival through execution realism plus purged/embargoed walk-forward validation.
@@ -52,3 +53,5 @@ Execution realism did not rescue the branch:
 ## Next Research Direction
 
 Move away from failed-auction salvage. The next work should test execution and microstructure assumptions first: spread, fill timing, adverse selection, and whether the signal survives realistic order placement.
+
+Current follow-up hypothesis: `docs/research_hypotheses/2026-05-20_microstructure_liquidity_taking_trend_probe.md`.
