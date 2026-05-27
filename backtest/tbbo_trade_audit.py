@@ -7,6 +7,12 @@ from typing import Mapping
 import numpy as np
 import pandas as pd
 
+from backtest.execution_cost_stress import (
+    VolatilityConditionedCostStressConfig,
+    add_volatility_conditioned_cost_stress,
+)
+from backtest.microstructure_diagnostics import build_microstructure_cost_state
+
 
 DEFAULT_FUTURES_SPECS = {
     "contract_value": 20.0,
@@ -47,6 +53,8 @@ def build_tbbo_trade_audit(
     minute_stats: pd.DataFrame,
     *,
     futures_specs: Mapping[str, float] | None = None,
+    volatility_state: pd.DataFrame | None = None,
+    volatility_cost_config: VolatilityConditionedCostStressConfig | None = None,
     nearest_tolerance: str | pd.Timedelta = "1min",
 ) -> TbboTradeAudit:
     specs = dict(DEFAULT_FUTURES_SPECS)
@@ -55,6 +63,8 @@ def build_tbbo_trade_audit(
 
     prepared_trades = _prepare_trades(trades)
     prepared_stats = _prepare_minute_stats(minute_stats)
+    prepared_stats = _add_microstructure_cost_state_columns(prepared_stats)
+    prepared_volatility = _prepare_volatility_state(volatility_state)
     active_symbol = _active_symbol_by_date(prepared_stats)
 
     audited = prepared_trades.copy()
@@ -66,8 +76,18 @@ def build_tbbo_trade_audit(
             event=event,
             nearest_tolerance=nearest_tolerance,
         )
+        audited = _attach_event_volatility_context(
+            audited,
+            prepared_volatility,
+            event=event,
+            nearest_tolerance=nearest_tolerance,
+        )
 
-    audited = _add_cost_estimates(audited, futures_specs=specs)
+    audited = _add_cost_estimates(
+        audited,
+        futures_specs=specs,
+        volatility_cost_config=volatility_cost_config,
+    )
     summary = summarize_tbbo_trade_audit(audited)
     by_setup = summarize_tbbo_trade_audit_by_setup(audited)
     return TbboTradeAudit(audited_trades=audited, summary=summary, by_setup=by_setup)
@@ -120,6 +140,12 @@ def summarize_tbbo_trade_audit(audited: pd.DataFrame) -> pd.DataFrame:
         "tbbo_median_spread_cost_minus_assumed_points",
         "tbbo_p95_spread_cost_minus_assumed_points",
         "tbbo_p95_trade_vs_mid_cost_minus_assumed_points",
+        "vol_conditioned_round_trip_cost_points",
+        "vol_conditioned_round_trip_cost_dollars",
+        "vol_conditioned_cost_minus_assumed_points",
+        "vol_conditioned_max_slippage_multiplier",
+        "pnl_with_vol_conditioned_cost",
+        "pnl_with_vol_conditioned_cost_if_accepted",
     ]
     for col in numeric_cols:
         if col in matched_df.columns and not matched_df.empty:
@@ -129,6 +155,13 @@ def summarize_tbbo_trade_audit(audited: pd.DataFrame) -> pd.DataFrame:
         else:
             summary[f"matched_sum_{col}"] = np.nan
             summary[f"matched_median_{col}"] = np.nan
+    if "vol_conditioned_reject_fill" in matched_df.columns and not matched_df.empty:
+        rejected = matched_df["vol_conditioned_reject_fill"].fillna(False).astype(bool)
+        summary["matched_vol_conditioned_rejected_fills"] = int(rejected.sum())
+        summary["matched_vol_conditioned_rejected_fill_pct"] = _safe_ratio(rejected.sum(), len(matched_df))
+    else:
+        summary["matched_vol_conditioned_rejected_fills"] = 0
+        summary["matched_vol_conditioned_rejected_fill_pct"] = np.nan
     return pd.DataFrame([summary])
 
 
@@ -149,6 +182,10 @@ def summarize_tbbo_trade_audit_by_setup(audited: pd.DataFrame) -> pd.DataFrame:
                 "median_tbbo_median_round_trip_spread_cost_points",
                 "median_tbbo_p95_round_trip_spread_cost_points",
                 "median_limit_exit_opportunity_stress_points",
+                "median_vol_conditioned_round_trip_cost_points",
+                "vol_conditioned_rejected_fills",
+                "pnl_with_vol_conditioned_cost",
+                "pnl_with_vol_conditioned_cost_if_accepted",
             ]
         )
     for col in ("setup_tag", "direction"):
@@ -175,6 +212,10 @@ def summarize_tbbo_trade_audit_by_setup(audited: pd.DataFrame) -> pd.DataFrame:
             "median",
         ),
         median_limit_exit_opportunity_stress_points=("limit_exit_opportunity_stress_points", "median"),
+        median_vol_conditioned_round_trip_cost_points=("vol_conditioned_round_trip_cost_points", "median"),
+        vol_conditioned_rejected_fills=("vol_conditioned_reject_fill", "sum"),
+        pnl_with_vol_conditioned_cost=("pnl_with_vol_conditioned_cost", "sum"),
+        pnl_with_vol_conditioned_cost_if_accepted=("pnl_with_vol_conditioned_cost_if_accepted", "sum"),
     ).reset_index()
 
 
@@ -242,11 +283,79 @@ def _prepare_minute_stats(minute_stats: pd.DataFrame) -> pd.DataFrame:
         "zero_impact_depth_supported_trade_pct",
         "raw_b_side_count",
         "raw_a_side_count",
+        "microstructure_cost_score",
+        "spread_score",
+        "tail_spread_score",
+        "trade_vs_mid_score",
+        "depth_exhaustion_score",
     ]
     for col in numeric_cols:
         if col in out.columns:
             out[col] = pd.to_numeric(out[col], errors="coerce")
     return out.dropna(subset=["symbol", "minute", "trade_date"]).sort_values(["symbol", "minute"])
+
+
+def _add_microstructure_cost_state_columns(minute_stats: pd.DataFrame) -> pd.DataFrame:
+    if minute_stats.empty:
+        return minute_stats
+    try:
+        cost_state = build_microstructure_cost_state(minute_stats)
+    except ValueError:
+        return minute_stats
+    if cost_state.empty:
+        return minute_stats
+    cols = [
+        "symbol",
+        "minute",
+        "microstructure_cost_score",
+        "microstructure_cost_state",
+        "spread_score",
+        "tail_spread_score",
+        "trade_vs_mid_score",
+        "depth_exhaustion_score",
+    ]
+    cols = [col for col in cols if col in cost_state.columns]
+    if {"symbol", "minute"}.difference(cols):
+        return minute_stats
+    merged = minute_stats.merge(
+        cost_state.loc[:, cols].drop_duplicates(subset=["symbol", "minute"], keep="last"),
+        on=["symbol", "minute"],
+        how="left",
+        suffixes=("", "_cost_state"),
+    )
+    for col in cols:
+        alt = f"{col}_cost_state"
+        if alt in merged.columns:
+            merged[col] = merged[col].where(merged[col].notna(), merged[alt])
+            merged = merged.drop(columns=[alt])
+    return merged
+
+
+def _prepare_volatility_state(volatility_state: pd.DataFrame | None) -> pd.DataFrame:
+    if volatility_state is None or volatility_state.empty:
+        return pd.DataFrame()
+    if "time" not in volatility_state.columns:
+        raise ValueError("volatility_state must include a time column")
+    out = volatility_state.copy()
+    out["time"] = pd.to_datetime(out["time"], errors="coerce")
+    if getattr(out["time"].dt, "tz", None) is not None:
+        out["time"] = out["time"].dt.tz_convert("America/New_York").dt.tz_localize(None)
+    for col in ("realized_vol_ratio", "realized_vol_short", "realized_vol_long"):
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce")
+    if "volatility_jump_event" in out.columns and out["volatility_jump_event"].dtype != bool:
+        out["volatility_jump_event"] = out["volatility_jump_event"].astype(str).str.lower().isin({"true", "1", "yes"})
+    cols = [
+        "time",
+        "volatility_state",
+        "volatility_compression_state",
+        "volatility_vol_of_vol_state",
+        "volatility_jump_event",
+        "realized_vol_ratio",
+        "realized_vol_short",
+        "realized_vol_long",
+    ]
+    return out.loc[:, [col for col in cols if col in out.columns]].dropna(subset=["time"]).sort_values("time")
 
 
 def _active_symbol_by_date(minute_stats: pd.DataFrame) -> pd.Series:
@@ -315,6 +424,12 @@ def _attach_event_stats(
             "zero_impact_depth_supported_trade_pct",
             "raw_b_side_count",
             "raw_a_side_count",
+            "microstructure_cost_score",
+            "microstructure_cost_state",
+            "spread_score",
+            "tail_spread_score",
+            "trade_vs_mid_score",
+            "depth_exhaustion_score",
         ]
         if col in minute_stats.columns
     ]
@@ -360,7 +475,65 @@ def _attach_event_stats(
     return out
 
 
-def _add_cost_estimates(audited: pd.DataFrame, *, futures_specs: Mapping[str, float]) -> pd.DataFrame:
+def _attach_event_volatility_context(
+    trades: pd.DataFrame,
+    volatility_state: pd.DataFrame,
+    *,
+    event: str,
+    nearest_tolerance: str | pd.Timedelta,
+) -> pd.DataFrame:
+    out = trades.copy()
+    context_cols = [
+        "volatility_state",
+        "volatility_compression_state",
+        "volatility_vol_of_vol_state",
+        "volatility_jump_event",
+        "realized_vol_ratio",
+        "realized_vol_short",
+        "realized_vol_long",
+    ]
+    event_cols = [f"{event}_{col}" for col in context_cols]
+    for col in event_cols:
+        if col not in out.columns:
+            out[col] = pd.NA
+    if volatility_state.empty:
+        return out
+
+    time_col = f"{event}_time"
+    left = out.loc[:, ["trade_id", time_col]].copy()
+    left[time_col] = pd.to_datetime(left[time_col], errors="coerce")
+    left = left.dropna(subset=[time_col]).sort_values(time_col)
+    if left.empty:
+        return out
+
+    right_cols = ["time", *[col for col in context_cols if col in volatility_state.columns]]
+    right = volatility_state.loc[:, right_cols].dropna(subset=["time"]).sort_values("time")
+    if right.empty:
+        return out
+    tolerance = pd.Timedelta(nearest_tolerance) if nearest_tolerance is not None else None
+    merged = pd.merge_asof(
+        left,
+        right,
+        left_on=time_col,
+        right_on="time",
+        direction="backward",
+        tolerance=tolerance,
+    ).set_index("trade_id")
+
+    out = out.set_index("trade_id")
+    for col in context_cols:
+        event_col = f"{event}_{col}"
+        if col in merged.columns:
+            out.loc[merged.index, event_col] = merged[col]
+    return out.reset_index()
+
+
+def _add_cost_estimates(
+    audited: pd.DataFrame,
+    *,
+    futures_specs: Mapping[str, float],
+    volatility_cost_config: VolatilityConditionedCostStressConfig | None,
+) -> pd.DataFrame:
     out = audited.copy()
     out["tbbo_entry_exit_matched"] = out["entry_tbbo_matched"].fillna(False) & out["exit_tbbo_matched"].fillna(False)
     for event in ("entry", "exit"):
@@ -409,6 +582,97 @@ def _add_cost_estimates(audited: pd.DataFrame, *, futures_specs: Mapping[str, fl
     out["pnl_with_tbbo_p95_trade_vs_mid_and_limit_opportunity_cost"] = (
         out["pnl_with_tbbo_p95_trade_vs_mid_cost"] - out["limit_exit_opportunity_stress_dollars"]
     )
+    out = _add_volatility_conditioned_cost_estimates(
+        out,
+        futures_specs=futures_specs,
+        volatility_cost_config=volatility_cost_config,
+    )
+    return out
+
+
+def _add_volatility_conditioned_cost_estimates(
+    audited: pd.DataFrame,
+    *,
+    futures_specs: Mapping[str, float],
+    volatility_cost_config: VolatilityConditionedCostStressConfig | None,
+) -> pd.DataFrame:
+    out = audited.copy()
+    contracts = pd.to_numeric(out["contracts"], errors="coerce").fillna(1.0)
+    contract_value = float(futures_specs.get("contract_value", 20.0))
+    assumed_event_slippage = pd.to_numeric(out["assumed_slippage_points"], errors="coerce").fillna(0.0) / 2.0
+
+    event_cost_cols: list[str] = []
+    reject_cols: list[str] = []
+    multiplier_cols: list[str] = []
+    for event in ("entry", "exit"):
+        event_frame = pd.DataFrame(
+            {
+                "microstructure_cost_state": _series_or_na(out, f"{event}_tbbo_microstructure_cost_state"),
+                "median_spread_points": _series_or_na(out, f"{event}_tbbo_median_spread_points"),
+                "p95_spread_points": _series_or_na(out, f"{event}_tbbo_p95_spread_points"),
+                "top_book_depth_exhausted_trade_pct": _series_or_na(
+                    out,
+                    f"{event}_tbbo_top_book_depth_exhausted_trade_pct",
+                ),
+                "realized_vol_ratio": _series_or_na(out, f"{event}_realized_vol_ratio"),
+                "volatility_state": _series_or_na(out, f"{event}_volatility_state"),
+                "volatility_compression_state": _series_or_na(out, f"{event}_volatility_compression_state"),
+                "volatility_vol_of_vol_state": _series_or_na(out, f"{event}_volatility_vol_of_vol_state"),
+                "volatility_jump_event": _series_or_na(out, f"{event}_volatility_jump_event"),
+            },
+            index=out.index,
+        )
+        stress = add_volatility_conditioned_cost_stress(event_frame, config=volatility_cost_config)
+        for col in (
+            "vol_conditioned_cost_state",
+            "vol_conditioned_slippage_multiplier",
+            "vol_conditioned_reject_fill",
+            "vol_conditioned_allow_normal_assumptions",
+            "vol_conditioned_high_realized_vol",
+            "vol_conditioned_vol_shock",
+            "vol_conditioned_wide_spread",
+            "vol_conditioned_depth_exhausted",
+            "vol_conditioned_reason",
+        ):
+            out[f"{event}_{col}"] = stress[col]
+
+        event_base_cost = pd.concat(
+            [
+                pd.to_numeric(_series_or_na(out, f"{event}_tbbo_p95_abs_trade_price_vs_mid"), errors="coerce"),
+                pd.to_numeric(_series_or_na(out, f"{event}_tbbo_p95_half_spread_points"), errors="coerce"),
+                pd.to_numeric(_series_or_na(out, f"{event}_tbbo_median_half_spread_points"), errors="coerce"),
+            ],
+            axis=1,
+        ).max(axis=1, skipna=True)
+        multiplier = pd.to_numeric(stress["vol_conditioned_slippage_multiplier"], errors="coerce").fillna(1.0)
+        normal_ok = stress["vol_conditioned_allow_normal_assumptions"].fillna(False).astype(bool)
+        event_cost = (event_base_cost * multiplier).where(event_base_cost.notna(), assumed_event_slippage)
+        event_cost = event_cost.where(~normal_ok, assumed_event_slippage)
+        event_cost = np.maximum(pd.to_numeric(event_cost, errors="coerce").fillna(0.0), assumed_event_slippage)
+        event_cost_col = f"{event}_vol_conditioned_cost_points"
+        reject_col = f"{event}_vol_conditioned_reject_fill"
+        multiplier_col = f"{event}_vol_conditioned_slippage_multiplier"
+        out[event_cost_col] = event_cost
+        event_cost_cols.append(event_cost_col)
+        reject_cols.append(reject_col)
+        multiplier_cols.append(multiplier_col)
+
+    out["vol_conditioned_round_trip_cost_points"] = out[event_cost_cols].sum(axis=1, skipna=False)
+    out["vol_conditioned_round_trip_cost_dollars"] = (
+        out["vol_conditioned_round_trip_cost_points"] * contracts * contract_value
+    )
+    out["vol_conditioned_cost_minus_assumed_points"] = (
+        out["vol_conditioned_round_trip_cost_points"] - out["assumed_slippage_points"]
+    )
+    out["vol_conditioned_reject_fill"] = out[reject_cols].fillna(False).any(axis=1)
+    out["vol_conditioned_max_slippage_multiplier"] = out[multiplier_cols].max(axis=1, skipna=True)
+    out["pnl_with_vol_conditioned_cost"] = (
+        out["pnl"] + out["assumed_slippage_dollars"] - out["vol_conditioned_round_trip_cost_dollars"]
+    )
+    out["pnl_with_vol_conditioned_cost_if_accepted"] = out["pnl_with_vol_conditioned_cost"].where(
+        ~out["vol_conditioned_reject_fill"],
+        np.nan,
+    )
     return out
 
 
@@ -418,6 +682,12 @@ def _assumed_slippage_points(reason: str, futures_specs: Mapping[str, float]) ->
     if reason in LIMIT_EXIT_REASONS:
         return float(futures_specs.get("slippage_limit_points", futures_specs["slippage_points"]))
     return float(futures_specs["slippage_points"])
+
+
+def _series_or_na(frame: pd.DataFrame, col: str) -> pd.Series:
+    if col in frame.columns:
+        return frame[col]
+    return pd.Series(np.nan, index=frame.index)
 
 
 def _safe_ratio(numerator: float, denominator: float) -> float:

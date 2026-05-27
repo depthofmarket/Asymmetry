@@ -8,6 +8,7 @@ import pandas as pd
 
 from backtest.live import PaperTradingEvent
 from backtest.live_prop_rules import LivePropRuleConfig, LivePropRuleGuard, validate_prop_research_gate
+from backtest.prop_volatility import PROP_VOLATILITY_NOT_LIVE_EDGE_NOTE, PropVolatilityControlConfig
 
 
 def _profile(**overrides):
@@ -227,6 +228,162 @@ class LivePropRuleGuardTests(unittest.TestCase):
         self.assertEqual(guard.status, "payout_ready")
         self.assertEqual(guard.exit_reason(has_open_position=True), "prop_payout_lockout")
         self.assertTrue(guard.snapshot()["payout_eligible"])
+
+    def test_volatility_opportunity_day_sets_adjusted_trade_budget_without_blocking(self) -> None:
+        guard = LivePropRuleGuard(
+            LivePropRuleConfig(
+                profile=_profile(),
+                candidate="candidate",
+                phase="eval",
+                volatility_control=PropVolatilityControlConfig(
+                    enabled=True,
+                    normal_max_trades_per_day=1,
+                    high_vol_opportunity_max_trades_per_day=2,
+                ),
+            )
+        )
+
+        guard.on_bar(
+            timestamp=pd.Timestamp("2024-01-03 10:05"),
+            equity=100_100,
+            daily_pnl=100,
+            has_open_position=False,
+            volatility_context={"realized_vol_ratio": 1.5, "volatility_state": "expanded_volatility_context"},
+        )
+
+        self.assertEqual(guard.prop_volatility_state, "high_vol_opportunity_day")
+        self.assertEqual(guard.prop_volatility_adjusted_max_trades, 2)
+        self.assertIsNone(guard.entry_block_reason())
+        snapshot = guard.snapshot()
+        self.assertEqual(snapshot["prop_volatility_not_live_edge"], PROP_VOLATILITY_NOT_LIVE_EDGE_NOTE)
+
+    def test_volatility_kill_switch_blocks_entries_and_forces_exit(self) -> None:
+        guard = LivePropRuleGuard(
+            LivePropRuleConfig(
+                profile=_profile(),
+                candidate="candidate",
+                phase="eval",
+                volatility_control=PropVolatilityControlConfig(enabled=True, post_shock_cooldown_bars=2),
+            )
+        )
+
+        guard.on_bar(
+            timestamp=pd.Timestamp("2024-01-03 10:05"),
+            equity=100_000,
+            daily_pnl=0,
+            has_open_position=True,
+            volatility_context={"volatility_jump_event": True, "volatility_state": "jump_volatility_context"},
+        )
+
+        self.assertEqual(guard.prop_volatility_state, "high_vol_kill_switch_day")
+        self.assertEqual(guard.entry_block_reason().reason, "prop_volatility_kill_switch")
+        self.assertEqual(guard.exit_reason(has_open_position=True), "prop_volatility_kill_switch")
+        self.assertEqual(guard.prop_volatility_cooldown_bars_remaining, 2)
+
+    def test_post_shock_cooldown_blocks_next_entries_without_flattening(self) -> None:
+        guard = LivePropRuleGuard(
+            LivePropRuleConfig(
+                profile=_profile(),
+                candidate="candidate",
+                phase="eval",
+                volatility_control=PropVolatilityControlConfig(enabled=True, post_shock_cooldown_bars=2),
+            )
+        )
+        guard.on_bar(
+            timestamp=pd.Timestamp("2024-01-03 10:05"),
+            equity=100_000,
+            daily_pnl=0,
+            has_open_position=False,
+            volatility_context={"volatility_jump_event": True},
+        )
+
+        guard.on_bar(
+            timestamp=pd.Timestamp("2024-01-03 10:06"),
+            equity=100_000,
+            daily_pnl=0,
+            has_open_position=False,
+            volatility_context={"realized_vol_ratio": 1.0},
+        )
+
+        self.assertEqual(guard.prop_volatility_state, "post_shock_cooldown")
+        self.assertEqual(guard.prop_volatility_cooldown_bars_remaining, 1)
+        self.assertEqual(guard.entry_block_reason().reason, "prop_volatility_cooldown")
+        self.assertIsNone(guard.exit_reason(has_open_position=True))
+
+    def test_volatility_adjusted_max_trades_uses_daily_entry_count(self) -> None:
+        guard = LivePropRuleGuard(
+            LivePropRuleConfig(
+                profile=_profile(),
+                candidate="candidate",
+                phase="eval",
+                volatility_control=PropVolatilityControlConfig(
+                    enabled=True,
+                    normal_max_trades_per_day=1,
+                ),
+            )
+        )
+        guard.on_bar(
+            timestamp=pd.Timestamp("2024-01-03 10:05"),
+            equity=100_000,
+            daily_pnl=0,
+            has_open_position=False,
+            volatility_context={"realized_vol_ratio": 1.0},
+        )
+        guard.record_event(
+            PaperTradingEvent(
+                event_type="entry_filled",
+                timestamp=pd.Timestamp("2024-01-03 10:05"),
+                message="entry",
+                direction="long",
+                contracts=1,
+            ),
+            equity=100_000,
+        )
+        guard.on_bar(
+            timestamp=pd.Timestamp("2024-01-03 10:06"),
+            equity=100_000,
+            daily_pnl=0,
+            has_open_position=False,
+            volatility_context={"realized_vol_ratio": 1.0},
+        )
+
+        self.assertEqual(guard.daily_entry_count, 1)
+        self.assertTrue(guard.prop_volatility_max_trades_reached)
+        self.assertEqual(guard.entry_block_reason().reason, "prop_volatility_max_trades")
+
+    def test_volatility_guard_state_persists_cooldown_and_trade_count(self) -> None:
+        config = LivePropRuleConfig(
+            profile=_profile(),
+            candidate="candidate",
+            phase="eval",
+            volatility_control=PropVolatilityControlConfig(enabled=True, post_shock_cooldown_bars=2),
+        )
+        guard = LivePropRuleGuard(config)
+        guard.on_bar(
+            timestamp=pd.Timestamp("2024-01-03 10:05"),
+            equity=100_000,
+            daily_pnl=0,
+            has_open_position=False,
+            volatility_context={"volatility_jump_event": True},
+        )
+        guard.record_event(
+            PaperTradingEvent(
+                event_type="entry_filled",
+                timestamp=pd.Timestamp("2024-01-03 10:05"),
+                message="entry",
+                direction="long",
+                contracts=1,
+            ),
+            equity=100_000,
+        )
+
+        restored = LivePropRuleGuard(config)
+        restored.load_state(guard.to_state())
+
+        self.assertEqual(restored.daily_entry_count, 1)
+        self.assertEqual(restored.prop_volatility_state, "high_vol_kill_switch_day")
+        self.assertEqual(restored.prop_volatility_cooldown_bars_remaining, 2)
+        self.assertEqual(restored.entry_block_reason().reason, "prop_volatility_kill_switch")
 
 
 class PropResearchGateTests(unittest.TestCase):

@@ -12,6 +12,8 @@ from backtest.live import (
     PaperTradingEngine,
     summarize_execution_observations,
 )
+from backtest.live_prop_rules import LivePropRuleConfig, LivePropRuleGuard
+from backtest.prop_volatility import PropVolatilityControlConfig
 from config.backtest_config import FUTURES_SPECS
 
 
@@ -217,6 +219,59 @@ class PaperTradingRuntimeTests(unittest.TestCase):
         self.assertEqual(row["intended_order_side"], "BUY")
         self.assertEqual(row["volatility_proxy_points"], 1.0)
         self.assertEqual(row["volatility_bucket"], "tight")
+
+    def test_prop_volatility_guard_consumes_context_columns_from_live_row(self) -> None:
+        prop_guard = LivePropRuleGuard(
+            LivePropRuleConfig(
+                profile={
+                    "name": "test_eval",
+                    "account_size": 100_000,
+                    "profit_target": 500,
+                    "max_drawdown": 1_000,
+                    "daily_loss_limit": 300,
+                    "min_trading_days": 1,
+                    "max_trading_days": 10,
+                    "drawdown_mode": "eod_trailing",
+                    "drawdown_check": "eod",
+                    "trailing_drawdown_cap_at_initial": True,
+                    "consistency_profit_limit_pct": 0,
+                    "pnl_multiplier": 0.5,
+                    "eval_cost": 42,
+                    "profit_split_pct": 80,
+                    "funded_buffer_target": 1_000,
+                    "minimum_payout": 200,
+                },
+                candidate="candidate",
+                phase="eval",
+                volatility_control=PropVolatilityControlConfig(enabled=True),
+            )
+        )
+        engine = StubSignalPaperEngine(
+            futures_specs=FUTURES_SPECS,
+            strategy_params=_minimal_params(entry_mode="next_bar_open"),
+            config=PaperTradingConfig(
+                starting_capital=100000,
+                warmup_1m_bars=0,
+                prop_guard=prop_guard,
+            ),
+        )
+
+        events = engine.on_bar(
+            {
+                "time": pd.Timestamp("2024-01-03 10:05"),
+                "open": 101.0,
+                "high": 101.25,
+                "low": 100.75,
+                "close": 101.0,
+                "volume": 100,
+                "volatility_jump_event": True,
+                "volatility_state": "jump_volatility_context",
+            }
+        )
+
+        self.assertEqual([event.event_type for event in events], ["entry_skipped"])
+        self.assertEqual(events[0].reason, "prop_volatility_kill_switch")
+        self.assertEqual(prop_guard.prop_volatility_state, "high_vol_kill_switch_day")
 
     def test_entry_fill_writes_long_and_short_execution_observations(self) -> None:
         scenarios = [

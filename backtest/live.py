@@ -320,6 +320,7 @@ class PaperTradingEngine:
         return _observation_frame(records)
 
     def on_bar(self, record: LiveBar | pd.Series | dict[str, Any]) -> list[PaperTradingEvent]:
+        raw_record = _record_context(record)
         bar = LiveBar.from_record(record)
         self._append_bar(bar)
         self._last_bar_time = pd.Timestamp(bar.time)
@@ -331,6 +332,7 @@ class PaperTradingEngine:
                 equity=self.mark_to_market_equity(float(bar.close)),
                 daily_pnl=self._daily_pnl(bar),
                 has_open_position=self.open_position is not None,
+                volatility_context=raw_record,
             )
 
         emitted: list[PaperTradingEvent] = []
@@ -1123,6 +1125,14 @@ def _summary_value(value: Any) -> str:
     if pd.isna(value):
         return ""
     return str(value)
+
+
+def _record_context(record: LiveBar | pd.Series | dict[str, Any]) -> dict[str, Any] | None:
+    if isinstance(record, pd.Series):
+        return record.to_dict()
+    if isinstance(record, dict):
+        return dict(record)
+    return None
 
 
 def _execution_observation_from_record(record: dict[str, Any]) -> ExecutionObservation:

@@ -8,6 +8,11 @@ import numpy as np
 import pandas as pd
 
 from backtest.prop_firm import _normalize_profile
+from backtest.prop_volatility import (
+    PROP_VOLATILITY_NOT_LIVE_EDGE_NOTE,
+    PropVolatilityControlConfig,
+    evaluate_prop_volatility_control,
+)
 
 
 @dataclass(frozen=True)
@@ -53,6 +58,7 @@ class LivePropRuleConfig:
     daily_loss_stop: float | None = None
     daily_profit_lock: float = 0.0
     protect_drawdown_floor_intraday: bool = True
+    volatility_control: PropVolatilityControlConfig | None = None
 
 
 @dataclass
@@ -72,6 +78,17 @@ class LivePropRuleGuard:
     last_daily_pnl: float = 0.0
     last_equity: float = 0.0
     last_timestamp: pd.Timestamp | None = None
+    daily_entry_count: int = 0
+    prop_volatility_state: str = "disabled"
+    prop_volatility_reason: str = "volatility_prop_control_disabled"
+    prop_volatility_adjusted_max_trades: int | None = None
+    prop_volatility_block_entries: bool = False
+    prop_volatility_flatten_open_position: bool = False
+    prop_volatility_cooldown_bars_remaining: int = 0
+    prop_volatility_daily_loss_fraction: float = 0.0
+    prop_volatility_high_volatility: bool = False
+    prop_volatility_shock: bool = False
+    prop_volatility_max_trades_reached: bool = False
     ledger_rows: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -153,11 +170,13 @@ class LivePropRuleGuard:
         equity: float,
         daily_pnl: float,
         has_open_position: bool,
+        volatility_context: Any | None = None,
     ) -> None:
         ts = pd.Timestamp(timestamp)
         day = ts.strftime("%Y-%m-%d")
         if self.current_date and self.current_date != day:
             self._finalize_day(self.current_date, self.last_equity, self.last_timestamp)
+            self.daily_entry_count = 0
         self.current_date = day
         if self.attempt_started_at is not None and day not in self.session_dates:
             self.session_dates.append(day)
@@ -166,6 +185,7 @@ class LivePropRuleGuard:
         self.last_daily_pnl = float(daily_pnl)
         self.best_profit_day = max(self.best_profit_day, float(daily_pnl))
         self._refresh_drawdown_floor()
+        self._update_prop_volatility_context(volatility_context)
         self._evaluate_status(has_open_position=has_open_position)
 
     def entry_block_reason(self) -> PropRuleDecision | None:
@@ -182,6 +202,9 @@ class LivePropRuleGuard:
             return PropRuleDecision("prop_daily_loss_stop", "Prop guard blocked entry because the daily loss stop is reached.")
         if self._drawdown_floor_hit():
             return PropRuleDecision("prop_drawdown_floor", "Prop guard blocked entry because equity is at the drawdown floor.")
+        volatility_decision = self._prop_volatility_entry_block_reason()
+        if volatility_decision is not None:
+            return volatility_decision
         if self.config.phase == "eval" and self.target_reached and bool(self.rules["stop_after_target_until_min_days"]):
             if not self.consistency_ok:
                 return None
@@ -197,6 +220,8 @@ class LivePropRuleGuard:
             return "prop_payout_lockout"
         if self.status in {"fail", "timeout"}:
             return self.kill_reason or self.status
+        if self.prop_volatility_flatten_open_position:
+            return "prop_volatility_kill_switch"
         if self.daily_loss_stop > 0 and self.last_daily_pnl <= -self.daily_loss_stop:
             return "prop_daily_loss_stop"
         if self.daily_profit_lock > 0 and self.last_daily_pnl >= self.daily_profit_lock:
@@ -213,10 +238,12 @@ class LivePropRuleGuard:
         day = timestamp.strftime("%Y-%m-%d")
         if self.current_date and self.current_date != day:
             self._finalize_day(self.current_date, self.last_equity, self.last_timestamp)
+            self.daily_entry_count = 0
         self.current_date = day
         self.last_equity = float(equity)
         self.last_timestamp = timestamp
         if event_type == "entry_filled":
+            self.daily_entry_count += 1
             if self.attempt_started_at is None:
                 self.attempt_started_at = timestamp
             if day not in self.session_dates:
@@ -252,6 +279,17 @@ class LivePropRuleGuard:
             "last_daily_pnl": float(self.last_daily_pnl),
             "last_equity": float(self.last_equity),
             "last_timestamp": self.last_timestamp.isoformat() if self.last_timestamp is not None else None,
+            "daily_entry_count": int(self.daily_entry_count),
+            "prop_volatility_state": self.prop_volatility_state,
+            "prop_volatility_reason": self.prop_volatility_reason,
+            "prop_volatility_adjusted_max_trades": self.prop_volatility_adjusted_max_trades,
+            "prop_volatility_block_entries": bool(self.prop_volatility_block_entries),
+            "prop_volatility_flatten_open_position": bool(self.prop_volatility_flatten_open_position),
+            "prop_volatility_cooldown_bars_remaining": int(self.prop_volatility_cooldown_bars_remaining),
+            "prop_volatility_daily_loss_fraction": float(self.prop_volatility_daily_loss_fraction),
+            "prop_volatility_high_volatility": bool(self.prop_volatility_high_volatility),
+            "prop_volatility_shock": bool(self.prop_volatility_shock),
+            "prop_volatility_max_trades_reached": bool(self.prop_volatility_max_trades_reached),
             "ledger_rows": list(self.ledger_rows),
         }
 
@@ -271,6 +309,28 @@ class LivePropRuleGuard:
         self.last_equity = float(state.get("last_equity", self.last_equity))
         last_ts = state.get("last_timestamp")
         self.last_timestamp = pd.Timestamp(last_ts) if last_ts else None
+        self.daily_entry_count = int(state.get("daily_entry_count", self.daily_entry_count))
+        self.prop_volatility_state = str(state.get("prop_volatility_state", self.prop_volatility_state))
+        self.prop_volatility_reason = str(state.get("prop_volatility_reason", self.prop_volatility_reason))
+        max_trades = state.get("prop_volatility_adjusted_max_trades", self.prop_volatility_adjusted_max_trades)
+        self.prop_volatility_adjusted_max_trades = None if max_trades is None else int(max_trades)
+        self.prop_volatility_block_entries = bool(state.get("prop_volatility_block_entries", self.prop_volatility_block_entries))
+        self.prop_volatility_flatten_open_position = bool(
+            state.get("prop_volatility_flatten_open_position", self.prop_volatility_flatten_open_position)
+        )
+        self.prop_volatility_cooldown_bars_remaining = int(
+            state.get("prop_volatility_cooldown_bars_remaining", self.prop_volatility_cooldown_bars_remaining)
+        )
+        self.prop_volatility_daily_loss_fraction = float(
+            state.get("prop_volatility_daily_loss_fraction", self.prop_volatility_daily_loss_fraction)
+        )
+        self.prop_volatility_high_volatility = bool(
+            state.get("prop_volatility_high_volatility", self.prop_volatility_high_volatility)
+        )
+        self.prop_volatility_shock = bool(state.get("prop_volatility_shock", self.prop_volatility_shock))
+        self.prop_volatility_max_trades_reached = bool(
+            state.get("prop_volatility_max_trades_reached", self.prop_volatility_max_trades_reached)
+        )
         self.ledger_rows = [dict(row) for row in state.get("ledger_rows", [])]
 
     def _finalize_day(self, day: str, equity: float, timestamp: pd.Timestamp | None) -> None:
@@ -378,7 +438,69 @@ class LivePropRuleGuard:
             "net_payout_after_split": float(payout_available * profit_split),
             "status": self.status,
             "kill_reason": self.kill_reason,
+            "daily_entry_count": int(self.daily_entry_count),
+            "prop_volatility_state": self.prop_volatility_state,
+            "prop_volatility_reason": self.prop_volatility_reason,
+            "prop_volatility_adjusted_max_trades": self.prop_volatility_adjusted_max_trades,
+            "prop_volatility_block_entries": bool(self.prop_volatility_block_entries),
+            "prop_volatility_flatten_open_position": bool(self.prop_volatility_flatten_open_position),
+            "prop_volatility_cooldown_bars_remaining": int(self.prop_volatility_cooldown_bars_remaining),
+            "prop_volatility_daily_loss_fraction": float(self.prop_volatility_daily_loss_fraction),
+            "prop_volatility_high_volatility": bool(self.prop_volatility_high_volatility),
+            "prop_volatility_shock": bool(self.prop_volatility_shock),
+            "prop_volatility_max_trades_reached": bool(self.prop_volatility_max_trades_reached),
+            "prop_volatility_not_live_edge": PROP_VOLATILITY_NOT_LIVE_EDGE_NOTE,
         }
+
+    def _update_prop_volatility_context(self, volatility_context: Any | None) -> None:
+        cfg = self.config.volatility_control
+        if cfg is None:
+            return
+        decision = evaluate_prop_volatility_control(
+            volatility_context,
+            config=cfg,
+            current_cooldown_bars=self.prop_volatility_cooldown_bars_remaining,
+            daily_pnl=self.last_daily_pnl,
+            daily_loss_stop=self.daily_loss_stop,
+            daily_entry_count=self.daily_entry_count,
+        )
+        self.prop_volatility_state = decision.state
+        self.prop_volatility_reason = decision.reason
+        self.prop_volatility_adjusted_max_trades = decision.max_trades_today
+        self.prop_volatility_block_entries = decision.block_new_entries
+        self.prop_volatility_flatten_open_position = decision.flatten_open_position
+        self.prop_volatility_cooldown_bars_remaining = decision.cooldown_bars_remaining
+        self.prop_volatility_daily_loss_fraction = decision.daily_loss_fraction
+        self.prop_volatility_high_volatility = decision.high_volatility
+        self.prop_volatility_shock = decision.volatility_shock
+        self.prop_volatility_max_trades_reached = decision.max_trades_reached
+
+    def _prop_volatility_entry_block_reason(self) -> PropRuleDecision | None:
+        if self.config.volatility_control is None:
+            return None
+        if self.prop_volatility_state == "disabled":
+            return None
+        if self.prop_volatility_flatten_open_position or self.prop_volatility_state == "high_vol_kill_switch_day":
+            return PropRuleDecision(
+                "prop_volatility_kill_switch",
+                "Prop volatility guard blocked entry because account-management risk is in kill-switch mode.",
+            )
+        if self.prop_volatility_state == "post_shock_cooldown" and self.prop_volatility_block_entries:
+            return PropRuleDecision(
+                "prop_volatility_cooldown",
+                "Prop volatility guard blocked entry during post-shock cooldown.",
+            )
+        if self.prop_volatility_max_trades_reached:
+            return PropRuleDecision(
+                "prop_volatility_max_trades",
+                "Prop volatility guard blocked entry because the volatility-adjusted trade limit is reached.",
+            )
+        if self.prop_volatility_block_entries:
+            return PropRuleDecision(
+                "prop_volatility_block",
+                "Prop volatility guard blocked entry for account-management risk.",
+            )
+        return None
 
 
 def profile_by_name(profiles: list[dict[str, Any]], name: str) -> dict[str, Any]:

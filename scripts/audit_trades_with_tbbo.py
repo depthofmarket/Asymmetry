@@ -5,6 +5,8 @@ import argparse
 from pathlib import Path
 import sys
 
+import pandas as pd
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -38,6 +40,11 @@ def parse_args() -> argparse.Namespace:
         help="Processed TBBO minute stats CSV from build_tbbo_execution_stats.py.",
     )
     parser.add_argument(
+        "--volatility-state-csv",
+        default="",
+        help="Optional volatility-state CSV from backtest.volatility_state for volatility-conditioned cost stress.",
+    )
+    parser.add_argument(
         "--out-dir",
         default=None,
         help="Output directory. Defaults to <run-dir>/research/tbbo_execution.",
@@ -68,16 +75,24 @@ def main() -> int:
 
     trades = read_trade_log(trade_log)
     minute_stats = read_tbbo_minute_stats(args.tbbo_minute)
+    volatility_state = (
+        pd.read_csv(args.volatility_state_csv, low_memory=False)
+        if args.volatility_state_csv and Path(args.volatility_state_csv).exists()
+        else None
+    )
     audit = build_tbbo_trade_audit(
         trades,
         minute_stats,
         futures_specs=FUTURES_SPECS,
+        volatility_state=volatility_state,
         nearest_tolerance=args.nearest_tolerance,
     )
     paths = write_tbbo_trade_audit(audit, out_dir)
 
     print(f"TBBO trade audit: {trade_log}")
     print(f"TBBO minute stats: {args.tbbo_minute}")
+    if volatility_state is not None:
+        print(f"Volatility state: {args.volatility_state_csv}")
     print(audit.summary.to_string(index=False))
     for key, path in paths.items():
         print(f"{key}: {path}")

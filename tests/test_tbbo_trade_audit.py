@@ -75,6 +75,37 @@ def _trades() -> pd.DataFrame:
     )
 
 
+def _volatility_state() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "time": pd.to_datetime(
+                [
+                    "2026-03-18 10:19:00",
+                    "2026-03-18 10:20:00",
+                    "2026-03-18 10:25:00",
+                ]
+            ),
+            "volatility_state": [
+                "normal_volatility_context",
+                "jump_volatility_context",
+                "jump_volatility_context",
+            ],
+            "volatility_compression_state": [
+                "normal_volatility",
+                "expanded_volatility",
+                "expanded_volatility",
+            ],
+            "volatility_vol_of_vol_state": [
+                "stable_volatility_of_volatility",
+                "unstable_volatility_of_volatility",
+                "unstable_volatility_of_volatility",
+            ],
+            "volatility_jump_event": [False, True, True],
+            "realized_vol_ratio": [1.0, 1.8, 1.8],
+        }
+    )
+
+
 class TbboTradeAuditTests(unittest.TestCase):
     def test_audit_matches_active_contract_and_estimates_cost(self) -> None:
         audit = build_tbbo_trade_audit(_trades(), _minute_stats())
@@ -89,6 +120,26 @@ class TbboTradeAuditTests(unittest.TestCase):
         self.assertAlmostEqual(float(row["limit_exit_opportunity_stress_points"]), 0.25)
         self.assertAlmostEqual(float(row["pnl_with_tbbo_p95_trade_vs_mid_and_limit_opportunity_cost"]), 80.0)
         self.assertAlmostEqual(float(row["entry_tbbo_top_book_depth_exhausted_trade_pct"]), 0.10)
+
+    def test_volatility_conditioned_cost_stress_flags_rejected_fills(self) -> None:
+        minute_stats = _minute_stats().copy()
+        minute_stats.loc[minute_stats["symbol"].eq("NQH6"), "median_spread_points"] = [2.0, 2.5]
+        minute_stats.loc[minute_stats["symbol"].eq("NQH6"), "p95_spread_points"] = [3.0, 3.5]
+        minute_stats.loc[minute_stats["symbol"].eq("NQH6"), "top_book_depth_exhausted_trade_pct"] = [0.70, 0.80]
+
+        audit = build_tbbo_trade_audit(
+            _trades(),
+            minute_stats,
+            volatility_state=_volatility_state(),
+        )
+        row = audit.audited_trades.iloc[0]
+        summary = audit.summary.iloc[0]
+
+        self.assertTrue(bool(row["vol_conditioned_reject_fill"]))
+        self.assertEqual(row["entry_vol_conditioned_cost_state"], "dislocated")
+        self.assertGreater(float(row["vol_conditioned_round_trip_cost_points"]), float(row["assumed_slippage_points"]))
+        self.assertLess(float(row["pnl_with_vol_conditioned_cost"]), float(row["pnl"]))
+        self.assertEqual(int(summary["matched_vol_conditioned_rejected_fills"]), 1)
 
     def test_audit_reports_window_coverage(self) -> None:
         audit = build_tbbo_trade_audit(_trades(), _minute_stats())
