@@ -123,9 +123,11 @@ def build_l2_replay_protocol_manifest(
     out_dir: str = "results/research_master/l2_orderflow_replay",
     prefix: str = "l2_orderflow_replay",
     symbol: str = "NQ_L2",
+    execution_mode: str = "topbook_only",
     tick_size: float = 0.25,
     contract_value: float = 20.0,
     policy: str = "auto",
+    max_depth_levels: int = 10,
     coalesce_window: str = "100ms",
     max_spread_ticks: float = 40.0,
     latency: str = "0ms",
@@ -174,11 +176,12 @@ def build_l2_replay_protocol_manifest(
             "frozen_before_lockbox": False,
         },
         "execution": {
-            "mode": "topbook_only",
+            "mode": str(execution_mode),
             "symbol": str(symbol),
             "tick_size": float(tick_size),
             "contract_value": float(contract_value),
             "policy": str(policy),
+            "max_depth_levels": int(max_depth_levels),
             "coalesce_window": str(coalesce_window),
             "max_spread_ticks": float(max_spread_ticks),
             "latency": str(latency),
@@ -339,9 +342,11 @@ def verify_l2_replay_protocol(
     fill_model = str(execution.get("limit_fill_model", ""))
     tick_size = _float(execution.get("tick_size"), default=0.0)
     contract_value = _float(execution.get("contract_value"), default=0.0)
+    max_depth_levels = _int(execution.get("max_depth_levels"), default=0)
     add("execution", "mode", mode, "|".join(sorted(ALLOWED_EXECUTION_MODES)), mode in ALLOWED_EXECUTION_MODES, path)
     add("execution", "tick_size", tick_size, "> 0", tick_size > 0.0, path)
     add("execution", "contract_value", contract_value, "> 0", contract_value > 0.0, path)
+    add("execution", "max_depth_levels", max_depth_levels, "1..10", 1 <= max_depth_levels <= 10, path)
     add("execution", "topbook_only_until_depth_proven", mode, "topbook_only or valid depth proof", mode == "topbook_only" or _path_exists(execution.get("depth_semantics_proof_path")), path)
     add("execution", "limit_fill_model", fill_model, "|".join(sorted(ALLOWED_LIMIT_FILL_MODELS)), fill_model in ALLOWED_LIMIT_FILL_MODELS, path)
     add("execution", "queue_model_requires_proof", fill_model, "non-queue or queue_proof_path exists", fill_model != "queue" or _path_exists(execution.get("queue_proof_path")), path)
@@ -446,12 +451,16 @@ def render_l2_replay_command(
             json.dumps(strategy.get("kwargs", {}), sort_keys=True),
             "--symbol",
             str(execution.get("symbol", "NQ_L2")),
+            "--execution-mode",
+            str(execution.get("mode", "topbook_only")),
             "--tick-size",
             str(execution.get("tick_size", 0.25)),
             "--contract-value",
             str(execution.get("contract_value", 20.0)),
             "--policy",
             str(execution.get("policy", "auto")),
+            "--max-depth-levels",
+            str(execution.get("max_depth_levels", 10)),
             "--coalesce-window",
             str(execution.get("coalesce_window", "100ms")),
             "--max-spread-ticks",
@@ -477,6 +486,7 @@ def command_context_from_replay_args(args: argparse.Namespace) -> dict[str, Any]
         "trade_dates": list(getattr(args, "trade_date", []) or []),
         "max_rows_per_source": getattr(args, "max_rows_per_member", None),
         "strategy": getattr(args, "strategy", None),
+        "execution_mode": getattr(args, "execution_mode", None),
         "tick_size": getattr(args, "tick_size", None),
         "contract_value": getattr(args, "contract_value", None),
         "limit_fill_model": getattr(args, "limit_fill_model", None),
@@ -497,6 +507,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--source-index", default="data/raw/l2_nq/manifests/l2_source_index.csv")
     parser.add_argument("--trade-date", action="append", default=["20201201"])
     parser.add_argument("--strategy", default="noop")
+    parser.add_argument("--execution-mode", choices=sorted(ALLOWED_EXECUTION_MODES), default="topbook_only")
     parser.add_argument("--max-rows-per-source", type=int, default=1_000)
     parser.add_argument("--print-command", action="store_true")
     args = parser.parse_args(argv)
@@ -511,6 +522,7 @@ def main(argv: list[str] | None = None) -> int:
             source_index_path=args.source_index,
             trade_dates=list(args.trade_date),
             strategy=args.strategy,
+            execution_mode=args.execution_mode,
             max_rows_per_source=int(args.max_rows_per_source),
             out_dir="results/research_master/l2_orderflow_replay",
             prefix=args.experiment_id,
@@ -545,6 +557,7 @@ def _add_command_context_checks(
         ("trade_dates", ",".join(_date_selection(manifest)), ",".join(_normalize_yyyymmdd(day) for day in command_context.get("trade_dates", []) or [])),
         ("max_rows_per_source", str(_int(manifest_rows.get("max_rows_per_source"), 0)), str(command_context.get("max_rows_per_source"))),
         ("strategy", str(manifest_strategy.get("name", "")), _optional_str(command_context.get("strategy"))),
+        ("execution_mode", str(manifest_execution.get("mode", "")), _optional_str(command_context.get("execution_mode"))),
         ("tick_size", str(manifest_execution.get("tick_size", "")), _optional_str(command_context.get("tick_size"))),
         ("contract_value", str(manifest_execution.get("contract_value", "")), _optional_str(command_context.get("contract_value"))),
         ("limit_fill_model", str(manifest_execution.get("limit_fill_model", "")), _optional_str(command_context.get("limit_fill_model"))),

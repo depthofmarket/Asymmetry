@@ -390,7 +390,7 @@ def render_l2_orderflow_replay_report(
     lines = [
         "# L2 Orderflow Replay",
         "",
-        "This is an event-driven replay over guarded L2 top-book rows. It does not use OHLCV bars.",
+        "This is an event-driven replay over guarded L2 rows. It does not use OHLCV bars.",
         "",
     ]
     if replay_summary.empty:
@@ -413,8 +413,8 @@ def render_l2_orderflow_replay_report(
             "",
             "## Guardrails",
             "",
-            "- This runner consumes top-book events directly; it is not the existing OHLCV backtest path.",
-            "- Full-depth queue realism remains disabled unless the depth-semantics matrix accepts it.",
+            "- This runner consumes L2 events directly; it is not the existing OHLCV backtest path.",
+            "- Full-depth mode still depends on an accepted depth-semantics proof.",
             "- Built-in smoke strategies are plumbing tests, not edge evidence or candidates.",
             "- Orders submitted from `on_event` cannot fill on the same market event.",
             "",
@@ -434,9 +434,14 @@ def load_l2_orderflow_strategy(spec: str, kwargs: dict[str, Any] | None = None) 
         return L2NoOpStrategy()
     if name == "topbook_imbalance":
         return L2TopBookImbalanceSmokeStrategy(**kwargs)
+    if name == "bar_signal_csv":
+        from backtest.l2_bar_signal_adapter import L2BarSignalAdapterStrategy
+
+        return L2BarSignalAdapterStrategy(**kwargs)
     if ":" not in name:
         raise ValueError(
-            "Unknown L2 orderflow strategy. Use `noop`, `topbook_imbalance`, or `module:function`."
+            "Unknown L2 orderflow strategy. Use `noop`, `topbook_imbalance`, "
+            "`bar_signal_csv`, or `module:function`."
         )
     module_name, factory_name = name.split(":", 1)
     factory = getattr(importlib.import_module(module_name), factory_name)

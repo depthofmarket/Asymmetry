@@ -13,6 +13,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from backtest.l2_execution_engine import L2ExecutionConfig  # noqa: E402
+from backtest.l2_full_depth import L2FullDepthConfig, build_l2_full_depth_frame  # noqa: E402
 from backtest.l2_mbp import decode_l2_mbp_sources, select_l2_parquet_sources  # noqa: E402
 from backtest.l2_orderflow_replay import (  # noqa: E402
     L2OrderFlowReplayConfig,
@@ -32,8 +33,8 @@ from backtest.l2_topbook_execution import L2TopBookExecutionConfig, build_l2_top
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Run an event-driven L2 top-book orderflow replay. This consumes guarded bid/ask events "
-            "directly and is separate from the OHLCV bar backtest."
+            "Run an event-driven L2 orderflow replay in top-book or full-depth mode. "
+            "This consumes guarded bid/ask events directly and is separate from the OHLCV bar backtest."
         )
     )
     input_group = parser.add_mutually_exclusive_group(required=True)
@@ -72,8 +73,8 @@ def parse_args() -> argparse.Namespace:
         "--strategy",
         default="noop",
         help=(
-            "Strategy to run: noop, topbook_imbalance, or module:function returning an object with "
-            "on_event(event, context)."
+            "Strategy to run: noop, topbook_imbalance, bar_signal_csv, or module:function returning an "
+            "object with on_event(event, context)."
         ),
     )
     parser.add_argument(
@@ -83,9 +84,16 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument("--symbol", default="NQ_L2")
+    parser.add_argument(
+        "--execution-mode",
+        choices=["topbook_only", "full_depth"],
+        default="topbook_only",
+        help="topbook_only uses bid/ask level 0 only; full_depth reconstructs displayed MBP depth.",
+    )
     parser.add_argument("--tick-size", type=float, default=0.25)
     parser.add_argument("--contract-value", type=float, default=20.0)
     parser.add_argument("--policy", default="auto")
+    parser.add_argument("--max-depth-levels", type=int, default=10)
     parser.add_argument("--coalesce-window", default="100ms")
     parser.add_argument("--max-spread-ticks", type=float, default=40.0)
     parser.add_argument("--trade-alignment-tolerance", default="5s")
@@ -126,7 +134,10 @@ def main() -> int:
         contract_value=float(args.contract_value),
         latency=str(args.latency),
         allow_partial_fills=not bool(args.no_partial_fills),
-        reject_non_topbook_limits=not bool(args.allow_full_depth_unknown_limits),
+        reject_non_topbook_limits=not (args.execution_mode == "full_depth" or bool(args.allow_full_depth_unknown_limits)),
+        reject_unknown_depth_limits=True,
+        taking_depth_levels=int(args.max_depth_levels) if args.execution_mode == "full_depth" else 1,
+        passive_depth_levels=int(args.max_depth_levels) if args.execution_mode == "full_depth" else 1,
         limit_fill_model=args.limit_fill_model,
         queue_ahead_multiplier=float(args.queue_ahead_multiplier),
     )
@@ -169,7 +180,10 @@ def _check_protocol(args: argparse.Namespace) -> None:
 
 def _load_topbook_events(args: argparse.Namespace) -> pd.DataFrame:
     if args.topbook_events:
-        return pd.read_csv(args.topbook_events)
+        events = pd.read_csv(args.topbook_events)
+        if args.execution_mode == "full_depth":
+            _require_full_depth_columns(events, source=args.topbook_events)
+        return events
 
     if args.source_index:
         selection = resolve_l2_source_index(
@@ -203,6 +217,19 @@ def _load_topbook_events(args: argparse.Namespace) -> pd.DataFrame:
             max_rows_per_source=int(args.max_rows_per_member),
             start_row_group=int(args.start_row_group),
         )
+    if args.execution_mode == "full_depth":
+        full_depth_config = L2FullDepthConfig(
+            symbol=str(args.symbol),
+            tick_size=float(args.tick_size),
+            policy=str(args.policy),
+            max_depth_levels=int(args.max_depth_levels),
+            coalesce_window=str(args.coalesce_window),
+            max_spread_ticks=float(args.max_spread_ticks),
+            trade_alignment_tolerance=str(args.trade_alignment_tolerance),
+            include_unknown_side_trades=bool(args.include_unknown_side_trades),
+        )
+        return build_l2_full_depth_frame(decoded.events, config=full_depth_config)
+
     topbook_config = L2TopBookExecutionConfig(
         symbol=str(args.symbol),
         tick_size=float(args.tick_size),
@@ -213,6 +240,15 @@ def _load_topbook_events(args: argparse.Namespace) -> pd.DataFrame:
         include_unknown_side_trades=bool(args.include_unknown_side_trades),
     )
     return build_l2_topbook_frame(decoded.events, config=topbook_config)
+
+
+def _require_full_depth_columns(events: pd.DataFrame, *, source: str) -> None:
+    required = {"bid_px_00", "ask_px_00", "bid_sz_00", "ask_sz_00", "bid_px_01", "ask_px_01", "bid_sz_01", "ask_sz_01"}
+    missing = sorted(required - set(events.columns))
+    if missing:
+        raise SystemExit(
+            f"--execution-mode full_depth requires full-depth event columns in {source}; missing: {', '.join(missing)}"
+        )
 
 
 def _json_object(raw: str, *, arg_name: str) -> dict[str, object]:

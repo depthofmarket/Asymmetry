@@ -31,6 +31,9 @@ class L2ExecutionConfig:
     allow_partial_fills: bool = True
     reject_crossed_books: bool = True
     reject_non_topbook_limits: bool = True
+    reject_unknown_depth_limits: bool = True
+    taking_depth_levels: int = 1
+    passive_depth_levels: int = 1
     limit_fill_model: L2LimitFillModel = "trade_through"
     queue_ahead_multiplier: float = 1.0
 
@@ -106,6 +109,8 @@ class L2Fill:
     spread_points: float
     queue_ahead_before: float = np.nan
     depth_exhausted: bool = False
+    book_side: str = ""
+    book_level: int = 0
     tag: str = ""
 
 
@@ -330,7 +335,14 @@ class L2ExecutionEngine:
             if self.config.reject_non_topbook_limits and _valid_price(event.bid_price) and limit < event.bid_price:
                 _reject_order(order, "non_topbook_limit_price")
                 return
-            order.queue_ahead = float(event.bid_size) * float(self.config.queue_ahead_multiplier) if np.isclose(limit, event.bid_price) else 0.0
+            depth = _passive_depth_at_price(event, order.side, limit, max_levels=self.config.passive_depth_levels)
+            if depth is not None:
+                _book_side, _level_idx, _price, displayed_size = depth
+                order.queue_ahead = float(displayed_size) * float(self.config.queue_ahead_multiplier)
+            elif _valid_price(event.bid_price) and limit < event.bid_price and self.config.reject_unknown_depth_limits:
+                _reject_order(order, "limit_price_not_in_reconstructed_depth")
+            else:
+                order.queue_ahead = 0.0
         else:
             if _valid_price(event.bid_price) and limit <= event.bid_price:
                 if order.post_only:
@@ -339,7 +351,14 @@ class L2ExecutionEngine:
             if self.config.reject_non_topbook_limits and _valid_price(event.ask_price) and limit > event.ask_price:
                 _reject_order(order, "non_topbook_limit_price")
                 return
-            order.queue_ahead = float(event.ask_size) * float(self.config.queue_ahead_multiplier) if np.isclose(limit, event.ask_price) else 0.0
+            depth = _passive_depth_at_price(event, order.side, limit, max_levels=self.config.passive_depth_levels)
+            if depth is not None:
+                _book_side, _level_idx, _price, displayed_size = depth
+                order.queue_ahead = float(displayed_size) * float(self.config.queue_ahead_multiplier)
+            elif _valid_price(event.ask_price) and limit > event.ask_price and self.config.reject_unknown_depth_limits:
+                _reject_order(order, "limit_price_not_in_reconstructed_depth")
+            else:
+                order.queue_ahead = 0.0
 
     def _process_limit_order(self, order: L2Order, event: L2MarketEvent) -> None:
         if order.limit_price is None or order.remaining_quantity <= 0.0:
@@ -365,23 +384,54 @@ class L2ExecutionEngine:
 
         if self.config.limit_fill_model == "trade_through":
             if trade_through:
-                self._record_fill(order, event, order.remaining_quantity, limit, liquidity="passive", reason="limit_trade_through")
+                book_side, book_level = self._passive_book_location(order, event, limit)
+                self._record_fill(
+                    order,
+                    event,
+                    order.remaining_quantity,
+                    limit,
+                    liquidity="passive",
+                    reason="limit_trade_through",
+                    book_side=book_side,
+                    book_level=book_level,
+                )
             return
 
         if self.config.limit_fill_model == "touch":
-            self._record_fill(order, event, order.remaining_quantity, limit, liquidity="passive", reason="limit_touch")
+            book_side, book_level = self._passive_book_location(order, event, limit)
+            self._record_fill(
+                order,
+                event,
+                order.remaining_quantity,
+                limit,
+                liquidity="passive",
+                reason="limit_touch",
+                book_side=book_side,
+                book_level=book_level,
+            )
             return
 
         if self.config.limit_fill_model != "queue":
             raise ValueError(f"Unsupported limit_fill_model: {self.config.limit_fill_model}")
         if trade_through:
-            self._record_fill(order, event, order.remaining_quantity, limit, liquidity="passive", reason="limit_trade_through")
+            book_side, book_level = self._passive_book_location(order, event, limit)
+            self._record_fill(
+                order,
+                event,
+                order.remaining_quantity,
+                limit,
+                liquidity="passive",
+                reason="limit_trade_through",
+                book_side=book_side,
+                book_level=book_level,
+            )
             return
 
         queue_before = 0.0 if not np.isfinite(order.queue_ahead) else max(float(order.queue_ahead), 0.0)
         fillable = max(float(event.size) - queue_before, 0.0)
         order.queue_ahead = max(queue_before - float(event.size), 0.0)
         if fillable > 0.0:
+            book_side, book_level = self._passive_book_location(order, event, limit)
             self._record_fill(
                 order,
                 event,
@@ -390,7 +440,16 @@ class L2ExecutionEngine:
                 liquidity="passive",
                 reason="limit_queue_depleted",
                 queue_ahead_before=queue_before,
+                book_side=book_side,
+                book_level=book_level,
             )
+
+    def _passive_book_location(self, order: L2Order, event: L2MarketEvent, limit: float) -> tuple[str, int]:
+        depth = _passive_depth_at_price(event, order.side, limit, max_levels=self.config.passive_depth_levels)
+        if depth is None:
+            return "", 0
+        book_side, level_idx, _price, _displayed_size = depth
+        return book_side, int(level_idx) + 1
 
     def _process_stop_market_order(self, order: L2Order, event: L2MarketEvent) -> None:
         if order.stop_price is None:
@@ -411,17 +470,22 @@ class L2ExecutionEngine:
         if self.config.reject_crossed_books and _book_crossed_or_locked(event):
             _reject_order(order, "crossed_or_locked_book")
             return
-        price = event.ask_price if order.side == "buy" else event.bid_price
-        displayed_size = event.ask_size if order.side == "buy" else event.bid_size
-        if not _valid_price(price) or not np.isfinite(displayed_size) or displayed_size <= 0.0:
+        levels = _taking_depth_levels(event, order.side, max_levels=self.config.taking_depth_levels)
+        if not levels:
             _reject_order(order, "no_valid_topbook_depth")
             return
         requested = order.remaining_quantity
-        fill_quantity = min(requested, float(displayed_size))
-        if fill_quantity < requested and not self.config.allow_partial_fills:
+        available = sum(float(item[3]) for item in levels)
+        if available < requested and not self.config.allow_partial_fills:
             _reject_order(order, "insufficient_topbook_depth")
             return
-        if fill_quantity > 0.0:
+        remaining_before = requested
+        for book_side, level_idx, price, displayed_size in levels:
+            if order.remaining_quantity <= 1e-12:
+                break
+            fill_quantity = min(order.remaining_quantity, float(displayed_size))
+            if fill_quantity <= 0.0:
+                continue
             self._record_fill(
                 order,
                 event,
@@ -430,10 +494,16 @@ class L2ExecutionEngine:
                 liquidity="taking",
                 reason=reason,
                 depth_exhausted=fill_quantity >= float(displayed_size),
+                book_side=book_side,
+                book_level=level_idx + 1,
             )
         if order.remaining_quantity > 0.0 and order.order_type in {"market", "stop_market"}:
             order.status = "partial_cancelled" if order.filled_quantity > 0.0 else "cancelled"
-            order.cancel_reason = "insufficient_topbook_depth"
+            order.cancel_reason = (
+                "insufficient_full_depth" if int(self.config.taking_depth_levels) > 1 else "insufficient_topbook_depth"
+            )
+        if order.filled_quantity <= 0.0 and remaining_before > 0.0:
+            _reject_order(order, "no_valid_topbook_depth")
 
     def _record_fill(
         self,
@@ -446,6 +516,8 @@ class L2ExecutionEngine:
         reason: str,
         queue_ahead_before: float = np.nan,
         depth_exhausted: bool = False,
+        book_side: str = "",
+        book_level: int = 0,
     ) -> None:
         quantity = min(float(quantity), order.remaining_quantity)
         if quantity <= 0.0:
@@ -474,6 +546,8 @@ class L2ExecutionEngine:
                 spread_points=event.spread_points,
                 queue_ahead_before=queue_ahead_before,
                 depth_exhausted=bool(depth_exhausted),
+                book_side=str(book_side),
+                book_level=int(book_level),
                 tag=order.tag,
             )
         )
@@ -490,7 +564,10 @@ def prepare_l2_execution_events(topbook_events: pd.DataFrame, *, tick_size: floa
     out["ts_event"] = pd.to_datetime(out["ts_event"], utc=True, errors="coerce")
     out = out.dropna(subset=["ts_event"]).sort_values("ts_event", kind="stable").reset_index(drop=True)
     out["event_seq"] = np.arange(len(out), dtype=int)
-    for col in ("price", "size", "bid_px_00", "ask_px_00", "bid_sz_00", "ask_sz_00"):
+    depth_cols = []
+    for idx in range(10):
+        depth_cols.extend([f"bid_px_{idx:02d}", f"ask_px_{idx:02d}", f"bid_sz_{idx:02d}", f"ask_sz_{idx:02d}"])
+    for col in ("price", "size", *depth_cols):
         if col not in out.columns:
             out[col] = np.nan
         out[col] = pd.to_numeric(out[col], errors="coerce")
@@ -617,6 +694,7 @@ def summarize_l2_execution(orders: pd.DataFrame, fills: pd.DataFrame) -> pd.Data
         taking_qty = float(qty.where(fills["liquidity"].astype(str).eq("taking"), 0.0).sum())
         passive_qty = float(qty.where(fills["liquidity"].astype(str).eq("passive"), 0.0).sum())
         depth_exhausted = int(fills["depth_exhausted"].fillna(False).astype(bool).sum())
+        max_fill_book_level = int(pd.to_numeric(fills.get("book_level", pd.Series(dtype="float64")), errors="coerce").fillna(0).max())
     return pd.DataFrame(
         [
             {
@@ -630,6 +708,7 @@ def summarize_l2_execution(orders: pd.DataFrame, fills: pd.DataFrame) -> pd.Data
                 "taking_fill_qty": taking_qty,
                 "passive_fill_qty": passive_qty,
                 "depth_exhausted_fills": depth_exhausted,
+                "max_fill_book_level": max_fill_book_level if not fills.empty else 0,
             }
         ]
     )
@@ -660,13 +739,14 @@ def render_l2_execution_report(summary: pd.DataFrame, orders: pd.DataFrame, fill
             f"- Taking fill quantity: {float(row['taking_fill_qty']):.4g}",
             f"- Passive fill quantity: {float(row['passive_fill_qty']):.4g}",
             f"- Depth-exhausted taking fills: {int(row['depth_exhausted_fills']):,}",
+            f"- Deepest fill book level: {int(row.get('max_fill_book_level', 0)):,}",
             "",
             "## Guardrails",
             "",
             "- Orders submitted by a strategy callback are not eligible on the same event that created them.",
-            "- Market and stop-market fills are constrained by displayed top-book depth.",
+            "- Market and stop-market fills are constrained by displayed book depth.",
             "- Passive limit fills default to trade-through confirmation unless configured otherwise.",
-            "- Non-top-book passive limits are rejected by default because the current replay layer has not accepted full-depth semantics yet.",
+            "- Non-top-book passive limits require reconstructed depth at that price unless the config explicitly disables that guard.",
             "",
         ]
     )
@@ -696,6 +776,53 @@ def _market_event_from_row(row: Any) -> L2MarketEvent:
         spread_points=spread,
         row=pd.Series(row._asdict()),
     )
+
+
+def _taking_depth_levels(
+    event: L2MarketEvent,
+    order_side: L2OrderSide,
+    *,
+    max_levels: int,
+) -> list[tuple[str, int, float, float]]:
+    book_side = "ask" if order_side == "buy" else "bid"
+    return _displayed_depth_levels(event, book_side=book_side, max_levels=max_levels)
+
+
+def _passive_depth_at_price(
+    event: L2MarketEvent,
+    order_side: L2OrderSide,
+    price: float,
+    *,
+    max_levels: int,
+) -> tuple[str, int, float, float] | None:
+    book_side = "bid" if order_side == "buy" else "ask"
+    for item in _displayed_depth_levels(event, book_side=book_side, max_levels=max_levels):
+        if np.isclose(float(item[2]), float(price), atol=1e-9):
+            return item
+    return None
+
+
+def _displayed_depth_levels(
+    event: L2MarketEvent,
+    *,
+    book_side: str,
+    max_levels: int,
+) -> list[tuple[str, int, float, float]]:
+    row = event.row
+    capped_levels = max(1, min(int(max_levels), 10))
+    levels: list[tuple[str, int, float, float]] = []
+    for level_idx in range(capped_levels):
+        px_col = f"{book_side}_px_{level_idx:02d}"
+        sz_col = f"{book_side}_sz_{level_idx:02d}"
+        if level_idx == 0:
+            price = event.ask_price if book_side == "ask" else event.bid_price
+            size = event.ask_size if book_side == "ask" else event.bid_size
+        else:
+            price = _safe_row_float(row.get(px_col, np.nan))
+            size = _safe_row_float(row.get(sz_col, np.nan))
+        if _valid_price(price) and np.isfinite(size) and size > 0.0:
+            levels.append((book_side, level_idx, float(price), float(size)))
+    return levels
 
 
 def _validate_order(order: L2Order) -> None:

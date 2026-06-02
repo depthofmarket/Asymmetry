@@ -159,6 +159,34 @@ class L2ReplayProtocolTests(unittest.TestCase):
             failed = {check.check for check in report.checks if check.status == "FAIL"}
             self.assertIn("queue_model_requires_proof", failed)
 
+    def test_protocol_rejects_full_depth_without_depth_semantics_proof(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            index_path = _write_source_index(
+                root,
+                {"202401/20240102.csv": "20240102050000010000;2;0;100.00;1;1;1\n"},
+                start_date="20240102",
+                end_date="20240102",
+            )
+            manifest = build_l2_replay_protocol_manifest(
+                experiment_id="full_depth_without_proof",
+                objective="Reject full-depth replay until depth semantics are proven.",
+                purpose="strategy_plumbing_smoke",
+                source_index_path=str(index_path),
+                trade_dates=["20240102"],
+                strategy="noop",
+                execution_mode="full_depth",
+            )
+            manifest_path = root / "l2_replay_protocol.json"
+            manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+            report = verify_l2_replay_protocol(manifest_path)
+
+            self.assertFalse(report.passed)
+            failed = {check.check for check in report.checks if check.status == "FAIL"}
+            self.assertIn("topbook_only_until_depth_proven", failed)
+            self.assertIn("--execution-mode full_depth", report.command)
+
     def test_command_context_mismatch_fails_protocol(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

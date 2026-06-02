@@ -83,6 +83,61 @@ def _events() -> pd.DataFrame:
     )
 
 
+def _full_depth_events() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "ts_event": "2021-01-04T14:30:00.000000Z",
+                "action": "Q",
+                "side": "",
+                "price": None,
+                "size": None,
+                "bid_px_00": 100.00,
+                "ask_px_00": 100.25,
+                "bid_sz_00": 3,
+                "ask_sz_00": 2,
+                "bid_px_01": 99.75,
+                "ask_px_01": 100.50,
+                "bid_sz_01": 4,
+                "ask_sz_01": 5,
+                "symbol": "NQ_TEST",
+            },
+            {
+                "ts_event": "2021-01-04T14:30:00.100000Z",
+                "action": "Q",
+                "side": "",
+                "price": None,
+                "size": None,
+                "bid_px_00": 100.00,
+                "ask_px_00": 100.25,
+                "bid_sz_00": 3,
+                "ask_sz_00": 2,
+                "bid_px_01": 99.75,
+                "ask_px_01": 100.50,
+                "bid_sz_01": 4,
+                "ask_sz_01": 5,
+                "symbol": "NQ_TEST",
+            },
+            {
+                "ts_event": "2021-01-04T14:30:00.200000Z",
+                "action": "T",
+                "side": "A",
+                "price": 99.75,
+                "size": 5,
+                "bid_px_00": 100.00,
+                "ask_px_00": 100.25,
+                "bid_sz_00": 3,
+                "ask_sz_00": 2,
+                "bid_px_01": 99.75,
+                "ask_px_01": 100.50,
+                "bid_sz_01": 4,
+                "ask_sz_01": 5,
+                "symbol": "NQ_TEST",
+            },
+        ]
+    )
+
+
 class L2ExecutionEngineTests(unittest.TestCase):
     def test_market_order_fills_against_opposite_topbook_after_submit_time(self) -> None:
         result = simulate_l2_execution(
@@ -175,6 +230,30 @@ class L2ExecutionEngineTests(unittest.TestCase):
         self.assertTrue(bool(fill["depth_exhausted"]))
         self.assertEqual(order["cancel_reason"], "insufficient_topbook_depth")
 
+    def test_market_order_sweeps_reconstructed_full_depth(self) -> None:
+        result = simulate_l2_execution(
+            _full_depth_events(),
+            [
+                L2Order(
+                    order_id="sweep_buy",
+                    submit_time="2021-01-04T14:29:59.999000Z",
+                    side="buy",
+                    quantity=5,
+                    order_type="market",
+                )
+            ],
+            config=L2ExecutionConfig(taking_depth_levels=2, passive_depth_levels=2),
+        )
+
+        order = result.orders.set_index("order_id").loc["sweep_buy"]
+        fills = result.fills.sort_values("book_level")
+        self.assertEqual(order["status"], "filled")
+        self.assertEqual(len(fills), 2)
+        self.assertAlmostEqual(float(order["avg_fill_price"]), (2 * 100.25 + 3 * 100.50) / 5)
+        self.assertEqual(list(fills["book_level"]), [1, 2])
+        self.assertEqual(list(fills["book_side"]), ["ask", "ask"])
+        self.assertEqual(int(result.summary.loc[0, "max_fill_book_level"]), 2)
+
     def test_non_topbook_limit_is_rejected_by_default(self) -> None:
         result = simulate_l2_execution(
             _events(),
@@ -194,6 +273,33 @@ class L2ExecutionEngineTests(unittest.TestCase):
         self.assertEqual(order["status"], "rejected")
         self.assertEqual(order["reject_reason"], "non_topbook_limit_price")
         self.assertTrue(result.fills.empty)
+
+    def test_depth_limit_uses_displayed_queue_at_non_topbook_price(self) -> None:
+        result = simulate_l2_execution(
+            _full_depth_events(),
+            [
+                L2Order(
+                    order_id="deep_bid",
+                    submit_time="2021-01-04T14:29:59.999000Z",
+                    side="buy",
+                    quantity=1,
+                    order_type="limit",
+                    limit_price=99.75,
+                )
+            ],
+            config=L2ExecutionConfig(
+                reject_non_topbook_limits=False,
+                passive_depth_levels=2,
+                limit_fill_model="queue",
+            ),
+        )
+
+        order = result.orders.set_index("order_id").loc["deep_bid"]
+        fill = result.fills.iloc[0]
+        self.assertEqual(order["status"], "filled")
+        self.assertAlmostEqual(float(order["queue_ahead"]), 0.0)
+        self.assertAlmostEqual(float(fill["queue_ahead_before"]), 4.0)
+        self.assertEqual(fill["reason"], "limit_queue_depleted")
 
     def test_limit_trade_through_model_waits_for_through_trade(self) -> None:
         result = simulate_l2_execution(
