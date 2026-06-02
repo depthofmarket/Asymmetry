@@ -3,12 +3,35 @@ FUTURES_SPECS = {
     'symbol': 'NQ',
     'contract_value': 20,
     'commission_per_round_trip': 3.50,
-    # Default slippage applied when exit reason is unknown or not categorized.
-    'slippage_points': 0.75,
-    # Asymmetric slippage: stop exits hit the market in urgency (wider spread),
-    # while limit fills (profit targets) rest in the book (tighter or zero spread).
-    'slippage_stop_points': 1.00,
-    'slippage_limit_points': 0.25,
+    # Round-trip point assumptions from validated L2 top-book evidence.
+    # Evidence: results/research_master/execution_cost_assumptions/
+    # Accepted rows are 2020/2021 semicolon-schema samples only; 2022+
+    # structured warm-state rows are excluded until reconstruction is accepted.
+    'slippage_points': 1.50,
+    # Stops and other urgent exits use tail trade-vs-mid evidence.
+    'slippage_stop_points': 2.50,
+    # Targets/limit exits remain cheaper than urgent fills, but are not free.
+    'slippage_limit_points': 0.75,
+}
+
+EXECUTION_COST_EVIDENCE = {
+    'assumption_version': 'l2_topbook_20260531',
+    'recommendation_path': (
+        'results/research_master/execution_cost_assumptions/'
+        'execution_cost_assumptions_recommendation.csv'
+    ),
+    'report_path': (
+        'results/research_master/execution_cost_assumptions/'
+        'execution_cost_assumptions.md'
+    ),
+    'accepted_evidence': (
+        '2020/2021 semicolon-schema L2 top-book validation rows with >=30 minutes, '
+        '>=1000 usable quote rows, and >=1% quote/depth-update ratio'
+    ),
+    'excluded_evidence': (
+        '2022+ structured-schema rows and warm-state smoke cells until they produce '
+        'accepted non-trivial quote coverage'
+    ),
 }
 
 # Backtest Settings

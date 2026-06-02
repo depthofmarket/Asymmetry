@@ -1190,7 +1190,7 @@ def run_regime_conditional_cost_stress(
     out_dir = Path(out_dir)
     _ensure_dir(out_dir)
 
-    base_slippage = float(futures_specs.get("slippage_points", 0.75))
+    base_slippage = float(futures_specs.get("slippage_points", 1.50))
     base_commission = float(futures_specs.get("commission_per_round_trip", 3.50))
 
     # Pre-compute per-bar regime labels from the preprocessed frame

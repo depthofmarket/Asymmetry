@@ -16,9 +16,9 @@ from backtest.microstructure_diagnostics import build_microstructure_cost_state
 
 DEFAULT_FUTURES_SPECS = {
     "contract_value": 20.0,
-    "slippage_points": 0.75,
-    "slippage_stop_points": 1.00,
-    "slippage_limit_points": 0.25,
+    "slippage_points": 1.50,
+    "slippage_stop_points": 2.50,
+    "slippage_limit_points": 0.75,
 }
 STOP_EXIT_REASONS = frozenset(
     {

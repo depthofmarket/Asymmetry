@@ -16,7 +16,117 @@ from backtest.research_protocol import (
 )
 
 
+EXECUTION_REALISM_EDGE_THESIS = {
+    "edge_type": "execution_realism",
+    "mechanism": (
+        "Short-horizon NQ backtests can look profitable when target fills, spread, and adverse selection "
+        "are understated; the research edge is avoiding false positives before strategy promotion."
+    ),
+    "counterparty": (
+        "Liquidity providers, fast participants, and the bid-ask spread capture costs from impatient "
+        "liquidity-taking orders and optimistic resting-limit assumptions."
+    ),
+    "persistence_reason": (
+        "Spread, depth, queue priority, and adverse selection are structural microstructure costs that "
+        "should persist across NQ scalping strategies."
+    ),
+    "falsification_tests": [
+        "Reject promotion if saved trades only survive optimistic target-fill assumptions.",
+        "Reject promotion if TBBO spread or trade-vs-mid evidence shows configured costs are too low.",
+    ],
+    "failure_modes": [
+        "Execution audit is mistaken for directional alpha.",
+        "A short TBBO sample is mined for signal filters instead of used as cost evidence.",
+    ],
+}
+
+
 class ResearchProtocolTests(unittest.TestCase):
+    def test_manifest_records_custom_edge_thesis(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest_path = root / "research_protocol.json"
+            write_research_protocol_manifest(
+                manifest_path,
+                experiment_id="power_hour_mechanics",
+                objective="Pre-register a directional signal thesis before any candidate exists.",
+                hypothesis="Accepted late-session trend pressure may create continuation into the close.",
+                edge_thesis={
+                    "edge_type": "behavioral_bias",
+                    "mechanism": (
+                        "Late-session NQ continuation may come from risk reduction and benchmark/closing-flow "
+                        "pressure after the market accepts a directional intraday repricing."
+                    ),
+                    "counterparty": (
+                        "Late discretionary traders and hedgers who must reduce exposure near the close may pay "
+                        "for immediacy in the accepted direction."
+                    ),
+                    "persistence_reason": (
+                        "Closing-flow pressure, risk limits, and intraday anchoring behavior are recurring market "
+                        "mechanics rather than a single historical parameter fit."
+                    ),
+                    "falsification_tests": [
+                        "Reject if transition-era support fails after cost.",
+                        "Reject if positive results only appear in one recent time slice.",
+                    ],
+                    "failure_modes": [
+                        "The apparent edge may just be same-sample hour mining.",
+                    ],
+                },
+            )
+
+            report = verify_research_protocol(manifest_path)
+
+            self.assertTrue(report.passed, report.summary())
+            checks = {check.check: check.status for check in report.checks if check.section == "edge_thesis"}
+            self.assertEqual(checks["edge_type"], "PASS")
+            self.assertEqual(checks["falsification_tests"], "PASS")
+
+    def test_protocol_fails_metric_only_edge_thesis(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest_path = root / "research_protocol.json"
+            write_research_protocol_manifest(
+                manifest_path,
+                experiment_id="metric_only_story",
+                objective="Demonstrate that performance summaries are not an edge thesis.",
+                hypothesis="This intentionally bad protocol should fail because the causal thesis is empty.",
+                edge_thesis={
+                    "edge_type": "structural_inefficiency",
+                    "mechanism": "The backtest looks good and has high profit factor.",
+                    "counterparty": "",
+                    "persistence_reason": "The numbers look good historically.",
+                    "falsification_tests": ["Reject if it loses."],
+                    "failure_modes": [],
+                },
+            )
+
+            report = verify_research_protocol(manifest_path)
+
+            self.assertFalse(report.passed)
+            failed = {check.check for check in report.checks if check.status == "FAIL"}
+            self.assertIn("mechanism_not_metric_only", failed)
+            self.assertIn("counterparty", failed)
+            self.assertIn("falsification_tests", failed)
+            self.assertIn("failure_modes", failed)
+
+    def test_protocol_fails_without_edge_thesis(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest_path = root / "research_protocol.json"
+            write_research_protocol_manifest(
+                manifest_path,
+                experiment_id="missing_edge_thesis",
+                objective="Demonstrate that a bare hypothesis is not enough.",
+                hypothesis="A manifest should fail unless it explains why a real edge could exist.",
+            )
+
+            report = verify_research_protocol(manifest_path)
+
+            self.assertFalse(report.passed)
+            failed = {check.check for check in report.checks if check.status == "FAIL"}
+            self.assertIn("edge_thesis_exists", failed)
+
     def test_manifest_passes_when_tbbo_is_execution_audit_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -29,6 +139,7 @@ class ResearchProtocolTests(unittest.TestCase):
                 objective="Audit execution cost assumptions before candidate promotion.",
                 hypothesis="TBBO spread and trade-vs-mid data should be used for execution realism, not alpha mining.",
                 phase="hypothesis",
+                edge_thesis=EXECUTION_REALISM_EDGE_THESIS,
                 data_sources=[
                     {
                         "name": "tbbo_minute_stats",
@@ -58,6 +169,7 @@ class ResearchProtocolTests(unittest.TestCase):
                 experiment_id="bad_tbbo_use",
                 objective="Find a new filter from TBBO.",
                 hypothesis="This intentionally bad protocol should fail because TBBO is treated as alpha mining.",
+                edge_thesis=EXECUTION_REALISM_EDGE_THESIS,
                 data_sources=[
                     {
                         "name": "tbbo_filter_source",
@@ -83,6 +195,7 @@ class ResearchProtocolTests(unittest.TestCase):
                 experiment_id="leaky_eval",
                 objective="Demonstrate lockbox leakage checks.",
                 hypothesis="The protocol should reject promotion when evaluation metrics were exposed to the LLM.",
+                edge_thesis=EXECUTION_REALISM_EDGE_THESIS,
                 evaluation_metrics_exposed_to_llm=True,
                 llm_visible_artifacts=["research/lockbox_profit_factor.csv"],
             )
@@ -123,6 +236,7 @@ class ResearchProtocolTests(unittest.TestCase):
                 experiment_id="saved_artifact_check",
                 objective="Check saved artifacts without replaying strategy logic.",
                 hypothesis="A saved run should only pass the protocol when required reports already exist.",
+                edge_thesis=EXECUTION_REALISM_EDGE_THESIS,
                 audit_requirements={"require_tbbo_baseline_when_tbbo_used": False},
             )
 

@@ -232,8 +232,8 @@ class ExecutionRealismReportTests(unittest.TestCase):
         default = summary.loc[summary["scenario"].eq("target_default_slippage")].iloc[0]
         stop_like = summary.loc[summary["scenario"].eq("target_stop_like_slippage")].iloc[0]
         self.assertEqual(float(current["total_pnl"]), 50.0)
-        self.assertEqual(float(default["pnl_delta_vs_current"]), -10.0)
-        self.assertEqual(float(stop_like["pnl_delta_vs_current"]), -15.0)
+        self.assertEqual(float(default["pnl_delta_vs_current"]), -15.0)
+        self.assertEqual(float(stop_like["pnl_delta_vs_current"]), -35.0)
         self.assertEqual(int(by_reason.loc[by_reason["reason"].eq("profit_target"), "target_exit_trades"].iloc[0]), 1)
 
     def test_fill_assumption_audit_flags_touch_only_and_same_minute_exits(self) -> None:

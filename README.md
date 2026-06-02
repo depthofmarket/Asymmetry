@@ -159,9 +159,23 @@ Broad batch scripts are guarded reproduction tools; they are not active research
 ## Research Protocol Control
 - The agentic research-control layer lives in `backtest/research_protocol.py` with the CLI wrapper `scripts/check_research_protocol.py`.
 - Use it to write and verify experiment manifests, config/file fingerprints, LLM/evaluation blinding rules, and saved-artifact gates. It does not run a backtest.
+- Every manifest must include a structured edge thesis: edge type, mechanism, counterparty, persistence reason, at least two falsification tests, and known failure modes. Metric-only stories like "the backtest looks good" fail the gate.
 - TBBO sources should be declared with `sample_role=tbbo` and `purpose=execution_audit`; declaring TBBO as alpha-mining evidence fails the protocol gate.
 - Example manifest creation:
-  `python3 scripts/check_research_protocol.py --write-manifest --manifest config/research_protocol.json --phase hypothesis --data-source tbbo_minute_stats:data/processed/tbbo/tbbo_minute_execution_stats.csv:tbbo:execution_audit:false`
+  ```bash
+  python3 scripts/check_research_protocol.py --write-manifest \
+    --manifest config/research_protocol.json \
+    --phase hypothesis \
+    --data-source tbbo_minute_stats:data/processed/tbbo/tbbo_minute_execution_stats.csv:tbbo:execution_audit:false \
+    --edge-type execution_realism \
+    --edge-mechanism "Short-horizon NQ backtests can look profitable when target fills, spread, and adverse selection are understated; the research edge is avoiding false positives before strategy promotion." \
+    --edge-counterparty "Liquidity providers, fast participants, and the bid-ask spread capture costs from impatient liquidity-taking orders and optimistic resting-limit assumptions." \
+    --edge-persistence-reason "Spread, depth, queue priority, and adverse selection are structural microstructure costs that should persist across NQ scalping strategies." \
+    --edge-falsification-test "Reject promotion if saved trades only survive optimistic target-fill assumptions." \
+    --edge-falsification-test "Reject promotion if TBBO spread or trade-vs-mid evidence shows configured costs are too low." \
+    --edge-failure-mode "Execution audit is mistaken for directional alpha." \
+    --edge-failure-mode "A short TBBO sample is mined for signal filters instead of used as cost evidence."
+  ```
 - Check a saved run against the manifest without replaying strategy logic:
   `python3 scripts/check_research_protocol.py --manifest config/research_protocol.json --run-dir results/runs/<run_label> --out-dir results/runs/<run_label>/research`
 

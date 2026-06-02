@@ -48,9 +48,9 @@
     "futures_specs": {
       "commission_per_round_trip": 3.5,
       "contract_value": 20,
-      "slippage_limit_points": 0.25,
-      "slippage_points": 0.75,
-      "slippage_stop_points": 1.0,
+      "slippage_limit_points": 0.75,
+      "slippage_points": 1.5,
+      "slippage_stop_points": 2.5,
       "symbol": "NQ"
     },
     "research_config": {
@@ -184,7 +184,9 @@
       "prop_firm_n_sims": 5000,
       "prop_firm_profiles": [
         {
+          "account_bundle_cost": 0,
           "account_size": 100000,
+          "activation_fee": 0,
           "consistency_profit_limit_pct": 40,
           "daily_loss_limit": 0,
           "daily_loss_stops": [
@@ -206,16 +208,32 @@
           "eval_cost": 42,
           "extension_threshold_pct_of_target": 50,
           "extension_trading_days": 30,
+          "fill_model": "prop_demo_fill_assumption",
           "funded_buffer_target": 1000,
           "funded_horizon_days": 60,
           "initial_max_trading_days": 60,
+          "max_accounts": 20,
           "max_drawdown": 1000,
+          "max_resets_per_account": 0,
           "min_trading_days": 3,
           "minimum_payout": 200,
+          "minimum_trade_sample": 500,
+          "monthly_fee": 0,
           "name": "traders_launch_100k_nyc",
+          "payout_cadence_days": 0,
+          "payout_cap": 0,
+          "payout_cap_period": "none",
           "pnl_multiplier": 0.5,
+          "portfolio_account_counts": [
+            1,
+            5,
+            10,
+            20
+          ],
+          "portfolio_n_sims": 20000,
           "profit_split_pct": 80,
           "profit_target": 2000,
+          "reset_fee": 0,
           "risk_geometry_drawdown_risk_fracs": [
             0.1,
             0.2,
@@ -243,7 +261,85 @@
           ],
           "stop_after_target_until_min_days": true,
           "surface_n_sims": 1000,
+          "trading_objective": "prop_eval_flip",
           "trailing_drawdown_cap_at_initial": true
+        },
+        {
+          "account_bundle_cost": 0,
+          "account_size": 50000,
+          "activation_fee": 85,
+          "consistency_profit_limit_pct": 0,
+          "daily_loss_limit": 0,
+          "daily_loss_stops": [
+            0,
+            500,
+            750,
+            1000
+          ],
+          "daily_profit_locks": [
+            0,
+            500,
+            1000,
+            1500
+          ],
+          "drawdown_check": "eod",
+          "drawdown_mode": "static",
+          "eval_cost": 35,
+          "fill_model": "prop_demo_fill_assumption",
+          "funded_buffer_target": 2500,
+          "funded_horizon_days": 60,
+          "max_accounts": 20,
+          "max_drawdown": 2500,
+          "max_resets_per_account": 0,
+          "max_trading_days": 30,
+          "min_trading_days": 1,
+          "minimum_payout": 500,
+          "minimum_trade_sample": 500,
+          "monthly_fee": 0,
+          "name": "generic_static_50k_no_consistency_prop_flip",
+          "payout_cadence_days": 0,
+          "payout_cap": 0,
+          "payout_cap_period": "none",
+          "pnl_multiplier": 1.0,
+          "portfolio_account_counts": [
+            1,
+            5,
+            10,
+            20
+          ],
+          "portfolio_n_sims": 20000,
+          "profit_split_pct": 90,
+          "profit_target": 3000,
+          "reset_fee": 25,
+          "risk_geometry_drawdown_risk_fracs": [
+            0.1,
+            0.2,
+            0.3,
+            0.4,
+            0.5
+          ],
+          "risk_geometry_reward_risk": [
+            0.33,
+            0.5,
+            1.0,
+            2.0,
+            3.0,
+            4.0
+          ],
+          "risk_geometry_trades_per_day": 1,
+          "sizing_multipliers": [
+            0.25,
+            0.5,
+            0.75,
+            1.0,
+            1.25,
+            1.5,
+            2.0
+          ],
+          "stop_after_target_until_min_days": false,
+          "surface_n_sims": 1000,
+          "trading_objective": "prop_eval_flip",
+          "trailing_drawdown_cap_at_initial": false
         }
       ],
       "prop_firm_seed": 17,
@@ -617,16 +713,16 @@
       "vwap_session": "rth"
     }
   },
-  "config_payload_sha256": "09ecac45abc12dcf13b4d521f89f70f6e0d78a8065fd3f797c11dce074869a88",
-  "created_at_utc": "2026-05-26T22:08:52+00:00",
+  "config_payload_sha256": "ee9420c7501fe7bed1f1e0056922f291b1cbf2e05eea34933e55d225ecc6bd46",
+  "created_at_utc": "2026-05-28T14:54:22+00:00",
   "data_sources": [
     {
       "fingerprint": {
         "exists": true,
         "fingerprint_mode": "metadata",
-        "modified_ns": 1779126778413562829,
+        "modified_ns": 1779890953718585277,
         "path": "data/processed/tbbo/tbbo_minute_execution_stats.csv",
-        "size_bytes": 17703609
+        "size_bytes": 80529681
       },
       "llm_visible": false,
       "name": "tbbo_minute_stats",
@@ -635,6 +731,20 @@
       "sample_role": "tbbo"
     }
   ],
+  "edge_thesis": {
+    "counterparty": "Liquidity providers, fast participants, and the bid-ask spread capture costs from impatient liquidity-taking orders and optimistic resting-limit assumptions.",
+    "edge_type": "execution_realism",
+    "failure_modes": [
+      "Execution audit is mistaken for directional alpha.",
+      "A short TBBO sample is mined for signal filters instead of used as cost evidence."
+    ],
+    "falsification_tests": [
+      "Reject promotion if saved trades only survive optimistic target-fill assumptions.",
+      "Reject promotion if TBBO spread or trade-vs-mid evidence shows configured costs are too low."
+    ],
+    "mechanism": "Short-horizon NQ backtests can look profitable when target fills, spread, and adverse selection are understated; the research edge is avoiding false positives before strategy promotion.",
+    "persistence_reason": "Spread, depth, queue priority, and adverse selection are structural microstructure costs that should persist across NQ scalping strategies."
+  },
   "experiment_id": "tbbo_execution_first_audit",
   "hypothesis": "Execution costs and fill realism are the next bottleneck; TBBO should audit assumptions before any new candidate is promoted.",
   "llm_visibility": {
@@ -657,6 +767,6 @@
   "objective": "Keep strategy research honest while using TBBO only for execution-realism evidence.",
   "phase": "hypothesis",
   "promotion_rule": "No candidate promotion if lockbox metrics were exposed to the LLM, if TBBO was used to mine signal filters, or if required saved-run execution and research-discipline artifacts are missing.",
-  "schema_version": 1,
+  "schema_version": 2,
   "status": "draft"
 }

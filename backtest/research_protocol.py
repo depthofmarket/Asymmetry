@@ -20,9 +20,18 @@ from config.backtest_config import (
 )
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DEFAULT_MANIFEST_PATH = Path("config/research_protocol.json")
 ALLOWED_PHASES = {"hypothesis", "development", "lockbox", "paper", "funded"}
+ALLOWED_EDGE_TYPES = {
+    "risk_premium",
+    "behavioral_bias",
+    "structural_inefficiency",
+    "microstructure_inefficiency",
+    "execution_realism",
+    "prop_convexity",
+}
+NON_LIVE_EDGE_TYPES = {"execution_realism", "prop_convexity"}
 EXECUTION_AUDIT_PURPOSES = {
     "execution_audit",
     "cost_model_calibration",
@@ -41,6 +50,15 @@ FORBIDDEN_LLM_EVALUATION_TERMS = {
     "calmar",
     "prop_pass_rate",
     "payout",
+}
+METRIC_ONLY_EDGE_PHRASES = {
+    "numbers look good",
+    "backtest looks good",
+    "high profit factor",
+    "high sharpe",
+    "positive pnl",
+    "good pnl",
+    "works historically",
 }
 DEFAULT_AGENT_ROLES = [
     "planner",
@@ -139,6 +157,7 @@ def build_research_protocol_manifest(
     candidate: str | None = None,
     phase: str = "hypothesis",
     data_sources: list[dict[str, Any]] | None = None,
+    edge_thesis: dict[str, Any] | None = None,
     llm_visible_artifacts: list[str] | None = None,
     evaluation_metrics_exposed_to_llm: bool = False,
     agent_roles: list[str] | None = None,
@@ -155,6 +174,7 @@ def build_research_protocol_manifest(
         "experiment_id": str(experiment_id),
         "objective": str(objective),
         "hypothesis": str(hypothesis),
+        "edge_thesis": _normalize_edge_thesis(edge_thesis),
         "candidate": candidate,
         "phase": phase,
         "config_payload_sha256": stable_payload_sha256(payload),
@@ -238,6 +258,7 @@ def verify_research_protocol(
     add("manifest", "hypothesis", hypothesis, ">= 20 characters", len(hypothesis) >= 20, path)
     phase = str(manifest.get("phase", ""))
     add("manifest", "phase", phase, "|".join(sorted(ALLOWED_PHASES)), phase in ALLOWED_PHASES, path)
+    _add_edge_thesis_checks(add, manifest, path)
 
     candidate = manifest.get("candidate")
     if candidate:
@@ -474,6 +495,123 @@ def _default_audit_requirements(overrides: dict[str, Any] | None) -> dict[str, A
     return defaults
 
 
+def _normalize_edge_thesis(edge_thesis: dict[str, Any] | None) -> dict[str, Any] | None:
+    if edge_thesis is None:
+        return None
+    thesis = dict(edge_thesis)
+    for key in ("falsification_tests", "failure_modes"):
+        value = thesis.get(key, [])
+        if isinstance(value, str):
+            thesis[key] = [value]
+        elif value is None:
+            thesis[key] = []
+        else:
+            thesis[key] = list(value)
+    if "edge_type" in thesis:
+        thesis["edge_type"] = str(thesis["edge_type"]).strip().lower()
+    return _normalize(thesis)
+
+
+def _add_edge_thesis_checks(add: Any, manifest: dict[str, Any], source: Path | str) -> None:
+    thesis = manifest.get("edge_thesis")
+    thesis_ok = isinstance(thesis, dict)
+    add(
+        "edge_thesis",
+        "edge_thesis_exists",
+        "present" if thesis_ok else "missing",
+        "structured edge_thesis object",
+        thesis_ok,
+        source,
+        "Every hypothesis needs an explicit market-mechanics thesis before candidate work.",
+    )
+    if not thesis_ok:
+        return
+
+    edge_type = str(thesis.get("edge_type", "")).strip().lower()
+    add(
+        "edge_thesis",
+        "edge_type",
+        edge_type or "missing",
+        "|".join(sorted(ALLOWED_EDGE_TYPES)),
+        edge_type in ALLOWED_EDGE_TYPES,
+        source,
+    )
+
+    for field, threshold in [
+        ("mechanism", ">= 40 characters"),
+        ("counterparty", ">= 30 characters"),
+        ("persistence_reason", ">= 30 characters"),
+    ]:
+        text = str(thesis.get(field, "")).strip()
+        min_len = 40 if field == "mechanism" else 30
+        add(
+            "edge_thesis",
+            field,
+            text if text else "missing",
+            threshold,
+            len(text) >= min_len,
+            source,
+        )
+
+    mechanism_text = " ".join(
+        str(thesis.get(field, "")).strip().lower()
+        for field in ("mechanism", "persistence_reason")
+    )
+    metric_only_hits = sorted(phrase for phrase in METRIC_ONLY_EDGE_PHRASES if phrase in mechanism_text)
+    add(
+        "edge_thesis",
+        "mechanism_not_metric_only",
+        ",".join(metric_only_hits) if metric_only_hits else "none",
+        "no metric-only edge claims",
+        not metric_only_hits,
+        source,
+        "A thesis cannot be just a performance result restated as a cause.",
+    )
+
+    falsification_tests = _nonempty_text_list(thesis.get("falsification_tests"))
+    add(
+        "edge_thesis",
+        "falsification_tests",
+        len(falsification_tests),
+        ">= 2 explicit tests",
+        len(falsification_tests) >= 2,
+        source,
+        "At least two pre-declared ways the idea can fail are required.",
+    )
+    failure_modes = _nonempty_text_list(thesis.get("failure_modes"))
+    add(
+        "edge_thesis",
+        "failure_modes",
+        len(failure_modes),
+        ">= 1 known failure mode",
+        len(failure_modes) >= 1,
+        source,
+        "A hypothesis without a failure mode is usually a story fitted after the fact.",
+    )
+
+    if edge_type in NON_LIVE_EDGE_TYPES:
+        add(
+            "edge_thesis",
+            "non_live_edge_scope_declared",
+            edge_type,
+            "not directional live-edge proof",
+            True,
+            source,
+            "Execution realism and prop convexity can guide research, but they do not validate live alpha.",
+            severity="warning",
+        )
+
+
+def _nonempty_text_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        items = [value]
+    elif isinstance(value, (list, tuple)):
+        items = [str(item) for item in value]
+    else:
+        items = []
+    return [item.strip() for item in items if item and item.strip()]
+
+
 def _normalize_data_source(source: dict[str, Any]) -> dict[str, Any]:
     if "name" not in source:
         raise ValueError("data source requires name")
@@ -615,6 +753,22 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--candidate", default=None, choices=sorted(CANDIDATE_CONFIGS.keys()))
     parser.add_argument("--phase", default="hypothesis", choices=sorted(ALLOWED_PHASES))
+    parser.add_argument("--edge-type", default=None, choices=sorted(ALLOWED_EDGE_TYPES))
+    parser.add_argument("--edge-mechanism", default=None)
+    parser.add_argument("--edge-counterparty", default=None)
+    parser.add_argument("--edge-persistence-reason", default=None)
+    parser.add_argument(
+        "--edge-falsification-test",
+        action="append",
+        default=[],
+        help="Pre-declared way the idea can fail. Pass at least two for a custom edge thesis.",
+    )
+    parser.add_argument(
+        "--edge-failure-mode",
+        action="append",
+        default=[],
+        help="Known failure mode or blind spot for the thesis.",
+    )
     parser.add_argument(
         "--data-source",
         action="append",
@@ -656,6 +810,7 @@ def main(argv: list[str] | None = None) -> int:
             candidate=args.candidate,
             phase=args.phase,
             data_sources=args.data_source,
+            edge_thesis=_edge_thesis_from_args(args),
             llm_visible_artifacts=args.llm_visible_artifact,
             evaluation_metrics_exposed_to_llm=args.evaluation_metrics_exposed_to_llm,
         )
@@ -679,6 +834,29 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(f"Appended audit event: {event['created_at_utc']}")
     return 0 if report.passed else 1
+
+
+def _edge_thesis_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
+    provided = any(
+        [
+            args.edge_type,
+            args.edge_mechanism,
+            args.edge_counterparty,
+            args.edge_persistence_reason,
+            args.edge_falsification_test,
+            args.edge_failure_mode,
+        ]
+    )
+    if not provided:
+        return None
+    return {
+        "edge_type": args.edge_type or "",
+        "mechanism": args.edge_mechanism or "",
+        "counterparty": args.edge_counterparty or "",
+        "persistence_reason": args.edge_persistence_reason or "",
+        "falsification_tests": list(args.edge_falsification_test or []),
+        "failure_modes": list(args.edge_failure_mode or []),
+    }
 
 
 if __name__ == "__main__":

@@ -115,10 +115,10 @@ class TbboTradeAuditTests(unittest.TestCase):
         self.assertEqual(row["entry_tbbo_symbol"], "NQH6")
         self.assertEqual(row["exit_tbbo_symbol"], "NQH6")
         self.assertAlmostEqual(float(row["tbbo_median_round_trip_spread_cost_points"]), 0.50)
-        self.assertAlmostEqual(float(row["assumed_slippage_points"]), 0.25)
-        self.assertAlmostEqual(float(row["pnl_with_tbbo_median_spread_cost"]), 95.0)
+        self.assertAlmostEqual(float(row["assumed_slippage_points"]), 0.75)
+        self.assertAlmostEqual(float(row["pnl_with_tbbo_median_spread_cost"]), 105.0)
         self.assertAlmostEqual(float(row["limit_exit_opportunity_stress_points"]), 0.25)
-        self.assertAlmostEqual(float(row["pnl_with_tbbo_p95_trade_vs_mid_and_limit_opportunity_cost"]), 80.0)
+        self.assertAlmostEqual(float(row["pnl_with_tbbo_p95_trade_vs_mid_and_limit_opportunity_cost"]), 90.0)
         self.assertAlmostEqual(float(row["entry_tbbo_top_book_depth_exhausted_trade_pct"]), 0.10)
 
     def test_volatility_conditioned_cost_stress_flags_rejected_fills(self) -> None:
@@ -151,7 +151,7 @@ class TbboTradeAuditTests(unittest.TestCase):
         self.assertAlmostEqual(float(summary["entry_exit_match_rate_in_window"]), 1.0)
         self.assertAlmostEqual(
             float(summary["matched_median_pnl_with_tbbo_p95_trade_vs_mid_and_limit_opportunity_cost"]),
-            80.0,
+            90.0,
         )
 
 
