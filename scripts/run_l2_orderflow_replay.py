@@ -20,6 +20,11 @@ from backtest.l2_orderflow_replay import (  # noqa: E402
     run_l2_orderflow_replay,
     write_l2_orderflow_replay_result,
 )
+from backtest.l2_replay_protocol import (  # noqa: E402
+    command_context_from_replay_args,
+    export_l2_replay_protocol_report,
+    verify_l2_replay_protocol,
+)
 from backtest.l2_source_resolver import decode_l2_source_selection, resolve_l2_source_index  # noqa: E402
 from backtest.l2_topbook_execution import L2TopBookExecutionConfig, build_l2_topbook_frame  # noqa: E402
 
@@ -96,6 +101,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--allow-full-depth-unknown-limits", action="store_true")
     parser.add_argument("--no-partial-fills", action="store_true")
 
+    parser.add_argument(
+        "--protocol-manifest",
+        help="Optional L2 replay protocol manifest to validate against this command before execution.",
+    )
+    parser.add_argument(
+        "--protocol-report-dir",
+        default="",
+        help="Optional directory where the protocol gate report should be written before replay.",
+    )
     parser.add_argument("--out-dir", default="results/research_master/l2_orderflow_replay")
     parser.add_argument("--prefix", default="l2_orderflow_replay")
     return parser.parse_args()
@@ -103,6 +117,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    _check_protocol(args)
     topbook_events = _load_topbook_events(args)
     strategy_kwargs = _json_object(args.strategy_kwargs, arg_name="--strategy-kwargs")
     strategy = load_l2_orderflow_strategy(str(args.strategy), strategy_kwargs)
@@ -132,6 +147,24 @@ def main() -> int:
     print(f"strategy events: {paths['strategy_events_csv']}")
     print(f"report:          {paths['report_md']}")
     return 0
+
+
+def _check_protocol(args: argparse.Namespace) -> None:
+    if not args.protocol_manifest:
+        return
+    report = verify_l2_replay_protocol(
+        args.protocol_manifest,
+        command_context=command_context_from_replay_args(args),
+    )
+    if args.protocol_report_dir:
+        paths = export_l2_replay_protocol_report(
+            report,
+            args.protocol_report_dir,
+            prefix=f"{args.prefix}_protocol_gate",
+        )
+        print(f"protocol report: {paths.markdown_path}")
+    if not report.passed:
+        raise SystemExit(report.summary())
 
 
 def _load_topbook_events(args: argparse.Namespace) -> pd.DataFrame:

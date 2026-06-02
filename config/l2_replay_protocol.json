@@ -1,0 +1,71 @@
+{
+  "created_at_utc": "2026-06-02T00:00:00+00:00",
+  "data_role": "development",
+  "data_use_boundary": {
+    "allowed_use": "execution_replay_and_audit",
+    "l2_result_is_live_edge_proof": false,
+    "l2_result_may_promote_candidate_alone": false
+  },
+  "date_selection": {
+    "allow_duplicate_dates": false,
+    "allow_missing_dates": false,
+    "end_date": "",
+    "explicit_trade_dates": [
+      "20201201"
+    ],
+    "start_date": ""
+  },
+  "execution": {
+    "allow_full_depth_unknown_limits": false,
+    "coalesce_window": "100ms",
+    "contract_value": 20.0,
+    "depth_semantics_proof_path": "",
+    "latency": "0ms",
+    "limit_fill_model": "trade_through",
+    "max_spread_ticks": 40.0,
+    "mode": "topbook_only",
+    "policy": "auto",
+    "queue_proof_path": "",
+    "symbol": "NQ_L2",
+    "tick_size": 0.25
+  },
+  "experiment_id": "l2_replay_smoke_20201201",
+  "llm_visibility": {
+    "evaluation_metrics_exposed_to_llm": false,
+    "visible_artifacts": []
+  },
+  "manifest_type": "l2_replay_protocol",
+  "objective": "Validate bounded indexed L2 replay plumbing before any strategy research run.",
+  "output": {
+    "out_dir": "results/research_master/l2_orderflow_replay/20201201_smoke",
+    "prefix": "20201201_smoke",
+    "promotion_claimed": false
+  },
+  "phase": "smoke",
+  "purpose": "strategy_plumbing_smoke",
+  "row_limits": {
+    "max_dates": 1,
+    "max_rows_per_source": 1000
+  },
+  "runner_contract": {
+    "agent_may_execute": false,
+    "execution_owner": "user_terminal",
+    "full_history_allowed": false,
+    "full_history_approval_note": "",
+    "max_agent_dates": 1,
+    "max_agent_rows_per_source": 250000
+  },
+  "schema_version": 1,
+  "source": {
+    "expands_raw_csv": false,
+    "materialization": "zip_member_streaming",
+    "source_index_path": "data/raw/l2_nq/manifests/l2_source_index.csv",
+    "type": "source_index"
+  },
+  "strategy": {
+    "frozen_before_lockbox": false,
+    "kwargs": {},
+    "name": "noop",
+    "role": "plumbing_smoke"
+  }
+}
