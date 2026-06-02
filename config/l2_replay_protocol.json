@@ -22,6 +22,7 @@
     "depth_semantics_proof_path": "",
     "latency": "0ms",
     "limit_fill_model": "trade_through",
+    "max_depth_levels": 10,
     "max_spread_ticks": 40.0,
     "mode": "topbook_only",
     "policy": "auto",

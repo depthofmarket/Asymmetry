@@ -6,6 +6,8 @@ import tempfile
 import unittest
 import zipfile
 
+import pandas as pd
+
 from backtest.l2_dataset_qa import build_l2_dataset_qa, write_l2_dataset_qa_artifacts
 from backtest.l2_replay_protocol import (
     build_l2_replay_protocol_manifest,
@@ -186,6 +188,164 @@ class L2ReplayProtocolTests(unittest.TestCase):
             failed = {check.check for check in report.checks if check.status == "FAIL"}
             self.assertIn("topbook_only_until_depth_proven", failed)
             self.assertIn("--execution-mode full_depth", report.command)
+
+    def test_protocol_accepts_full_depth_with_accepted_depth_proof_csv(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            index_path = _write_source_index(
+                root,
+                {"202401/20240102.csv": "20240102050000010000;2;0;100.00;1;1;1\n"},
+                start_date="20240102",
+                end_date="20240102",
+            )
+            proof_path = root / "depth_proof.csv"
+            pd.DataFrame([{"date": "20240102", "full_depth_allowed": True, "decision": "full_depth_allowed"}]).to_csv(
+                proof_path, index=False
+            )
+            manifest = build_l2_replay_protocol_manifest(
+                experiment_id="full_depth_with_proof",
+                objective="Allow full-depth replay only after accepted depth proof.",
+                purpose="strategy_plumbing_smoke",
+                source_index_path=str(index_path),
+                trade_dates=["20240102"],
+                strategy="noop",
+                execution_mode="full_depth",
+            )
+            manifest["execution"]["depth_semantics_proof_path"] = str(proof_path)
+            manifest_path = root / "l2_replay_protocol.json"
+            manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+            report = verify_l2_replay_protocol(manifest_path)
+
+            self.assertTrue(report.passed, report.summary())
+
+    def test_protocol_rejects_full_depth_with_rejected_depth_proof_csv(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            index_path = _write_source_index(
+                root,
+                {"202401/20240102.csv": "20240102050000010000;2;0;100.00;1;1;1\n"},
+                start_date="20240102",
+                end_date="20240102",
+            )
+            proof_path = root / "depth_proof.csv"
+            pd.DataFrame([{"date": "20240102", "full_depth_allowed": False, "decision": "topbook_only"}]).to_csv(
+                proof_path, index=False
+            )
+            manifest = build_l2_replay_protocol_manifest(
+                experiment_id="full_depth_rejected_proof",
+                objective="Reject full-depth replay when proof says topbook only.",
+                purpose="strategy_plumbing_smoke",
+                source_index_path=str(index_path),
+                trade_dates=["20240102"],
+                strategy="noop",
+                execution_mode="full_depth",
+            )
+            manifest["execution"]["depth_semantics_proof_path"] = str(proof_path)
+            manifest_path = root / "l2_replay_protocol.json"
+            manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+            report = verify_l2_replay_protocol(manifest_path)
+
+            self.assertFalse(report.passed)
+            failed = {check.check for check in report.checks if check.status == "FAIL"}
+            self.assertIn("topbook_only_until_depth_proven", failed)
+
+    def test_protocol_accepts_point_in_time_bar_signal_csv_artifact_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            index_path = _write_source_index(
+                root,
+                {"202401/20240102.csv": "20240102050000010000;1;0;100.00;1\n"},
+                start_date="20240102",
+                end_date="20240102",
+            )
+            signals_path = root / "signals.csv"
+            pd.DataFrame(
+                {
+                    "time": ["2024-01-02 09:25:00", "2024-01-02 09:30:00"],
+                    "candidate_signal": [1, 0],
+                    "signal_type": ["unit", ""],
+                    "setup_tag": ["unit_long", ""],
+                }
+            ).to_csv(signals_path, index=False)
+            manifest_path = root / "l2_replay_protocol.json"
+            write_l2_replay_protocol_manifest(
+                manifest_path,
+                experiment_id="bar_signal_csv",
+                objective="Replay frozen bar signals through L2 execution.",
+                purpose="execution_realism",
+                source_index_path=str(index_path),
+                trade_dates=["20240102"],
+                strategy="bar_signal_csv",
+                strategy_kwargs={"signals_csv": str(signals_path), "max_hold": "5min"},
+            )
+
+            report = verify_l2_replay_protocol(manifest_path)
+
+            self.assertTrue(report.passed, report.summary())
+
+    def test_protocol_rejects_bar_signal_csv_with_result_columns(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            index_path = _write_source_index(
+                root,
+                {"202401/20240102.csv": "20240102050000010000;1;0;100.00;1\n"},
+                start_date="20240102",
+                end_date="20240102",
+            )
+            signals_path = root / "signals.csv"
+            pd.DataFrame(
+                {
+                    "time": ["2024-01-02 09:25:00", "2024-01-02 09:30:00"],
+                    "candidate_signal": [1, 0],
+                    "realized_pnl": [200.0, 0.0],
+                }
+            ).to_csv(signals_path, index=False)
+            manifest_path = root / "l2_replay_protocol.json"
+            write_l2_replay_protocol_manifest(
+                manifest_path,
+                experiment_id="bar_signal_csv_leak",
+                objective="Reject result-tainted signal CSVs.",
+                purpose="execution_realism",
+                source_index_path=str(index_path),
+                trade_dates=["20240102"],
+                strategy="bar_signal_csv",
+                strategy_kwargs={"signals_csv": str(signals_path)},
+            )
+
+            report = verify_l2_replay_protocol(manifest_path)
+
+            self.assertFalse(report.passed)
+            failed = {check.check for check in report.checks if check.status == "FAIL"}
+            self.assertIn("bar_signal_csv_no_result_columns", failed)
+
+    def test_protocol_rejects_bar_signal_csv_without_signal_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            index_path = _write_source_index(
+                root,
+                {"202401/20240102.csv": "20240102050000010000;1;0;100.00;1\n"},
+                start_date="20240102",
+                end_date="20240102",
+            )
+            manifest_path = root / "l2_replay_protocol.json"
+            write_l2_replay_protocol_manifest(
+                manifest_path,
+                experiment_id="bar_signal_csv_missing_file",
+                objective="Reject bar-signal replay without a frozen signal artifact.",
+                purpose="execution_realism",
+                source_index_path=str(index_path),
+                trade_dates=["20240102"],
+                strategy="bar_signal_csv",
+                strategy_kwargs={"signals_csv": str(root / "missing.csv")},
+            )
+
+            report = verify_l2_replay_protocol(manifest_path)
+
+            self.assertFalse(report.passed)
+            failed = {check.check for check in report.checks if check.status == "FAIL"}
+            self.assertIn("bar_signal_csv_signals_csv_exists", failed)
 
     def test_command_context_mismatch_fails_protocol(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
