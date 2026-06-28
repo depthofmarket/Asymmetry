@@ -137,6 +137,27 @@ class L2MbpTests(unittest.TestCase):
             self.assertEqual(out.loc[0, "raw_record"], first_record)
             self.assertEqual(out.loc[1, "book_side"], "bid")
 
+    def test_decode_l2_csv_accepts_zero_max_rows_as_unbounded_selected_member(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "sample.csv"
+            path.write_text(
+                "\n".join(
+                    [
+                        "20201201050000200729;2;1;12374.75;11;1;0",
+                        "20201201050000204259;2;0;12373.5;5;1;0",
+                        "20201201050000471825;1;2;12373.75;1",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            out = decode_l2_mbp_parquet(L2ParquetSourceRef(source_path=path, label="sample"), max_rows=0)
+
+            self.assertEqual(len(out), 3)
+            self.assertEqual(int(out["event_family"].eq("depth_update").sum()), 2)
+            self.assertEqual(int(out["event_family"].eq("trade_or_market_event").sum()), 1)
+
     @unittest.skipIf(pa is None or pq is None, "pyarrow is required")
     def test_decode_l2_mbp_parquet_handles_structured_five_column_schema(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -8,6 +8,7 @@ import pandas as pd
 
 from backtest.l2_orderflow_replay import (
     L2TopBookImbalanceSmokeStrategy,
+    filter_l2_events_by_ny_window,
     load_l2_orderflow_strategy,
     run_l2_orderflow_replay,
     write_l2_orderflow_replay_result,
@@ -117,6 +118,41 @@ class L2OrderFlowReplayTests(unittest.TestCase):
 
         self.assertIsInstance(strategy, L2TopBookImbalanceSmokeStrategy)
         self.assertAlmostEqual(strategy.threshold, 0.8)
+
+    def test_filter_l2_events_by_ny_clock_window_targets_rth(self) -> None:
+        events = pd.DataFrame(
+            {
+                "ts_event": [
+                    "2021-01-04T14:29:59.999999Z",
+                    "2021-01-04T14:30:00.000000Z",
+                    "2021-01-04T20:59:59.999999Z",
+                    "2021-01-04T21:00:00.000000Z",
+                ],
+                "action": ["Q", "Q", "Q", "Q"],
+                "side": ["", "", "", ""],
+                "price": [None, None, None, None],
+                "size": [None, None, None, None],
+                "bid_px_00": [100.0, 101.0, 102.0, 103.0],
+                "ask_px_00": [100.25, 101.25, 102.25, 103.25],
+                "bid_sz_00": [1, 1, 1, 1],
+                "ask_sz_00": [1, 1, 1, 1],
+            }
+        )
+
+        filtered = filter_l2_events_by_ny_window(events, start_ny="09:30", end_ny="16:00")
+
+        self.assertEqual(filtered["bid_px_00"].tolist(), [101.0, 102.0])
+
+    def test_filter_l2_events_by_ny_timestamp_window(self) -> None:
+        events = _events()
+
+        filtered = filter_l2_events_by_ny_window(
+            events,
+            start_ny="2021-01-04 09:30:00.100000",
+            end_ny="2021-01-04 09:30:00.300000",
+        )
+
+        self.assertEqual(filtered["bid_px_00"].tolist(), [100.0, 100.25])
 
 
 if __name__ == "__main__":

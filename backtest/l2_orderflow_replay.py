@@ -317,6 +317,64 @@ def run_l2_orderflow_replay(
     )
 
 
+def filter_l2_events_by_ny_window(
+    events: pd.DataFrame,
+    *,
+    start_ny: str = "",
+    end_ny: str = "",
+    timezone: str = "America/New_York",
+    time_col: str = "ts_event",
+) -> pd.DataFrame:
+    """
+    Filter replay events by New York clock or timestamp.
+
+    `start_ny` is inclusive and `end_ny` is exclusive. Clock values such as
+    `09:30` apply to every local date. Timestamp values such as
+    `2021-01-04 09:30` are interpreted in `timezone` when naive.
+    """
+
+    start = str(start_ny or "").strip()
+    end = str(end_ny or "").strip()
+    if not start and not end:
+        return events.copy()
+    if time_col not in events.columns:
+        raise ValueError(f"L2 event frame missing required time column: {time_col}")
+    if events.empty:
+        return events.copy()
+
+    out = events.copy()
+    local_time = pd.to_datetime(out[time_col], utc=True, errors="coerce").dt.tz_convert(str(timezone))
+    valid = local_time.notna()
+    mask = valid.copy()
+
+    start_bound = _parse_ny_window_bound(start, timezone=timezone)
+    end_bound = _parse_ny_window_bound(end, timezone=timezone)
+    if _is_clock_bound(start_bound) or _is_clock_bound(end_bound):
+        if start_bound and not _is_clock_bound(start_bound):
+            raise ValueError("Use either clock bounds or timestamp bounds, not a mix")
+        if end_bound and not _is_clock_bound(end_bound):
+            raise ValueError("Use either clock bounds or timestamp bounds, not a mix")
+        clock = local_time.dt.strftime("%H:%M:%S")
+        if start_bound and end_bound:
+            start_clock = str(start_bound[1])
+            end_clock = str(end_bound[1])
+            if start_clock <= end_clock:
+                mask &= clock.ge(start_clock) & clock.lt(end_clock)
+            else:
+                mask &= clock.ge(start_clock) | clock.lt(end_clock)
+        elif start_bound:
+            mask &= clock.ge(str(start_bound[1]))
+        elif end_bound:
+            mask &= clock.lt(str(end_bound[1]))
+    else:
+        if start_bound:
+            mask &= local_time.ge(start_bound[1])
+        if end_bound:
+            mask &= local_time.lt(end_bound[1])
+
+    return out.loc[mask.fillna(False)].sort_values(time_col, kind="stable").reset_index(drop=True)
+
+
 def summarize_l2_orderflow_replay(
     prepared_events: pd.DataFrame,
     execution: L2ExecutionResult,
@@ -434,6 +492,10 @@ def load_l2_orderflow_strategy(spec: str, kwargs: dict[str, Any] | None = None) 
         return L2NoOpStrategy()
     if name == "topbook_imbalance":
         return L2TopBookImbalanceSmokeStrategy(**kwargs)
+    if name == "tape_read_orderflow":
+        from backtest.l2_tape_read_orderflow import L2TapeReadOrderFlowStrategy
+
+        return L2TapeReadOrderFlowStrategy(**kwargs)
     if name == "bar_signal_csv":
         from backtest.l2_bar_signal_adapter import L2BarSignalAdapterStrategy
 
@@ -441,7 +503,7 @@ def load_l2_orderflow_strategy(spec: str, kwargs: dict[str, Any] | None = None) 
     if ":" not in name:
         raise ValueError(
             "Unknown L2 orderflow strategy. Use `noop`, `topbook_imbalance`, "
-            "`bar_signal_csv`, or `module:function`."
+            "`tape_read_orderflow`, `bar_signal_csv`, or `module:function`."
         )
     module_name, factory_name = name.split(":", 1)
     factory = getattr(importlib.import_module(module_name), factory_name)
@@ -571,6 +633,43 @@ def _fmt_cell(value: object) -> str:
     return str(value)
 
 
+def _parse_ny_window_bound(value: str, *, timezone: str) -> tuple[str, object] | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if _looks_like_clock(raw):
+        return "clock", _normalize_clock_bound(raw)
+    timestamp = pd.Timestamp(raw)
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.tz_localize(str(timezone))
+    else:
+        timestamp = timestamp.tz_convert(str(timezone))
+    return "timestamp", timestamp
+
+
+def _is_clock_bound(value: tuple[str, object] | None) -> bool:
+    return value is not None and value[0] == "clock"
+
+
+def _looks_like_clock(value: str) -> bool:
+    parts = str(value).strip().split(":")
+    if len(parts) not in {2, 3}:
+        return False
+    if not all(part.isdigit() for part in parts):
+        return False
+    hour = int(parts[0])
+    minute = int(parts[1])
+    second = int(parts[2]) if len(parts) == 3 else 0
+    return 0 <= hour <= 23 and 0 <= minute <= 59 and 0 <= second <= 59
+
+
+def _normalize_clock_bound(value: str) -> str:
+    parts = [int(part) for part in str(value).strip().split(":")]
+    hour, minute = parts[0], parts[1]
+    second = parts[2] if len(parts) == 3 else 0
+    return f"{hour:02d}:{minute:02d}:{second:02d}"
+
+
 __all__ = [
     "L2NoOpStrategy",
     "L2OrderFlowContext",
@@ -578,6 +677,7 @@ __all__ = [
     "L2OrderFlowReplayResult",
     "L2OrderFlowStrategy",
     "L2TopBookImbalanceSmokeStrategy",
+    "filter_l2_events_by_ny_window",
     "load_l2_orderflow_strategy",
     "run_l2_orderflow_replay",
     "summarize_l2_orderflow_replay",

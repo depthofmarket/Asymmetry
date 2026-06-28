@@ -107,8 +107,7 @@ def decode_l2_mbp_parquet(
     max_rows: int = 50_000,
     start_row_group: int = 0,
 ) -> pd.DataFrame:
-    if max_rows <= 0:
-        raise ValueError("max_rows must be positive for this bounded decoder")
+    max_rows = int(max_rows)
     if start_row_group < 0:
         raise ValueError("start_row_group must be non-negative")
 
@@ -560,16 +559,18 @@ def _read_l2_record_sample(parquet_file, *, max_rows: int, start_row_group: int 
 
     column_name = names[0]
     records = [str(column_name)] if start_row_group == 0 else []
-    remaining = max(0, int(max_rows) - 1)
-    if start_row_group > 0:
+    unbounded = int(max_rows) <= 0
+    remaining = None if unbounded else max(0, int(max_rows) - 1)
+    if start_row_group > 0 and not unbounded:
         remaining = int(max_rows)
     for row_group_idx in range(int(start_row_group), parquet_file.num_row_groups):
-        if remaining <= 0:
+        if remaining is not None and remaining <= 0:
             break
         table = parquet_file.read_row_group(row_group_idx, columns=[column_name])
-        values = table.column(0).slice(0, remaining).to_pylist()
+        values = table.column(0).to_pylist() if remaining is None else table.column(0).slice(0, remaining).to_pylist()
         records.extend(str(value) for value in values if value is not None)
-        remaining = max(0, int(max_rows) - len(records))
+        if remaining is not None:
+            remaining = max(0, int(max_rows) - len(records))
     return records
 
 
@@ -580,12 +581,13 @@ def _read_l2_csv_record_sample(
     start_row: int = 0,
 ) -> list[str]:
     rows: list[str] = []
+    unbounded = int(max_rows) <= 0
     if source_ref.zip_member is not None:
         with zipfile.ZipFile(source_ref.source_path) as zf, zf.open(source_ref.zip_member) as fh:
             for idx, raw in enumerate(fh):
                 if idx < start_row:
                     continue
-                if len(rows) >= max_rows:
+                if not unbounded and len(rows) >= max_rows:
                     break
                 text = raw.decode("utf-8", errors="replace").strip()
                 if text:
@@ -596,7 +598,7 @@ def _read_l2_csv_record_sample(
         for idx, text in enumerate(fh):
             if idx < start_row:
                 continue
-            if len(rows) >= max_rows:
+            if not unbounded and len(rows) >= max_rows:
                 break
             clean = text.strip()
             if clean:
@@ -605,32 +607,34 @@ def _read_l2_csv_record_sample(
 
 
 def _read_l2_structured_sample(parquet_file, *, max_rows: int, start_row_group: int = 0) -> pd.DataFrame:
-    remaining = int(max_rows)
+    remaining = None if int(max_rows) <= 0 else int(max_rows)
     frames: list[pd.DataFrame] = []
     for row_group_idx in range(int(start_row_group), parquet_file.num_row_groups):
-        if remaining <= 0:
+        if remaining is not None and remaining <= 0:
             break
         table = parquet_file.read_row_group(row_group_idx, columns=list(STRUCTURED_L2_COLUMNS))
-        if table.num_rows > remaining:
+        if remaining is not None and table.num_rows > remaining:
             table = table.slice(0, remaining)
         frame = table.to_pandas()
         frames.append(frame)
-        remaining -= len(frame)
+        if remaining is not None:
+            remaining -= len(frame)
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=STRUCTURED_L2_COLUMNS)
 
 
 def _read_l2_markettick_parquet_sample(parquet_file, *, max_rows: int, start_row_group: int = 0) -> pd.DataFrame:
-    remaining = int(max_rows)
+    remaining = None if int(max_rows) <= 0 else int(max_rows)
     frames: list[pd.DataFrame] = []
     for row_group_idx in range(int(start_row_group), parquet_file.num_row_groups):
-        if remaining <= 0:
+        if remaining is not None and remaining <= 0:
             break
         table = parquet_file.read_row_group(row_group_idx, columns=list(MARKETTICK_PARQUET_COLUMNS))
-        if table.num_rows > remaining:
+        if remaining is not None and table.num_rows > remaining:
             table = table.slice(0, remaining)
         frame = table.to_pandas()
         frames.append(frame)
-        remaining -= len(frame)
+        if remaining is not None:
+            remaining -= len(frame)
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=MARKETTICK_PARQUET_COLUMNS)
 
 

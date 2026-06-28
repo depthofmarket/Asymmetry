@@ -41,6 +41,31 @@ EXECUTION_REALISM_EDGE_THESIS = {
 }
 
 
+L2_MICROSTRUCTURE_EDGE_THESIS = {
+    "edge_type": "microstructure_inefficiency",
+    "mechanism": (
+        "Short-horizon NQ continuation may be more reliable when completed-bar aggressive flow aligns "
+        "with location acceptance and the L2 replay does not show immediate adverse selection."
+    ),
+    "counterparty": (
+        "Urgent liquidity takers and passive liquidity providers who must reprice after book pressure "
+        "create the short-term imbalance this research is trying to detect."
+    ),
+    "persistence_reason": (
+        "Order-book pressure, liquidity-taking urgency, and location acceptance are recurring intraday "
+        "microstructure mechanics, not one-off parameter settings."
+    ),
+    "falsification_tests": [
+        "Reject if next-bar-open signal research fails after conservative cost stress.",
+        "Reject if L2 replay erases the apparent edge through spread, latency, or adverse selection.",
+    ],
+    "failure_modes": [
+        "Raw Databento side codes are misread as buyer or seller aggression without convention proof.",
+        "L2 data is mined for filters instead of used as execution-realism evidence.",
+    ],
+}
+
+
 class ResearchProtocolTests(unittest.TestCase):
     def test_manifest_records_custom_edge_thesis(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -185,6 +210,74 @@ class ResearchProtocolTests(unittest.TestCase):
             self.assertFalse(report.passed)
             failed = {check.check for check in report.checks if check.status == "FAIL"}
             self.assertIn("tbbo_filter_source:tbbo_execution_only", failed)
+
+    def test_manifest_passes_when_l2_is_execution_replay_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            l2_protocol_path = root / "l2_replay_protocol.json"
+            l2_protocol_path.write_text('{"manifest_type":"l2_replay_protocol"}\n', encoding="utf-8")
+            manifest_path = root / "research_protocol.json"
+            write_research_protocol_manifest(
+                manifest_path,
+                experiment_id="l2_aggressive_flow_location",
+                objective="Use L2 only to audit fills and adverse selection before candidate promotion.",
+                hypothesis=(
+                    "Aggressive-flow and location context may define a pre-candidate signal, while L2 "
+                    "replay remains an execution-realism gate rather than alpha evidence."
+                ),
+                phase="hypothesis",
+                edge_thesis=L2_MICROSTRUCTURE_EDGE_THESIS,
+                data_sources=[
+                    {
+                        "name": "l2_replay_protocol",
+                        "path": l2_protocol_path,
+                        "sample_role": "l2_replay",
+                        "purpose": "execution_replay_and_audit",
+                    }
+                ],
+                audit_requirements={"l2_replay_protocol_path": l2_protocol_path},
+            )
+
+            report = verify_research_protocol(manifest_path)
+
+            self.assertTrue(report.passed, report.summary())
+            l2_rows = [
+                check for check in report.checks if check.check == "l2_replay_protocol:l2_execution_realism_only"
+            ]
+            self.assertEqual(l2_rows[0].status, "PASS")
+            protocol_rows = [
+                check for check in report.checks if check.check == "l2_replay_protocol_manifest_exists"
+            ]
+            self.assertEqual(protocol_rows[0].status, "PASS")
+
+    def test_protocol_fails_when_l2_is_marked_as_alpha_mining(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            l2_protocol_path = root / "l2_replay_protocol.json"
+            l2_protocol_path.write_text('{"manifest_type":"l2_replay_protocol"}\n', encoding="utf-8")
+            manifest_path = root / "research_protocol.json"
+            write_research_protocol_manifest(
+                manifest_path,
+                experiment_id="bad_l2_use",
+                objective="Find a new strategy filter directly from L2 depth data.",
+                hypothesis="This intentionally bad protocol should fail because L2 is treated as alpha mining.",
+                edge_thesis=L2_MICROSTRUCTURE_EDGE_THESIS,
+                data_sources=[
+                    {
+                        "name": "l2_filter_source",
+                        "path": l2_protocol_path,
+                        "sample_role": "l2_replay",
+                        "purpose": "alpha_mining",
+                    }
+                ],
+                audit_requirements={"l2_replay_protocol_path": l2_protocol_path},
+            )
+
+            report = verify_research_protocol(manifest_path)
+
+            self.assertFalse(report.passed)
+            failed = {check.check for check in report.checks if check.status == "FAIL"}
+            self.assertIn("l2_filter_source:l2_execution_realism_only", failed)
 
     def test_protocol_fails_when_llm_saw_evaluation_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

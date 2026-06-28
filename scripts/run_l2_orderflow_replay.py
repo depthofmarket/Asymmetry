@@ -17,6 +17,7 @@ from backtest.l2_full_depth import L2FullDepthConfig, build_l2_full_depth_frame 
 from backtest.l2_mbp import decode_l2_mbp_sources, select_l2_parquet_sources  # noqa: E402
 from backtest.l2_orderflow_replay import (  # noqa: E402
     L2OrderFlowReplayConfig,
+    filter_l2_events_by_ny_window,
     load_l2_orderflow_strategy,
     run_l2_orderflow_replay,
     write_l2_orderflow_replay_result,
@@ -55,7 +56,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--member-glob", default="*.parquet")
     parser.add_argument("--max-members", type=int, default=1)
-    parser.add_argument("--max-rows-per-member", type=int, default=200_000)
+    parser.add_argument(
+        "--max-rows-per-member",
+        type=int,
+        default=200_000,
+        help="Rows to decode per selected source member. Use 0 to decode the full selected member.",
+    )
     parser.add_argument("--start-row-group", type=int, default=0)
     parser.add_argument(
         "--trade-date",
@@ -73,8 +79,8 @@ def parse_args() -> argparse.Namespace:
         "--strategy",
         default="noop",
         help=(
-            "Strategy to run: noop, topbook_imbalance, bar_signal_csv, or module:function returning an "
-            "object with on_event(event, context)."
+            "Strategy to run: noop, topbook_imbalance, tape_read_orderflow, bar_signal_csv, "
+            "or module:function returning an object with on_event(event, context)."
         ),
     )
     parser.add_argument(
@@ -98,6 +104,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-spread-ticks", type=float, default=40.0)
     parser.add_argument("--trade-alignment-tolerance", default="5s")
     parser.add_argument("--include-unknown-side-trades", action="store_true")
+    parser.add_argument(
+        "--start-ny",
+        default="",
+        help="Optional inclusive New York replay start clock/timestamp, e.g. 09:30 or '2021-01-04 09:30'.",
+    )
+    parser.add_argument(
+        "--end-ny",
+        default="",
+        help="Optional exclusive New York replay end clock/timestamp, e.g. 16:00 or '2021-01-04 16:00'.",
+    )
+    parser.add_argument("--replay-timezone", default="America/New_York")
 
     parser.add_argument("--latency", default="0ms")
     parser.add_argument(
@@ -183,7 +200,7 @@ def _load_topbook_events(args: argparse.Namespace) -> pd.DataFrame:
         events = pd.read_csv(args.topbook_events)
         if args.execution_mode == "full_depth":
             _require_full_depth_columns(events, source=args.topbook_events)
-        return events
+        return _filter_topbook_events(events, args)
 
     if args.source_index:
         selection = resolve_l2_source_index(
@@ -228,7 +245,7 @@ def _load_topbook_events(args: argparse.Namespace) -> pd.DataFrame:
             trade_alignment_tolerance=str(args.trade_alignment_tolerance),
             include_unknown_side_trades=bool(args.include_unknown_side_trades),
         )
-        return build_l2_full_depth_frame(decoded.events, config=full_depth_config)
+        return _filter_topbook_events(build_l2_full_depth_frame(decoded.events, config=full_depth_config), args)
 
     topbook_config = L2TopBookExecutionConfig(
         symbol=str(args.symbol),
@@ -239,7 +256,30 @@ def _load_topbook_events(args: argparse.Namespace) -> pd.DataFrame:
         trade_alignment_tolerance=str(args.trade_alignment_tolerance),
         include_unknown_side_trades=bool(args.include_unknown_side_trades),
     )
-    return build_l2_topbook_frame(decoded.events, config=topbook_config)
+    return _filter_topbook_events(build_l2_topbook_frame(decoded.events, config=topbook_config), args)
+
+
+def _filter_topbook_events(events: pd.DataFrame, args: argparse.Namespace) -> pd.DataFrame:
+    start_ny = str(getattr(args, "start_ny", "") or "").strip()
+    end_ny = str(getattr(args, "end_ny", "") or "").strip()
+    if not start_ny and not end_ny:
+        return events
+    filtered = filter_l2_events_by_ny_window(
+        events,
+        start_ny=start_ny,
+        end_ny=end_ny,
+        timezone=str(getattr(args, "replay_timezone", "America/New_York")),
+    )
+    print(
+        f"NY replay window {start_ny or '*'} -> {end_ny or '*'} kept {len(filtered):,}/{len(events):,} events",
+        flush=True,
+    )
+    if events.empty or not filtered.empty:
+        return filtered
+    raise SystemExit(
+        "NY replay window selected 0 events. If you used --max-rows-per-member, increase it or pass "
+        "--max-rows-per-member 0 so the RTH rows are loaded before filtering."
+    )
 
 
 def _require_full_depth_columns(events: pd.DataFrame, *, source: str) -> None:

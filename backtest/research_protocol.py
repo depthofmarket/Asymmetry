@@ -34,11 +34,26 @@ ALLOWED_EDGE_TYPES = {
 NON_LIVE_EDGE_TYPES = {"execution_realism", "prop_convexity"}
 EXECUTION_AUDIT_PURPOSES = {
     "execution_audit",
+    "execution_replay_and_audit",
     "cost_model_calibration",
     "fill_realism_audit",
     "data_quality_audit",
 }
-TBBO_SAMPLE_ROLES = {"tbbo", "execution_audit", "cost_model_lockbox"}
+L2_EXECUTION_PURPOSES = EXECUTION_AUDIT_PURPOSES | {
+    "fill_model_calibration",
+    "strategy_plumbing_smoke",
+    "strategy_development_replay",
+    "strategy_lockbox_replay",
+}
+TBBO_SAMPLE_ROLES = {"tbbo", "cost_model_lockbox"}
+L2_SAMPLE_ROLES = {
+    "l2",
+    "l2_replay",
+    "l2_execution_audit",
+    "l2_depth",
+    "depth",
+    "full_depth",
+}
 FORBIDDEN_LLM_EVALUATION_TERMS = {
     "lockbox",
     "holdout",
@@ -196,8 +211,9 @@ def build_research_protocol_manifest(
         "data_sources": [_normalize_data_source(source) for source in (data_sources or [])],
         "audit_requirements": _default_audit_requirements(audit_requirements),
         "promotion_rule": (
-            "No candidate promotion if lockbox metrics were exposed to the LLM, if TBBO was used to mine "
-            "signal filters, or if required saved-run execution and research-discipline artifacts are missing."
+            "No candidate promotion if lockbox metrics were exposed to the LLM, if execution-realism data "
+            "was used to mine signal filters, or if required saved-run execution and research-discipline "
+            "artifacts are missing."
         ),
     }
 
@@ -343,6 +359,7 @@ def verify_research_protocol(
         source_id = str(source.get("name", f"source_{idx}")) if isinstance(source, dict) else f"source_{idx}"
         source_ref = source_path if str(source_path) else path
         is_tbbo = _is_tbbo_source(source_id, source_path, sample_role)
+        is_l2 = _is_l2_source(source_id, source_path, sample_role)
         add("data_source", f"{source_id}:path_exists", source_path.exists(), "true", source_path.exists(), source_ref, severity="warning")
         if sample_role in {"lockbox", "holdout"}:
             add(
@@ -363,6 +380,28 @@ def verify_research_protocol(
                 source_ref,
                 "TBBO is execution-realism evidence unless a separate point-in-time signal protocol is written first.",
             )
+        if is_l2:
+            add(
+                "data_source",
+                f"{source_id}:l2_execution_realism_only",
+                purpose,
+                "|".join(sorted(L2_EXECUTION_PURPOSES)),
+                purpose in L2_EXECUTION_PURPOSES,
+                source_ref,
+                "L2 is execution replay and fill-realism evidence unless a separate point-in-time signal protocol is written first.",
+            )
+
+    requirements = _default_audit_requirements(manifest.get("audit_requirements", {}))
+    if _manifest_uses_l2(manifest) and bool(requirements.get("require_l2_replay_protocol_when_l2_used", True)):
+        l2_protocol_path = Path(str(requirements.get("l2_replay_protocol_path", "config/l2_replay_protocol.json")))
+        add(
+            "data_source",
+            "l2_replay_protocol_manifest_exists",
+            l2_protocol_path.exists(),
+            "file exists",
+            l2_protocol_path.exists(),
+            l2_protocol_path,
+        )
 
     if resolved_run_dir is not None:
         _add_run_artifact_checks(add, resolved_run_dir, manifest)
@@ -486,12 +525,14 @@ def _default_audit_requirements(overrides: dict[str, Any] | None) -> dict[str, A
         "require_research_discipline_gate": True,
         "require_bar_exposure_audit": True,
         "require_execution_realism": True,
+        "require_l2_replay_protocol_when_l2_used": True,
+        "l2_replay_protocol_path": "config/l2_replay_protocol.json",
         "require_prop_walkforward": True,
         "require_tbbo_baseline_when_tbbo_used": True,
         "tbbo_baseline_summary_path": "results/research_master/tbbo_execution_baseline/tbbo_execution_baseline_summary.csv",
     }
     if overrides:
-        defaults.update(overrides)
+        defaults.update(_normalize(overrides))
     return defaults
 
 
@@ -684,9 +725,26 @@ def _manifest_uses_tbbo(manifest: dict[str, Any]) -> bool:
     )
 
 
+def _manifest_uses_l2(manifest: dict[str, Any]) -> bool:
+    return any(
+        _is_l2_source(
+            str(source.get("name", "")),
+            Path(str(source.get("path", ""))),
+            str(source.get("sample_role", "")),
+        )
+        for source in manifest.get("data_sources", []) or []
+        if isinstance(source, dict)
+    )
+
+
 def _is_tbbo_source(name: str, path: Path, sample_role: str) -> bool:
     joined = f"{name} {path} {sample_role}".lower()
     return "tbbo" in joined or sample_role in TBBO_SAMPLE_ROLES
+
+
+def _is_l2_source(name: str, path: Path, sample_role: str) -> bool:
+    joined = f"{name} {path} {sample_role}".lower()
+    return "l2" in joined or "full_depth" in joined or sample_role in L2_SAMPLE_ROLES
 
 
 def _normalize(value: Any) -> Any:
@@ -739,15 +797,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--manifest", default=str(DEFAULT_MANIFEST_PATH), help="Research protocol manifest path.")
     parser.add_argument("--write-manifest", action="store_true", help="Write a new research protocol manifest.")
-    parser.add_argument("--experiment-id", default="tbbo_execution_first_audit")
+    parser.add_argument("--experiment-id", default="l2_execution_realism_gate")
     parser.add_argument(
         "--objective",
-        default="Keep strategy research honest while using TBBO only for execution-realism evidence.",
+        default="Keep strategy research honest while using L2 replay only for execution-realism evidence.",
     )
     parser.add_argument(
         "--hypothesis",
         default=(
-            "Execution costs and fill realism are the next bottleneck; TBBO should audit assumptions "
+            "Execution costs and fill realism are the next bottleneck; L2 replay should audit assumptions "
             "before any new candidate is promoted."
         ),
     )

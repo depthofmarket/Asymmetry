@@ -20,9 +20,11 @@
     ]
   },
   "audit_requirements": {
+    "l2_replay_protocol_path": "config/l2_replay_protocol.json",
     "require_bar_exposure_audit": true,
     "require_development_report": true,
     "require_execution_realism": true,
+    "require_l2_replay_protocol_when_l2_used": true,
     "require_prop_walkforward": true,
     "require_research_discipline_gate": true,
     "require_tbbo_baseline_when_tbbo_used": true,
@@ -714,39 +716,56 @@
     }
   },
   "config_payload_sha256": "ee9420c7501fe7bed1f1e0056922f291b1cbf2e05eea34933e55d225ecc6bd46",
-  "created_at_utc": "2026-05-28T14:54:22+00:00",
+  "created_at_utc": "2026-06-07T05:41:47+00:00",
   "data_sources": [
     {
       "fingerprint": {
         "exists": true,
-        "fingerprint_mode": "metadata",
-        "modified_ns": 1779890953718585277,
-        "path": "data/processed/tbbo/tbbo_minute_execution_stats.csv",
-        "size_bytes": 80529681
+        "fingerprint_mode": "sha256",
+        "modified_ns": 1780416359945681462,
+        "path": "config/l2_replay_protocol.json",
+        "sha256": "56963294c5be94a21416421927a29a1a70e0281544760b2f1a69c4c30e848954",
+        "size_bytes": 2020
       },
       "llm_visible": false,
-      "name": "tbbo_minute_stats",
-      "path": "data/processed/tbbo/tbbo_minute_execution_stats.csv",
-      "purpose": "execution_audit",
-      "sample_role": "tbbo"
+      "name": "l2_replay_protocol",
+      "path": "config/l2_replay_protocol.json",
+      "purpose": "execution_replay_and_audit",
+      "sample_role": "l2_replay"
+    },
+    {
+      "fingerprint": {
+        "exists": true,
+        "fingerprint_mode": "metadata",
+        "modified_ns": 1780416317859647560,
+        "path": "data/raw/l2_nq/manifests/l2_source_index.csv",
+        "size_bytes": 409530
+      },
+      "llm_visible": false,
+      "name": "l2_source_index",
+      "path": "data/raw/l2_nq/manifests/l2_source_index.csv",
+      "purpose": "execution_replay_and_audit",
+      "sample_role": "l2_replay"
     }
   ],
   "edge_thesis": {
-    "counterparty": "Liquidity providers, fast participants, and the bid-ask spread capture costs from impatient liquidity-taking orders and optimistic resting-limit assumptions.",
-    "edge_type": "execution_realism",
+    "counterparty": "Urgent liquidity takers and passive liquidity providers who must reprice after order-book pressure create the short-term imbalance this research is trying to detect.",
+    "edge_type": "microstructure_inefficiency",
     "failure_modes": [
-      "Execution audit is mistaken for directional alpha.",
-      "A short TBBO sample is mined for signal filters instead of used as cost evidence."
+      "Raw Databento A/B side codes are misread as buyer or seller aggression without convention proof.",
+      "L2 data is mined for filters instead of used as execution-realism evidence.",
+      "Prop-firm pass metrics are mistaken for live directional edge."
     ],
     "falsification_tests": [
-      "Reject promotion if saved trades only survive optimistic target-fill assumptions.",
-      "Reject promotion if TBBO spread or trade-vs-mid evidence shows configured costs are too low."
+      "Reject if next-bar-open signal research fails raw IC, signed forward return after cost, bootstrap, placebo, or period-stability gates.",
+      "Reject if L2 replay erases the apparent edge through spread, latency, depth, or trade-through fill assumptions.",
+      "Reject if the result depends on same-sample hour, regime, shelf, or side-code filtering."
     ],
-    "mechanism": "Short-horizon NQ backtests can look profitable when target fills, spread, and adverse selection are understated; the research edge is avoiding false positives before strategy promotion.",
-    "persistence_reason": "Spread, depth, queue priority, and adverse selection are structural microstructure costs that should persist across NQ scalping strategies."
+    "mechanism": "Short-horizon NQ continuation may be more reliable when completed aggressive-flow imbalance aligns with accepted profile and value-area location, while L2 replay confirms the trade would not be erased by spread, latency, or immediate adverse selection.",
+    "persistence_reason": "Order-book pressure, liquidity-taking urgency, and acceptance or rejection around profile locations are recurring intraday microstructure mechanics rather than one historical parameter fit."
   },
-  "experiment_id": "tbbo_execution_first_audit",
-  "hypothesis": "Execution costs and fill realism are the next bottleneck; TBBO should audit assumptions before any new candidate is promoted.",
+  "experiment_id": "l2_aggressive_flow_location_signal_gate",
+  "hypothesis": "Completed-minute aggressive-flow imbalance aligned with point-in-time location acceptance may predict short-horizon NQ continuation, but only if next-bar signal evidence and L2 execution realism both survive conservative costs.",
   "llm_visibility": {
     "evaluation_metrics_exposed_to_llm": false,
     "forbidden_terms": [
@@ -761,12 +780,14 @@
       "test_pnl",
       "test_profit_factor"
     ],
-    "visible_artifacts": []
+    "visible_artifacts": [
+      "docs/research_hypotheses/2026-06-07_aggressive_flow_location_l2_signal_gate.md"
+    ]
   },
   "manifest_type": "research_protocol",
-  "objective": "Keep strategy research honest while using TBBO only for execution-realism evidence.",
+  "objective": "Pre-register aggressive-flow/location-context research while using L2 only as the execution-realism gate before any candidate backtest.",
   "phase": "hypothesis",
-  "promotion_rule": "No candidate promotion if lockbox metrics were exposed to the LLM, if TBBO was used to mine signal filters, or if required saved-run execution and research-discipline artifacts are missing.",
+  "promotion_rule": "No candidate promotion if lockbox metrics were exposed to the LLM, if execution-realism data was used to mine signal filters, or if required saved-run execution and research-discipline artifacts are missing.",
   "schema_version": 2,
   "status": "draft"
 }
