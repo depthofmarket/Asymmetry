@@ -19,6 +19,11 @@ DEFAULT_EXCLUDED_SIGNAL_COLUMNS = {
     "volume",
     "vwap",
     "atr",
+    "signal_active",
+    "hour",
+    "minute",
+    "stop_points",
+    "target_points",
 }
 MAX_MONTE_CARLO_DRAW_CELLS = 5_000_000
 
@@ -144,6 +149,7 @@ def run_signal_research_report(
             signed_after_cost = signed_points - float(round_trip_cost_points)
 
             ic = _pearson(signal.loc[valid_mask], forward_return.loc[valid_mask])
+            active_ic = _pearson(signal.loc[active_mask], forward_return.loc[active_mask])
             active_signed = signed_after_cost.loc[active_mask]
             active_raw = signed_points.loc[active_mask]
             active_forward = forward_return.loc[active_mask]
@@ -157,12 +163,30 @@ def run_signal_research_report(
                 confidence=0.95,
                 rng=rng,
             )
+            placebo_pool, placebo_pool_mode, placebo_pool_obs = _select_placebo_return_pool(
+                forward_return=forward_return,
+                valid_mask=valid_mask,
+                active_mask=active_mask,
+                times=times,
+            )
             placebo_mean, placebo_edge, placebo_p_value = _placebo_event_test(
-                forward_return.loc[valid_mask],
+                placebo_pool,
                 direction.loc[active_mask],
                 observed_mean=_finite_mean(active_signed),
                 round_trip_cost_points=float(round_trip_cost_points),
                 samples=int(event_placebo_samples),
+                rng=rng,
+            )
+            excursion_metrics = _evaluate_excursions_and_barriers(
+                df=df,
+                active_mask=active_mask,
+                direction=direction,
+                entry_col=entry_col,
+                exit_col=exit_col,
+                entry_lag=entry_lag,
+                horizon=horizon,
+                round_trip_cost_points=float(round_trip_cost_points),
+                bootstrap_samples=int(event_bootstrap_samples),
                 rng=rng,
             )
 
@@ -185,6 +209,7 @@ def run_signal_research_report(
                         "period": str(period_value),
                         "n_active": int(period_active.sum()),
                         "ic": _pearson(period_signal.loc[period_valid], period_forward.loc[period_valid]),
+                        "active_ic": _pearson(period_signal.loc[period_active], period_forward.loc[period_active]),
                         "mean_signed_return_after_cost_points": _finite_mean(period_signed),
                         "hit_rate_pct": float(((period_direction * period_forward).loc[period_active] > 0).mean() * 100.0)
                         if int(period_active.sum()) > 0
@@ -203,6 +228,11 @@ def run_signal_research_report(
             period_count = int(len(signal_periods))
             positive_ic_period_pct = (
                 float((pd.to_numeric(signal_periods["ic"], errors="coerce") > 0).mean() * 100.0)
+                if period_count
+                else np.nan
+            )
+            positive_active_ic_period_pct = (
+                float((pd.to_numeric(signal_periods["active_ic"], errors="coerce") > 0).mean() * 100.0)
                 if period_count
                 else np.nan
             )
@@ -235,11 +265,19 @@ def run_signal_research_report(
                 min_event_bootstrap_ci_low_points=float(min_event_bootstrap_ci_low_points),
                 event_ci_low=event_ci_low,
             )
+            active_pct_val = float(active_mask.mean() * 100.0)
+            effective_abs_ic = abs(float(ic)) if np.isfinite(ic) else np.nan
+            if active_pct_val < 10.0 and np.isfinite(active_ic):
+                effective_abs_ic = (
+                    max(effective_abs_ic, abs(float(active_ic)))
+                    if np.isfinite(effective_abs_ic)
+                    else abs(float(active_ic))
+                )
             eligible = (
                 int(valid_mask.sum()) >= int(min_obs)
                 and int(active_mask.sum()) >= int(min_active_obs)
-                and np.isfinite(ic)
-                and abs(float(ic)) >= float(min_abs_ic)
+                and np.isfinite(effective_abs_ic)
+                and float(effective_abs_ic) >= float(min_abs_ic)
                 and np.isfinite(signed_mean_after_cost)
                 and signed_mean_after_cost > 0
                 and np.isfinite(positive_signed_period_pct)
@@ -270,9 +308,11 @@ def run_signal_research_report(
                 "horizon_bars": horizon,
                 "n_obs": int(valid_mask.sum()),
                 "n_active": int(active_mask.sum()),
-                "active_pct": float(active_mask.mean() * 100.0),
+                "active_pct": active_pct_val,
                 "ic": ic,
                 "abs_ic": abs(ic) if np.isfinite(ic) else np.nan,
+                "active_ic": active_ic,
+                "abs_active_ic": abs(active_ic) if np.isfinite(active_ic) else np.nan,
                 "ic_suspicious_gt_0_10": bool(np.isfinite(ic) and abs(ic) >= 0.10),
                 "mean_forward_return_points": _finite_mean(active_forward),
                 "mean_signed_return_points": _finite_mean(active_raw),
@@ -285,16 +325,20 @@ def run_signal_research_report(
                 "short_mean_signed_forward_return_points": short_mean,
                 "period_count": period_count,
                 "positive_ic_period_pct": positive_ic_period_pct,
+                "positive_active_ic_period_pct": positive_active_ic_period_pct,
                 "positive_signed_period_pct": positive_signed_period_pct,
                 "worst_period_signed_return_after_cost_points": worst_period_signed,
                 "bootstrap_mean_ci_low_points": event_ci_low,
                 "bootstrap_mean_ci_high_points": event_ci_high,
+                "placebo_pool_mode": placebo_pool_mode,
+                "placebo_pool_obs": placebo_pool_obs,
                 "placebo_mean_signed_return_after_cost_points": placebo_mean,
                 "placebo_edge_points": placebo_edge,
                 "placebo_p_value": placebo_p_value,
                 "eligible_for_candidate": bool(eligible),
                 "event_eligible_for_candidate": bool(event_eligible),
             }
+            summary_row.update(excursion_metrics)
             summary_row.update(stress_metrics)
             summary_rows.append(
                 summary_row
@@ -526,6 +570,147 @@ def _bootstrap_mean_ci(
     )
 
 
+def _select_placebo_return_pool(
+    *,
+    forward_return: pd.Series,
+    valid_mask: pd.Series,
+    active_mask: pd.Series,
+    times: pd.Series,
+) -> tuple[pd.Series, str, int]:
+    if pd.api.types.is_datetime64_any_dtype(times) and bool(active_mask.any()):
+        minute_of_day = times.dt.hour * 60 + times.dt.minute
+        if int(minute_of_day.loc[valid_mask].nunique()) > 1:
+            active_minutes = set(minute_of_day.loc[active_mask].dropna().astype(int).unique())
+            clock_mask = valid_mask & minute_of_day.isin(active_minutes)
+            clock_obs = int(clock_mask.sum())
+            if clock_obs >= max(30, int(active_mask.sum())):
+                return forward_return.loc[clock_mask], "clock_matched", clock_obs
+    full_obs = int(valid_mask.sum())
+    return forward_return.loc[valid_mask], "full_sample", full_obs
+
+
+def _evaluate_excursions_and_barriers(
+    *,
+    df: pd.DataFrame,
+    active_mask: pd.Series,
+    direction: pd.Series,
+    entry_col: str,
+    exit_col: str,
+    entry_lag: int,
+    horizon: int,
+    round_trip_cost_points: float,
+    bootstrap_samples: int,
+    rng: np.random.Generator,
+) -> dict[str, object]:
+    empty_result: dict[str, object] = {
+        "mean_mfe_points": np.nan,
+        "mean_mae_points": np.nan,
+        "barrier_mean_signed_return_after_cost_points": np.nan,
+        "barrier_median_signed_return_after_cost_points": np.nan,
+        "barrier_hit_rate_pct": np.nan,
+        "barrier_target_hit_pct": np.nan,
+        "barrier_stop_hit_pct": np.nan,
+        "barrier_bootstrap_mean_ci_low_points": np.nan,
+    }
+    if "high" not in df.columns or "low" not in df.columns or not bool(active_mask.any()):
+        return empty_result
+
+    high_arr = pd.to_numeric(df["high"], errors="coerce").to_numpy(dtype=float)
+    low_arr = pd.to_numeric(df["low"], errors="coerce").to_numpy(dtype=float)
+    entry_arr = pd.to_numeric(df[entry_col], errors="coerce").to_numpy(dtype=float)
+    exit_arr = pd.to_numeric(df[exit_col], errors="coerce").to_numpy(dtype=float)
+    dir_arr = pd.to_numeric(direction, errors="coerce").to_numpy(dtype=float)
+
+    has_stop = "stop_points" in df.columns
+    has_target = "target_points" in df.columns
+    stop_arr = pd.to_numeric(df["stop_points"], errors="coerce").to_numpy(dtype=float) if has_stop else None
+    target_arr = pd.to_numeric(df["target_points"], errors="coerce").to_numpy(dtype=float) if has_target else None
+
+    active_indices = np.flatnonzero(active_mask.to_numpy(dtype=bool))
+    n_rows = len(df)
+    mfe_list: list[float] = []
+    mae_list: list[float] = []
+    barrier_raw_returns: list[float] = []
+    barrier_outcomes: list[str] = []
+
+    for idx in active_indices:
+        i_entry = int(idx) + int(entry_lag)
+        i_exit = int(idx) + int(horizon)
+        if i_entry >= n_rows or i_exit >= n_rows or i_entry > i_exit:
+            continue
+        p0 = entry_arr[i_entry]
+        d = np.sign(dir_arr[idx])
+        if not np.isfinite(p0) or d == 0.0:
+            continue
+
+        win_high = high_arr[i_entry : i_exit + 1]
+        win_low = low_arr[i_entry : i_exit + 1]
+        if win_high.size == 0 or np.all(np.isnan(win_high)) or np.all(np.isnan(win_low)):
+            continue
+
+        max_h = float(np.nanmax(win_high))
+        min_l = float(np.nanmin(win_low))
+        if d > 0:
+            mfe = max(0.0, max_h - p0)
+            mae = max(0.0, p0 - min_l)
+        else:
+            mfe = max(0.0, p0 - min_l)
+            mae = max(0.0, max_h - p0)
+        mfe_list.append(mfe)
+        mae_list.append(mae)
+
+        if has_stop or has_target:
+            s_pts = float(stop_arr[idx]) if stop_arr is not None and np.isfinite(stop_arr[idx]) and stop_arr[idx] > 0 else np.nan
+            t_pts = float(target_arr[idx]) if target_arr is not None and np.isfinite(target_arr[idx]) and target_arr[idx] > 0 else np.nan
+            if np.isfinite(s_pts) or np.isfinite(t_pts):
+                outcome = "timeout"
+                realized_raw = float(d * (exit_arr[i_exit] - p0))
+                for t_idx in range(i_entry, i_exit + 1):
+                    bar_h = high_arr[t_idx]
+                    bar_l = low_arr[t_idx]
+                    if not np.isfinite(bar_h) or not np.isfinite(bar_l):
+                        continue
+                    stop_hit = False
+                    target_hit = False
+                    if np.isfinite(s_pts):
+                        stop_hit = (bar_l <= p0 - s_pts) if d > 0 else (bar_h >= p0 + s_pts)
+                    if np.isfinite(t_pts):
+                        target_hit = (bar_h >= p0 + t_pts) if d > 0 else (bar_l <= p0 - t_pts)
+                    # Conservative stop-first tie-breaker on same bar
+                    if stop_hit:
+                        outcome = "stop"
+                        realized_raw = -s_pts
+                        break
+                    if target_hit:
+                        outcome = "target"
+                        realized_raw = t_pts
+                        break
+                barrier_raw_returns.append(realized_raw)
+                barrier_outcomes.append(outcome)
+
+    result = dict(empty_result)
+    if mfe_list:
+        result["mean_mfe_points"] = float(np.mean(mfe_list))
+        result["mean_mae_points"] = float(np.mean(mae_list))
+    if barrier_raw_returns:
+        raw_s = pd.Series(barrier_raw_returns, dtype=float)
+        after_cost_s = raw_s - float(round_trip_cost_points)
+        outcomes_s = pd.Series(barrier_outcomes, dtype="object")
+        ci_low, _ = _bootstrap_mean_ci(
+            after_cost_s,
+            samples=int(bootstrap_samples),
+            confidence=0.95,
+            rng=rng,
+        )
+        result["barrier_mean_signed_return_after_cost_points"] = _finite_mean(after_cost_s)
+        result["barrier_median_signed_return_after_cost_points"] = _finite_median(after_cost_s)
+        result["barrier_hit_rate_pct"] = float((raw_s > 0.0).mean() * 100.0)
+        result["barrier_target_hit_pct"] = float(outcomes_s.eq("target").mean() * 100.0)
+        result["barrier_stop_hit_pct"] = float(outcomes_s.eq("stop").mean() * 100.0)
+        result["barrier_bootstrap_mean_ci_low_points"] = ci_low
+    return result
+
+
 def _placebo_event_test(
     forward_return: pd.Series,
     active_direction: pd.Series,
@@ -596,7 +781,7 @@ def _write_signal_research_report(
         f"- Exit price: `{exit_price_col}` shifted by each horizon from the signal row",
         f"- Event gate minimum hit rate: {min_event_hit_rate_pct:.1f}%",
         f"- Event gate minimum bootstrap CI low: {min_event_bootstrap_ci_low_points:.4f} points",
-        f"- Event gate minimum placebo edge: {min_event_placebo_edge_points:.4f} points",
+        f"- Event gate minimum placebo edge (`signal_mean - placebo_mean`): {min_event_placebo_edge_points:.4f} points",
         f"- Event gate maximum placebo p-value: {max_event_placebo_p_value:.4f}",
         f"- Event bootstrap/placebo samples: {event_bootstrap_samples}/{event_placebo_samples}",
         "",
@@ -654,17 +839,23 @@ def _write_signal_research_report(
             "n_active",
             "active_pct",
             "ic",
+            "active_ic",
             "mean_signed_return_after_cost_points",
             "median_signed_return_after_cost_points",
             "hit_rate_pct",
             "positive_signed_period_pct",
             "bootstrap_mean_ci_low_points",
+            "mean_mfe_points",
+            "mean_mae_points",
+            "barrier_mean_signed_return_after_cost_points",
+            "barrier_hit_rate_pct",
             "stress_round_trip_cost_points",
             "stress_min_mean_signed_return_after_cost_points",
             "stress_min_positive_signed_period_pct",
             "stress_min_bootstrap_mean_ci_low_points",
             "stress_cost_survives",
             "stress_event_cost_survives",
+            "placebo_pool_mode",
             "placebo_edge_points",
             "placebo_p_value",
             "eligible_for_candidate",

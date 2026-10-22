@@ -194,6 +194,77 @@ class SignalResearchReportTests(unittest.TestCase):
             [True, False, True, False, True, False, False, True, False],
         )
 
+    def test_active_ic_and_clock_matched_placebo_and_barriers(self) -> None:
+        # 40 days of 3-minute bars (09:30, 09:31, 09:32), signal only fires at 09:30
+        rows = []
+        for day_idx in range(40):
+            base_day = pd.Timestamp("2024-01-01") + pd.Timedelta(days=day_idx)
+            sig = 1.0 if day_idx % 2 == 0 else -1.0
+            # At 09:31 -> 09:32, move is +10 in direction of sig
+            p0 = 1000.0
+            p1 = 1000.0
+            p2 = 1000.0 + sig * 10.0
+            rows.extend(
+                [
+                    {
+                        "time": base_day + pd.Timedelta(hours=9, minutes=30),
+                        "open": p0,
+                        "high": p0 + 1.0,
+                        "low": p0 - 1.0,
+                        "close": p0,
+                        "candidate_signal": sig,
+                        "stop_points": 5.0,
+                        "target_points": 8.0,
+                    },
+                    {
+                        "time": base_day + pd.Timedelta(hours=9, minutes=31),
+                        "open": p1,
+                        "high": p1 + (9.0 if sig > 0 else 1.0),
+                        "low": p1 - (1.0 if sig > 0 else 9.0),
+                        "close": p2,
+                        "candidate_signal": 0.0,
+                        "stop_points": np.nan,
+                        "target_points": np.nan,
+                    },
+                    {
+                        "time": base_day + pd.Timedelta(hours=9, minutes=32),
+                        "open": p2,
+                        "high": p2 + 1.0,
+                        "low": p2 - 1.0,
+                        "close": p2,
+                        "candidate_signal": 0.0,
+                        "stop_points": np.nan,
+                        "target_points": np.nan,
+                    },
+                ]
+            )
+        data = pd.DataFrame(rows)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = run_signal_research_report(
+                data,
+                out_dir=Path(tmp),
+                signal_cols=["candidate_signal"],
+                entry_price_col="open",
+                exit_price_col="close",
+                entry_lag_bars=1,
+                horizons_bars=[1],
+                round_trip_cost_points=1.0,
+                min_obs=30,
+                min_active_obs=30,
+                min_abs_ic=0.50,
+            )
+
+            summary = pd.read_csv(paths.summary_csv)
+            self.assertAlmostEqual(float(summary.loc[0, "active_ic"]), 1.0, places=5)
+            self.assertEqual(str(summary.loc[0, "placebo_pool_mode"]), "clock_matched")
+            self.assertEqual(int(summary.loc[0, "placebo_pool_obs"]), 40)
+            self.assertAlmostEqual(float(summary.loc[0, "mean_mfe_points"]), 9.0, places=5)
+            self.assertAlmostEqual(float(summary.loc[0, "mean_mae_points"]), 1.0, places=5)
+            # Target is 8.0 pts, minus 1.0 cost = 7.0 pts
+            self.assertAlmostEqual(float(summary.loc[0, "barrier_mean_signed_return_after_cost_points"]), 7.0, places=5)
+            self.assertAlmostEqual(float(summary.loc[0, "barrier_target_hit_pct"]), 100.0, places=5)
+
 
 def _sparse_event_frame(start: str, *, periods: int) -> pd.DataFrame:
     returns = np.zeros(periods)

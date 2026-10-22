@@ -164,6 +164,10 @@ def prepare_signal_export_frame(
     out["minute"] = df["time"].dt.minute.astype(int)
     out["session_bucket"] = _session_bucket(df["time"])
 
+    for barrier_col in ("stop_points", "target_points"):
+        if barrier_col in df.columns and barrier_col not in out.columns:
+            out[barrier_col] = pd.to_numeric(df[barrier_col], errors="coerce")
+
     for col in feature_cols:
         if col not in out.columns:
             out[col] = pd.to_numeric(df[col], errors="coerce")

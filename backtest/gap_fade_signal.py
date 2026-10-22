@@ -32,6 +32,9 @@ class GapFadeSignalConfig:
     min_gap_pct: float = 0.0050  # 0.50%
     min_gap_to_atr_ratio: float = 0.20  # 0.20x 20-day daily ATR
     atr_window_days: int = 20
+    target_gap_fraction: float = 0.50
+    max_target_points: float = 30.0
+    stop_gap_fraction: float = 1.00
     signal_time: str = "09:30"
     rth_start: str = "09:30"
     rth_end: str = "16:00"
@@ -132,6 +135,14 @@ def build_gap_fade_signal_frame(
         candidate_signal.loc[active_idx] * gap_to_atr_ratio.loc[active_idx]
     )
 
+    stop_points = pd.Series(np.nan, index=df.index, dtype=float)
+    target_points = pd.Series(np.nan, index=df.index, dtype=float)
+    stop_points.loc[active_idx] = float(cfg.stop_gap_fraction) * abs_gap_points.loc[active_idx]
+    raw_target = float(cfg.target_gap_fraction) * abs_gap_points.loc[active_idx]
+    if cfg.max_target_points and cfg.max_target_points > 0:
+        raw_target = np.minimum(raw_target, float(cfg.max_target_points))
+    target_points.loc[active_idx] = raw_target
+
     out = df.copy()
     out["signal"] = candidate_signal
     out["signal_type"] = np.where(candidate_signal.ne(0.0), "gap_fade", "")
@@ -144,6 +155,8 @@ def build_gap_fade_signal_frame(
     out["abs_gap_pct"] = abs_gap_pct
     out["daily_atr_20"] = daily_atr_series
     out["gap_to_atr_ratio"] = gap_to_atr_ratio
+    out["stop_points"] = stop_points
+    out["target_points"] = target_points
     out["gap_direction"] = gap_direction
     out["gap_size_bucket"] = gap_size_bucket
     out["session_bucket"] = "rth_open"
@@ -190,7 +203,13 @@ def _base_ohlcv_frame(data: pd.DataFrame) -> pd.DataFrame:
     if missing:
         raise ValueError(f"Missing required OHLCV columns: {missing}")
 
-    df = data.loc[:, required].copy()
+    work = data.copy()
+    if "symbol" in work.columns:
+        from main_backtest import select_continuous_outright_contract
+
+        work = select_continuous_outright_contract(work, method="prior_session_volume")
+
+    df = work.loc[:, required].copy()
     df["time"] = pd.to_datetime(df["time"], errors="coerce")
     df = df.dropna(subset=["time"]).sort_values("time", kind="stable").reset_index(drop=True)
     return df
