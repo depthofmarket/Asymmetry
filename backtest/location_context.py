@@ -440,19 +440,21 @@ def _value_area(prices: np.ndarray, weights: np.ndarray, *, value_area_pct: floa
     if len(prices) == 0 or total <= 0.0:
         return np.nan, np.nan
     target = total * float(value_area_pct)
-    included = {int(np.nanargmax(weights))}
-    current = float(weights[next(iter(included))])
-    while current < target and (min(included) > 0 or max(included) + 1 < len(weights)):
-        left = min(included) - 1
-        right = max(included) + 1
-        left_weight = weights[left] if left >= 0 else -np.inf
-        right_weight = weights[right] if right < len(weights) else -np.inf
-        chosen = left if left_weight >= right_weight else right
-        included.add(int(chosen))
-        current += float(weights[chosen])
-    idx = sorted(included)
-    return float(prices[idx[0]]), float(prices[idx[-1]])
-
+    poc_idx = int(np.nanargmax(weights))
+    left_idx = poc_idx
+    right_idx = poc_idx
+    current = float(weights[poc_idx])
+    n_weights = len(weights)
+    while current < target and (left_idx > 0 or right_idx + 1 < n_weights):
+        left_weight = weights[left_idx - 1] if left_idx > 0 else -np.inf
+        right_weight = weights[right_idx + 1] if right_idx + 1 < n_weights else -np.inf
+        if left_weight >= right_weight:
+            left_idx -= 1
+            current += float(weights[left_idx])
+        else:
+            right_idx += 1
+            current += float(weights[right_idx])
+    return float(prices[left_idx]), float(prices[right_idx])
 
 def _empty_profile_row() -> dict[str, object]:
     return {

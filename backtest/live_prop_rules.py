@@ -156,8 +156,13 @@ class LivePropRuleGuard:
     @property
     def payout_available(self) -> float:
         payout_floor = self.account_size + float(self.rules["funded_buffer_target"])
-        return max(0.0, self.last_equity - payout_floor)
-
+        total_profit = max(0.0, self.last_equity - payout_floor)
+        payout_pct = float(self.rules.get("payout_pct_of_profit", 100.0) or 100.0) / 100.0
+        withdrawable = total_profit * payout_pct if payout_pct < 1.0 else total_profit
+        payout_cap = float(self.rules.get("payout_cap", 0.0) or 0.0)
+        if payout_cap > 0:
+            withdrawable = min(withdrawable, payout_cap)
+        return withdrawable
     @property
     def payout_eligible(self) -> bool:
         minimum = float(self.rules["minimum_payout"])
@@ -349,10 +354,12 @@ class LivePropRuleGuard:
         account_size = self.account_size
         static_floor = account_size - max_drawdown if max_drawdown > 0 else float("-inf")
         drawdown_mode = str(self.rules["drawdown_mode"]).lower()
+        trailing_lock_floor = float(self.rules.get("trailing_drawdown_lock_floor", 0.0) or 0.0)
+        lock_cap = trailing_lock_floor if trailing_lock_floor > 0 else account_size
         if drawdown_mode in {"eod_trailing", "trailing", "trailing_eod", "eod_trailing_lock_at_initial", "eod_lock"} and max_drawdown > 0:
             floor = max(static_floor, float(self.eod_peak_equity) - max_drawdown)
             if bool(self.rules["trailing_drawdown_cap_at_initial"]):
-                floor = min(floor, account_size)
+                floor = min(floor, lock_cap)
             self.drawdown_floor = floor
         else:
             self.drawdown_floor = static_floor

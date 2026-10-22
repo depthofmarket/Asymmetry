@@ -36,7 +36,7 @@ EXECUTION_COST_EVIDENCE = {
 
 # Backtest Settings
 BACKTEST_CONFIG = {
-    'data_path': 'data/raw/glbx-mdp3-20100606-20260428.ohlcv-1m.csv',
+    'data_path': 'data/raw/glbx-mdp3-20100606-20260428.ohlcv-1m.parquet',
     # Databento NQ.FUT contains multiple outright contracts at the same minute.
     # Use the prior session's dominant contract where possible; selecting by the
     # current full session's volume leaks future roll/universe information.
@@ -1672,6 +1672,56 @@ RESEARCH_CONFIG = {
     'prop_firm_surface_n_sims': 1000,
     'prop_firm_seed': 17,
     'prop_firm_profiles': [
+        {
+            'name': 'lucid_flex_25k',
+            'account_size': 25_000,
+            'eval_cost': 39,
+            'activation_fee': 0,
+            'reset_fee': 89,
+            'max_resets_per_account': 0,
+            'monthly_fee': 0,
+            'account_bundle_cost': 0,
+            'max_accounts': 20,
+            'profit_target': 1_250,
+            'max_drawdown': 1_000,
+            'trailing_drawdown_lock_floor': 25_100,
+            'lock_mll_on_payout': True,
+            'daily_loss_limit': 600,
+            'min_trading_days': 3,
+            'max_trading_days': 60,
+            'drawdown_mode': 'eod_trailing',
+            'drawdown_check': 'eod',
+            'trailing_drawdown_cap_at_initial': True,
+            'consistency_profit_limit_pct': 40,
+            # Backtest engine trades 1 full NQ contract ($20/pt).
+            # LucidFlex 25K max sizing is 2 minis or 20 micros.
+            # pnl_multiplier 0.1 scales backtest NQ minis to 1 MNQ micro ($2/pt).
+            'pnl_multiplier': 0.1,
+            'profit_split_pct': 90,
+            'payout_pct_of_profit': 50,
+            'payout_min_profitable_days': 5,
+            'payout_min_daily_profit': 100,
+            'max_payouts_per_account': 5,
+            'funded_buffer_target': 0,
+            'minimum_payout': 500,
+            'payout_cap': 1_000,
+            'payout_cap_period': 'per_request',
+            'payout_cadence_days': 5,
+            'funded_horizon_days': 60,
+            'trading_objective': 'prop_eval_flip',
+            'fill_model': 'prop_demo_fill_assumption',
+            'minimum_trade_sample': 500,
+            'portfolio_account_counts': [1, 5, 10, 20],
+            'portfolio_n_sims': 20_000,
+            'surface_n_sims': 1000,
+            'sizing_multipliers': [0.5, 1.0, 1.5, 2.0, 3.0],
+            'daily_loss_stops': [0, 100, 150, 200, 300, 600],
+            'daily_profit_locks': [0, 100, 150, 250, 500],
+            'risk_geometry_reward_risk': [0.5, 1.0, 1.5, 2.0, 3.0],
+            'risk_geometry_drawdown_risk_fracs': [0.05, 0.075, 0.10, 0.15, 0.20],
+            'risk_geometry_trades_per_day': 1,
+            'stop_after_target_until_min_days': True,
+        },
         {
             'name': 'traders_launch_100k_nyc',
             'account_size': 100_000,

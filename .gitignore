@@ -3,5 +3,9 @@ __pycache__/
 .DS_Store
 *.csv
 data/raw/
+data/processed/
 results/
 *.egg-info/
+.kilo/
+.venv/
+.pytest_cache/

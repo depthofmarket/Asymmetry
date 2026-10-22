@@ -434,6 +434,62 @@ class PropFirmAnalyticsTests(unittest.TestCase):
         self.assertEqual(float(result["net_payout"]), 500.0)
         self.assertEqual(int(result["payout_count"]), 1)
         self.assertEqual(float(result["first_payout_day"]), 2.0)
+    def test_lucid_flex_25k_eval_consistency_and_lock_floor(self) -> None:
+        from config.backtest_config import RESEARCH_CONFIG
+        profiles = {p["name"]: p for p in RESEARCH_CONFIG["prop_firm_profiles"]}
+        self.assertIn("lucid_flex_25k", profiles)
+        profile = profiles["lucid_flex_25k"]
+
+        # Test 1: 40% consistency blocks 2-day pass when best day is > 40% of target
+        # Target is 1,250. Day 1: 700 (56% of 1,250), Day 2: 550.
+        blocked = evaluate_prop_firm_path([700.0, 550.0], profile)
+        self.assertEqual(blocked["status"], "timeout")
+        self.assertEqual(blocked["reason"], "consistency_pending")
+
+        # Test 2: 3-day pass with no day > 40% (450 <= 500)
+        passed = evaluate_prop_firm_path([450.0, 400.0, 400.0], profile)
+        self.assertEqual(passed["status"], "pass")
+        self.assertEqual(passed["days"], 3)
+
+        # Test 3: Trailing floor locks at 25,100 once balance reaches 26,100+
+        df_lock = pd.DataFrame([
+            {"net_pnl": 1500.0, "min_intraday_pnl": 0.0, "max_intraday_pnl": 1500.0, "trade_count": 1},
+            {"net_pnl": -100.0, "min_intraday_pnl": -100.0, "max_intraday_pnl": 0.0, "trade_count": 1},
+        ])
+        res = evaluate_prop_firm_path(df_lock, profile)
+        # Equity was 26,500 on day 1 -> floor without cap would be 25,500, but capped at 25,100!
+        self.assertEqual(float(res["drawdown_floor"]), 25_100.0)
+
+    def test_lucid_flex_25k_funded_payout_qualifying_days_and_mll_lock(self) -> None:
+        from config.backtest_config import RESEARCH_CONFIG
+        profiles = {p["name"]: p for p in RESEARCH_CONFIG["prop_firm_profiles"]}
+        profile = profiles["lucid_flex_25k"]
+
+        # 5 days of +$200 = +$1,000 profit (equity = $26,000). All 5 days meet >= $100.
+        # Cycle profit = $1,000. 50% payout = $500. 90/10 split = $450 net payout.
+        # Remaining equity = $25,500. MLL locks at $25,100.
+        five_days = pd.DataFrame([
+            {"net_pnl": 200.0, "min_intraday_pnl": -50.0, "max_intraday_pnl": 250.0, "trade_count": 1}
+            for _ in range(5)
+        ])
+        result = _evaluate_funded_path(five_days, profile)
+        self.assertEqual(int(result["payout_count"]), 1)
+        self.assertEqual(float(result["gross_payout"]), 500.0)
+        self.assertEqual(float(result["net_payout"]), 450.0)
+        self.assertEqual(float(result["final_equity"]), 25_500.0)
+        self.assertEqual(float(result["drawdown_floor"]), 25_100.0)
+
+        # If only 4 days meet >= $100 (e.g. day 5 made +$50), payout is not eligible yet
+        four_days = pd.DataFrame([
+            {"net_pnl": 250.0, "min_intraday_pnl": 0.0, "max_intraday_pnl": 250.0, "trade_count": 1},
+            {"net_pnl": 250.0, "min_intraday_pnl": 0.0, "max_intraday_pnl": 250.0, "trade_count": 1},
+            {"net_pnl": 250.0, "min_intraday_pnl": 0.0, "max_intraday_pnl": 250.0, "trade_count": 1},
+            {"net_pnl": 250.0, "min_intraday_pnl": 0.0, "max_intraday_pnl": 250.0, "trade_count": 1},
+            {"net_pnl": 50.0, "min_intraday_pnl": 0.0, "max_intraday_pnl": 50.0, "trade_count": 1},
+        ])
+        result_no_pay = _evaluate_funded_path(four_days, profile)
+        self.assertEqual(int(result_no_pay["payout_count"]), 0)
+        self.assertEqual(float(result_no_pay["gross_payout"]), 0.0)
 
     def test_export_includes_surface_rows(self) -> None:
         trades = pd.DataFrame(

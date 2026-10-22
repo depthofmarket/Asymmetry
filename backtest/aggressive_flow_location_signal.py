@@ -184,9 +184,13 @@ def _normalize_location_context(context: pd.DataFrame) -> pd.DataFrame:
 
 
 def _merge_context(base: pd.DataFrame, context: pd.DataFrame) -> pd.DataFrame:
+    base_clean = base.copy()
+    context_clean = context.copy()
+    base_clean["time"] = pd.to_datetime(base_clean["time"], errors="coerce").astype("datetime64[ns]")
+    context_clean["time"] = pd.to_datetime(context_clean["time"], errors="coerce").astype("datetime64[ns]")
     return pd.merge_asof(
-        base.sort_values("time", kind="stable"),
-        context.sort_values("time", kind="stable"),
+        base_clean.sort_values("time", kind="stable"),
+        context_clean.sort_values("time", kind="stable"),
         on="time",
         direction="backward",
         suffixes=("", "_context"),

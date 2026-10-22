@@ -83,6 +83,12 @@ DEFAULT_PROFILE: dict[str, Any] = {
     "risk_geometry_trades_per_day": 1,
     "random_walk_n_sims": 10_000,
     "attempt_curve_max_attempts": 10,
+    "trailing_drawdown_lock_floor": 0.0,
+    "lock_mll_on_payout": False,
+    "payout_pct_of_profit": 100.0,
+    "payout_min_profitable_days": 0,
+    "payout_min_daily_profit": 0.0,
+    "max_payouts_per_account": 0,
 }
 
 
@@ -265,6 +271,26 @@ def _normalize_profile(profile: dict[str, Any] | None) -> dict[str, Any]:
         "minimum_payout",
         "minimum_payout_pct",
         account_size,
+    )
+    normalized["trailing_drawdown_lock_floor"] = float(
+        normalized.get("trailing_drawdown_lock_floor", DEFAULT_PROFILE["trailing_drawdown_lock_floor"]) or 0.0
+    )
+    normalized["lock_mll_on_payout"] = bool(
+        normalized.get("lock_mll_on_payout", DEFAULT_PROFILE["lock_mll_on_payout"])
+    )
+    normalized["payout_pct_of_profit"] = float(
+        normalized.get("payout_pct_of_profit", DEFAULT_PROFILE["payout_pct_of_profit"]) or 100.0
+    )
+    normalized["payout_min_profitable_days"] = max(
+        0,
+        int(normalized.get("payout_min_profitable_days", DEFAULT_PROFILE["payout_min_profitable_days"]) or 0),
+    )
+    normalized["payout_min_daily_profit"] = float(
+        normalized.get("payout_min_daily_profit", DEFAULT_PROFILE["payout_min_daily_profit"]) or 0.0
+    )
+    normalized["max_payouts_per_account"] = max(
+        0,
+        int(normalized.get("max_payouts_per_account", DEFAULT_PROFILE["max_payouts_per_account"]) or 0),
     )
     normalized["funded_horizon_days"] = max(1, int(normalized.get("funded_horizon_days", 60) or 60))
     normalized["enable_surfaces"] = bool(normalized.get("enable_surfaces", True))
@@ -601,6 +627,8 @@ def _simulate_eval_arrays(
     drawdown_mode = str(rules["drawdown_mode"]).lower()
     drawdown_check = str(rules["drawdown_check"]).lower()
     cap_trailing_floor = bool(rules["trailing_drawdown_cap_at_initial"])
+    trailing_lock_floor = float(rules.get("trailing_drawdown_lock_floor", 0.0) or 0.0)
+    lock_cap = trailing_lock_floor if trailing_lock_floor > 0 else account_size
     initial_max_days = int(rules["initial_max_trading_days"])
     extension_threshold = float(rules["extension_threshold"])
 
@@ -684,7 +712,7 @@ def _simulate_eval_arrays(
         ) and max_drawdown > 0:
             drawdown_floor = np.maximum(static_floor, eod_peak_equity - max_drawdown)
             if cap_trailing_floor:
-                drawdown_floor = np.minimum(drawdown_floor, account_size)
+                drawdown_floor = np.minimum(drawdown_floor, lock_cap)
         else:
             drawdown_floor = np.full(n_sims, static_floor, dtype=float)
 
@@ -814,12 +842,21 @@ def _simulate_funded_arrays(
     drawdown_mode = str(rules["drawdown_mode"]).lower()
     drawdown_check = str(rules["drawdown_check"]).lower()
     cap_trailing_floor = bool(rules["trailing_drawdown_cap_at_initial"])
+    trailing_lock_floor = float(rules.get("trailing_drawdown_lock_floor", 0.0) or 0.0)
+    lock_cap = trailing_lock_floor if trailing_lock_floor > 0 else account_size
+    lock_mll_on_payout = bool(rules.get("lock_mll_on_payout", False))
+    payout_pct_of_profit = float(rules.get("payout_pct_of_profit", 100.0) or 100.0) / 100.0
+    payout_min_profitable_days = int(rules.get("payout_min_profitable_days", 0) or 0)
+    payout_min_daily_profit = float(rules.get("payout_min_daily_profit", 0.0) or 0.0)
+    max_payouts = int(rules.get("max_payouts_per_account", 0) or 0)
     funded_buffer = float(rules["funded_buffer_target"])
     minimum_payout = float(rules["minimum_payout"])
     profit_split = float(rules["profit_split"])
     payout_cap = float(rules["payout_cap"])
     payout_cadence_days = int(rules["payout_cadence_days"])
-
+    qualifying_days_in_cycle = np.zeros(n_sims, dtype=int)
+    payout_cycle_net_pnl = np.zeros(n_sims, dtype=float)
+    has_had_payout = np.zeros(n_sims, dtype=bool)
     equity = np.full(n_sims, account_size, dtype=float)
     peak_equity = np.full(n_sims, account_size, dtype=float)
     eod_peak_equity = np.full(n_sims, account_size, dtype=float)
@@ -843,6 +880,9 @@ def _simulate_funded_arrays(
 
         day_pnl = net[:, day_idx]
         min_intraday_pnl = low[:, day_idx]
+        payout_cycle_net_pnl[active] += day_pnl[active]
+        if payout_min_profitable_days > 0 and payout_min_daily_profit > 0:
+            qualifying_days_in_cycle[active & (day_pnl >= payout_min_daily_profit)] += 1
         max_intraday_pnl = high[:, day_idx]
         day_start_equity = equity.copy()
         day_low_equity = day_start_equity + min_intraday_pnl
@@ -866,7 +906,9 @@ def _simulate_funded_arrays(
         ) and max_drawdown > 0:
             drawdown_floor = np.maximum(static_floor, eod_peak_equity - max_drawdown)
             if cap_trailing_floor:
-                drawdown_floor = np.minimum(drawdown_floor, account_size)
+                drawdown_floor = np.minimum(drawdown_floor, lock_cap)
+            if lock_mll_on_payout:
+                drawdown_floor = np.maximum(drawdown_floor, np.where(has_had_payout, lock_cap, static_floor))
         else:
             drawdown_floor = np.full(n_sims, static_floor, dtype=float)
 
@@ -878,17 +920,36 @@ def _simulate_funded_arrays(
         reason[fail_dd] = 3
 
         active = status == 0
-        withdrawable = equity - payout_floor
+        total_profit = equity - payout_floor
+        withdrawable = total_profit * payout_pct_of_profit if payout_pct_of_profit < 1.0 else total_profit
         if payout_cap > 0:
             withdrawable = np.minimum(withdrawable, payout_cap)
         cadence_ok = payout_cadence_days <= 1 or (day_idx + 1) % payout_cadence_days == 0
-        can_pay = active & cadence_ok & (withdrawable >= minimum_payout) & (withdrawable > 0)
-        gross_payout[can_pay] += withdrawable[can_pay]
-        net_payout[can_pay] += withdrawable[can_pay] * profit_split
-        payout_count[can_pay] += 1
-        first_time = can_pay & ~np.isfinite(first_payout_day)
-        first_payout_day[first_time] = day_idx + 1
-        equity[can_pay] -= withdrawable[can_pay]
+        qualifying_ok = (payout_min_profitable_days <= 0) or (qualifying_days_in_cycle >= payout_min_profitable_days)
+        cycle_profit_ok = payout_cycle_net_pnl > 0
+        max_payouts_ok = (max_payouts <= 0) or (payout_count < max_payouts)
+        can_pay = (
+            active
+            & cadence_ok
+            & qualifying_ok
+            & cycle_profit_ok
+            & max_payouts_ok
+            & (withdrawable >= minimum_payout)
+            & (withdrawable > 0)
+            & ((equity - withdrawable) > drawdown_floor)
+        )
+        if can_pay.any():
+            gross_payout[can_pay] += withdrawable[can_pay]
+            net_payout[can_pay] += withdrawable[can_pay] * profit_split
+            payout_count[can_pay] += 1
+            first_time = can_pay & ~np.isfinite(first_payout_day)
+            first_payout_day[first_time] = day_idx + 1
+            equity[can_pay] -= withdrawable[can_pay]
+            qualifying_days_in_cycle[can_pay] = 0
+            payout_cycle_net_pnl[can_pay] = 0.0
+            has_had_payout[can_pay] = True
+            if lock_mll_on_payout:
+                drawdown_floor[can_pay] = np.maximum(drawdown_floor[can_pay], lock_cap)
 
     status_labels = np.where(status == 2, "fail", "survived")
     reason_labels = [REASON_LABELS.get(int(code), "unknown") for code in reason]
@@ -945,6 +1006,12 @@ def _attach_eval_metadata(records: pd.DataFrame, rules: dict[str, Any]) -> pd.Da
         "trading_objective": rules["trading_objective"],
         "fill_model": rules["fill_model"],
         "minimum_trade_sample": int(rules["minimum_trade_sample"]),
+        "trailing_drawdown_lock_floor": float(rules.get("trailing_drawdown_lock_floor", 0.0) or 0.0),
+        "lock_mll_on_payout": bool(rules.get("lock_mll_on_payout", False)),
+        "payout_pct_of_profit": float(rules.get("payout_pct_of_profit", 100.0) or 100.0),
+        "payout_min_profitable_days": int(rules.get("payout_min_profitable_days", 0) or 0),
+        "payout_min_daily_profit": float(rules.get("payout_min_daily_profit", 0.0) or 0.0),
+        "max_payouts_per_account": int(rules.get("max_payouts_per_account", 0) or 0),
     }.items():
         records[key] = value
     return records
@@ -978,6 +1045,12 @@ def _attach_funded_metadata(records: pd.DataFrame, rules: dict[str, Any]) -> pd.
         "trading_objective": rules["trading_objective"],
         "fill_model": rules["fill_model"],
         "minimum_trade_sample": int(rules["minimum_trade_sample"]),
+        "trailing_drawdown_lock_floor": float(rules.get("trailing_drawdown_lock_floor", 0.0) or 0.0),
+        "lock_mll_on_payout": bool(rules.get("lock_mll_on_payout", False)),
+        "payout_pct_of_profit": float(rules.get("payout_pct_of_profit", 100.0) or 100.0),
+        "payout_min_profitable_days": int(rules.get("payout_min_profitable_days", 0) or 0),
+        "payout_min_daily_profit": float(rules.get("payout_min_daily_profit", 0.0) or 0.0),
+        "max_payouts_per_account": int(rules.get("max_payouts_per_account", 0) or 0),
     }.items():
         records[key] = value
     return records
@@ -994,6 +1067,8 @@ def evaluate_prop_firm_path(daily_pnls: Any, profile: dict[str, Any]) -> dict[st
     drawdown_mode = str(rules["drawdown_mode"]).lower()
     drawdown_check = str(rules["drawdown_check"]).lower()
     cap_trailing_floor = bool(rules["trailing_drawdown_cap_at_initial"])
+    trailing_lock_floor = float(rules.get("trailing_drawdown_lock_floor", 0.0) or 0.0)
+    lock_cap = trailing_lock_floor if trailing_lock_floor > 0 else account_size
     stop_after_target = bool(rules["stop_after_target_until_min_days"])
     consistency_limit = float(rules["consistency_profit_limit"])
     initial_max_days = int(rules["initial_max_trading_days"])
@@ -1086,7 +1161,7 @@ def evaluate_prop_firm_path(daily_pnls: Any, profile: dict[str, Any]) -> dict[st
         ) and max_drawdown > 0:
             drawdown_floor = max(static_floor, eod_peak_equity - max_drawdown)
             if cap_trailing_floor:
-                drawdown_floor = min(drawdown_floor, account_size)
+                drawdown_floor = min(drawdown_floor, lock_cap)
         else:
             drawdown_floor = static_floor
 
@@ -1179,12 +1254,22 @@ def _evaluate_funded_path(daily_pnls: Any, profile: dict[str, Any]) -> dict[str,
     drawdown_mode = str(rules["drawdown_mode"]).lower()
     drawdown_check = str(rules["drawdown_check"]).lower()
     cap_trailing_floor = bool(rules["trailing_drawdown_cap_at_initial"])
+    trailing_lock_floor = float(rules.get("trailing_drawdown_lock_floor", 0.0) or 0.0)
+    lock_cap = trailing_lock_floor if trailing_lock_floor > 0 else account_size
+    lock_mll_on_payout = bool(rules.get("lock_mll_on_payout", False))
+    payout_pct_of_profit = float(rules.get("payout_pct_of_profit", 100.0) or 100.0) / 100.0
+    payout_min_profitable_days = int(rules.get("payout_min_profitable_days", 0) or 0)
+    payout_min_daily_profit = float(rules.get("payout_min_daily_profit", 0.0) or 0.0)
+    max_payouts = int(rules.get("max_payouts_per_account", 0) or 0)
     funded_buffer = float(rules["funded_buffer_target"])
     minimum_payout = float(rules["minimum_payout"])
     profit_split = float(rules["profit_split"])
     horizon_days = int(rules["funded_horizon_days"])
     payout_cap = float(rules["payout_cap"])
     payout_cadence_days = int(rules["payout_cadence_days"])
+    qualifying_days_in_cycle = 0
+    payout_cycle_net_pnl = 0.0
+    has_had_payout = False
 
     equity = account_size
     peak_equity = account_size
@@ -1217,6 +1302,9 @@ def _evaluate_funded_path(daily_pnls: Any, profile: dict[str, Any]) -> dict[str,
         day_low_equity = day_start_equity + min_intraday_pnl
         day_high_equity = day_start_equity + max_intraday_pnl
         equity += day_pnl
+        payout_cycle_net_pnl += day_pnl
+        if payout_min_profitable_days > 0 and payout_min_daily_profit > 0 and day_pnl >= payout_min_daily_profit:
+            qualifying_days_in_cycle += 1
         eod_peak_equity = max(eod_peak_equity, equity)
         peak_equity = max(peak_equity, day_high_equity, equity)
         min_equity = min(min_equity, day_low_equity, equity)
@@ -1231,7 +1319,9 @@ def _evaluate_funded_path(daily_pnls: Any, profile: dict[str, Any]) -> dict[str,
         ) and max_drawdown > 0:
             drawdown_floor = max(static_floor, eod_peak_equity - max_drawdown)
             if cap_trailing_floor:
-                drawdown_floor = min(drawdown_floor, account_size)
+                drawdown_floor = min(drawdown_floor, lock_cap)
+            if lock_mll_on_payout and has_had_payout:
+                drawdown_floor = max(drawdown_floor, lock_cap)
         else:
             drawdown_floor = static_floor
 
@@ -1246,17 +1336,34 @@ def _evaluate_funded_path(daily_pnls: Any, profile: dict[str, Any]) -> dict[str,
             reason = "max_drawdown"
             break
 
-        withdrawable = equity - payout_floor
+        total_profit = equity - payout_floor
+        withdrawable = total_profit * payout_pct_of_profit if payout_pct_of_profit < 1.0 else total_profit
         if payout_cap > 0:
             withdrawable = min(withdrawable, payout_cap)
         cadence_ok = payout_cadence_days <= 1 or (day_idx + 1) % payout_cadence_days == 0
-        if cadence_ok and withdrawable >= minimum_payout and withdrawable > 0:
+        qualifying_ok = payout_min_profitable_days <= 0 or qualifying_days_in_cycle >= payout_min_profitable_days
+        cycle_profit_ok = payout_cycle_net_pnl > 0
+        max_payouts_ok = max_payouts <= 0 or payout_count < max_payouts
+        if (
+            cadence_ok
+            and qualifying_ok
+            and cycle_profit_ok
+            and max_payouts_ok
+            and withdrawable >= minimum_payout
+            and withdrawable > 0
+            and (equity - withdrawable) > drawdown_floor
+        ):
             gross_payout += withdrawable
             net_payout += withdrawable * profit_split
             payout_count += 1
             if first_payout_day is None:
                 first_payout_day = day_idx + 1
             equity -= withdrawable
+            qualifying_days_in_cycle = 0
+            payout_cycle_net_pnl = 0.0
+            has_had_payout = True
+            if lock_mll_on_payout:
+                drawdown_floor = max(drawdown_floor, lock_cap)
 
     return {
         "status": status,
@@ -2124,6 +2231,8 @@ def _sample_eval_equity_paths(
     drawdown_mode = str(rules["drawdown_mode"]).lower()
     drawdown_check = str(rules["drawdown_check"]).lower()
     cap_trailing_floor = bool(rules["trailing_drawdown_cap_at_initial"])
+    trailing_lock_floor = float(rules.get("trailing_drawdown_lock_floor", 0.0) or 0.0)
+    lock_cap = trailing_lock_floor if trailing_lock_floor > 0 else account_size
 
     rows: list[dict[str, Any]] = []
     for sim_id in range(n_paths):
@@ -2180,7 +2289,7 @@ def _sample_eval_equity_paths(
             ) and max_drawdown > 0:
                 drawdown_floor = max(static_floor, eod_peak_equity - max_drawdown)
                 if cap_trailing_floor:
-                    drawdown_floor = min(drawdown_floor, account_size)
+                    drawdown_floor = min(drawdown_floor, lock_cap)
             else:
                 drawdown_floor = static_floor
             drawdown_test_equity = equity if drawdown_check == "eod" else min(day_low, equity)
