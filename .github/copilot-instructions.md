@@ -231,3 +231,50 @@ for fold in result.folds:
 - **Live**: `config/live_trading.example.env` (CQG/AMP template)
 - **Postmortems**: `docs/research_postmortems/` (why candidates were rejected)
 - **State**: `RESEARCH_STATE.md` (current active work), `ACTION_PLAN.md` (next steps)
+
+# Copilot Instructions for this repo
+
+## Big picture
+- This repo is an NQ futures research/backtest engine, not a generic trading app. The core flow is: raw 1m futures bars -> continuous-contract selection -> point-in-time feature generation -> signal extraction -> portfolio execution -> validation artifacts.
+- The central orchestrator is `main_backtest.py`; the reusable logic lives under `backtest/`, and thin CLIs live under `scripts/`.
+- `config/backtest_config.py` is the source of truth for strategy defaults, candidate overrides, execution assumptions, and research gates. Most new strategy parameters belong there, not in script code.
+- `backtest/engine.py` assembles the pipeline: `BacktestEngine` combines execution, indicators, and signal mixins and applies feature filters with `mask_columns_before_clock()` and other point-in-time guards.
+
+## Key architecture patterns
+- Data selection is intentionally contract-aware: `select_continuous_outright_contract()` in `main_backtest.py` chooses the appropriate NQ outright symbol by prior-session volume to avoid future leakage from rolling contracts.
+- Feature modules are modular (`auction_context.py`, `market_memory.py`, `markov_regime.py`, `options_flow.py`, `market_profile.py`, etc.) and are designed to be swap-in/out without changing the strategy loop.
+- Live/paper execution is a separate path: `backtest/live*.py`, `backtest/live_feeds.py`, `backtest/live_brokers.py`, `backtest/live_prop_rules.py` implement replay + audit flows, not the historical backtest path.
+- Execution realism is treated as first-class: slippage/commissions are configured in `FUTURES_SPECS`, and TBBO execution artifacts are for auditing cost assumptions rather than mining alpha.
+
+## Project-specific conventions
+- Treat all signal features as point-in-time and leakage-safe. If a feature is time-sensitive, it must be masked before its valid clock window (`mask_columns_before_clock()` is the normal pattern).
+- Candidate rules are config-driven. Prefer adding new candidate parameters in `config/backtest_config.py` and hooking them through `BacktestEngine.get_signal_param()` / `is_signal_direction_enabled()` instead of branching in scripts.
+- Research artifacts are saved under `results/runs/<label>/` and must be validated via audit/check scripts instead of trusting eyeballing or an isolated backtest printout.
+- Keep reusable logic in `backtest/`; keep one-off CLI experiments in `scripts/`.
+
+## Validation and anti-overfit workflow
+- The repo has a strict anti-overfit culture: walk-forward, discipline gates, and frozen candidate checks are expected before promoting a strategy.
+- Use the freeze gate before any lockbox/forward run: `python3 scripts/check_research_freeze.py --manifest config/research_freeze.json --print-command`.
+- After a saved run, verify artifacts with the repo’s audit tooling, e.g. `scripts/audit_bar_exposure.py`, `scripts/check_research_discipline.py`, `scripts/check_prop_research_gate.py`, and `scripts/check_research_protocol.py`.
+- `research/development_report.csv` / `.md`, `optimization_stability.csv`, and `research_discipline_gate.csv` are not optional decoration; they are part of the evidence pipeline.
+
+## Developer workflows
+- List available candidates: `python3 main_backtest.py --list-candidates`.
+- Run a candidate: `caffeinate -dimsu python3 main_backtest.py --candidate mr_long_only`.
+- Replay paper execution: `python3 scripts/run_paper_trader.py --candidate <candidate_name> --start 2024-01-01 --end 2024-01-31 --warmup-bars 2500`.
+- AMP/CQG dry-run: `python3 scripts/run_amp_paper_trader.py --feed replay --broker audit --candidate <candidate_name> --start 2024-01-01 --end 2024-01-31 --warmup-bars 2500`.
+- Build options-flow features: `python3 scripts/build_options_flow_features.py --min-dte 0 --max-dte 120 --strike-window-points 600`.
+- Build TBBO execution stats: `python3 scripts/build_tbbo_execution_stats.py --source /path/to/archive.zip --max-files 1 --rows-per-file 50000`.
+
+## Working style for this repo
+- Prefer adding a reusable feature or engine hook over a special-case branch in a script.
+- When touching strategy behavior, inspect the existing config and feature modules before changing execution logic; this repo patches research logic in a modular, parameter-driven way.
+- Don’t treat TBBO as signal data; it is for execution realism and fill-cost audits.
+- Don’t treat options-flow or other feature datasets as “free” context; their valid usage is specific, time-bounded, and documented by the feature modules and configs.
+
+## Good examples to follow
+- `main_backtest.py`: orchestration and contract selection.
+- `backtest/engine.py`: model assembly and point-in-time filtering.
+- `config/backtest_config.py`: canonical params and research controls.
+- `backtest/live.py` + `backtest/live_*.py`: broker-neutral live/paper execution path.
+- `scripts/check_research_*` and `scripts/audit_*`: the repo’s preferred artifact-validation flow.
