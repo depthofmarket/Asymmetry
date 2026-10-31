@@ -10,6 +10,7 @@ import com.motivewave.platform.sdk.common.Enums$Size;
 import com.motivewave.platform.sdk.common.MarkerInfo;
 import com.motivewave.platform.sdk.common.desc.BooleanDescriptor;
 import com.motivewave.platform.sdk.common.desc.DoubleDescriptor;
+import com.motivewave.platform.sdk.common.desc.IntegerDescriptor;
 import com.motivewave.platform.sdk.common.desc.SettingGroup;
 import com.motivewave.platform.sdk.common.desc.SettingTab;
 import com.motivewave.platform.sdk.common.desc.SettingsDescriptor;
@@ -34,8 +35,8 @@ import java.util.Set;
 @StudyHeader(
     namespace = "com.motivewave.platform.study.custom",
     id = "VA_BREAKOUT_ALGO_V2",
-    name = "VA Breakout Algo (v2.0)",
-    desc = "09:45 ET Breakout outside Prior Day Value Area with $250 Volatility Risk Budgeting, 1.5x R:R Target, and 10:00 AM News Guard",
+    name = "Lucid 25K — 1. Morning VA Breakout (09:45 ET)",
+    desc = "09:45 ET Breakout outside Prior Day Value Area with $250 Volatility Risk Budgeting, 1.5x R:R Target, 10:00 AM News Guard, and Live Non-Repainting Trade Tracker",
     menu = "Custom",
     overlay = true,
     signals = true
@@ -50,6 +51,7 @@ public class LucidMorningVABreakoutStudy extends Study {
     private static final String MAX_SHORT_CLOSE_LOC = "maxShortCloseLoc";
     private static final String REWARD_RISK_RATIO = "rewardRiskRatio";
     private static final String RISK_BUDGET_DOLLARS = "riskBudgetDollars";
+    private static final String RATCHET_TIER_OVERRIDE = "ratchetTierOverride";
     private static final String ENABLE_10AM_NEWS_GUARD = "enable10amNewsGuard";
     private static final String ENABLE_SOUND_ALERT = "enableSoundAlert";
     private static final String SHOW_LEVEL_LINES = "showLevelLines";
@@ -65,6 +67,24 @@ public class LucidMorningVABreakoutStudy extends Study {
     private final Map<LocalDate, SessionProfile> profilesByDate = new HashMap<>();
     private final Map<LocalDate, OpeningRange15> orByDate = new HashMap<>();
     private final Set<LocalDate> processedDays = new HashSet<>();
+    private final Map<LocalDate, ActiveTrade> tradesByDate = new HashMap<>();
+
+    private static class ActiveTrade {
+        LocalDate date;
+        boolean isLong;
+        double entryPrice;
+        double stopPrice;
+        double targetPrice;
+        long entryTime;
+        long maxExitTime;
+        int contracts;
+        String microSym;
+        double ptVal;
+        boolean closed = false;
+        Line slLine;
+        Line tpLine;
+        Line entryLine;
+    }
 
     private static class SessionProfile {
         double rthHigh = Double.NEGATIVE_INFINITY;
@@ -148,10 +168,21 @@ public class LucidMorningVABreakoutStudy extends Study {
         boolean complete = false;
     }
 
+    private static boolean is10amNewsDay(LocalDate date) {
+        int day = date.getDayOfMonth();
+        int dow = date.getDayOfWeek().getValue(); // 1=Mon .. 7=Sun
+        if (dow == 3 && day <= 7) return true; // ISM Services (1st Wed)
+        if (dow == 2 && day >= 24) return true; // CB Consumer Confidence (last Tue)
+        if (dow == 5 && ((day >= 8 && day <= 14) || (day >= 22 && day <= 28))) return true; // UMich (2nd/4th Fri)
+        if (day <= 3 && dow <= 4) return true; // ISM Mfg (1st business day)
+        if ((day >= 3 && day <= 5) && (dow >= 1 && dow <= 3)) return true; // JOLTS (1st business Wed)
+        return false;
+    }
+
     @Override
     public void initialize(Defaults defaults) {
         SettingsDescriptor sd = createSD();
-        SettingTab tab = sd.addTab("VA Breakout Algo (v2.0)");
+        SettingTab tab = sd.addTab("Lucid 25K VA Breakout (09:45)");
         SettingGroup group = tab.addGroup("Breakout & Risk Management");
 
         group.addRow(new DoubleDescriptor(MIN_RETURN_PCT, "Min 15m Return (0.10% = 0.0010)", 0.0010, 0.0001, 0.0050, 0.0001));
@@ -159,16 +190,17 @@ public class LucidMorningVABreakoutStudy extends Study {
         group.addRow(new DoubleDescriptor(MAX_SHORT_CLOSE_LOC, "Max Short Close Location (0.35)", 0.35, 0.05, 0.50, 0.05));
         group.addRow(new DoubleDescriptor(REWARD_RISK_RATIO, "Target Reward / Risk Ratio (1.50x)", 1.5, 0.5, 3.0, 0.1));
         group.addRow(new DoubleDescriptor(RISK_BUDGET_DOLLARS, "Risk Budget / Trade ($250 for Lucid 25K)", 250.0, 50.0, 500.0, 10.0));
-        group.addRow(new BooleanDescriptor(ENABLE_10AM_NEWS_GUARD, "Show 10:00 AM News Guard Warning", true));
+        group.addRow(new IntegerDescriptor(RATCHET_TIER_OVERRIDE, "Ratchet Sizing Override (0=Auto, 2/3/4 Micros)", 0, 0, 4, 1));
+        group.addRow(new BooleanDescriptor(ENABLE_10AM_NEWS_GUARD, "Enable 10:00 AM News Guard Flatten", true));
         group.addRow(new BooleanDescriptor(ENABLE_SOUND_ALERT, "Enable Sound Alert & Notification", true));
-        group.addRow(new BooleanDescriptor(SHOW_LEVEL_LINES, "Show SL / TP / 10:15 Exit Lines", true));
-        group.addRow(new BooleanDescriptor(SHOW_NO_SETUP_MARKER, "Show 'No Setup' Marker at 09:45", true));
+        group.addRow(new BooleanDescriptor(SHOW_LEVEL_LINES, "Show SL / TP / Entry / Time Exit Lines", true));
+        group.addRow(new BooleanDescriptor(SHOW_NO_SETUP_MARKER, "Show 'No Setup' Reason Marker at 09:45", true));
 
         setSettingsDescriptor(sd);
 
         RuntimeDescriptor rd = createRD();
-        rd.declareSignal(SIGNAL_BUY, "VA Breakout Buy (v2.0)");
-        rd.declareSignal(SIGNAL_SELL, "VA Breakout Sell (v2.0)");
+        rd.declareSignal(SIGNAL_BUY, "VA Breakout Buy (09:45 ET)");
+        rd.declareSignal(SIGNAL_SELL, "VA Breakout Sell (09:45 ET)");
         setRuntimeDescriptor(rd);
     }
 
@@ -183,6 +215,7 @@ public class LucidMorningVABreakoutStudy extends Study {
             profilesByDate.clear();
             orByDate.clear();
             processedDays.clear();
+            tradesByDate.clear();
         }
 
         long barStartTime = series.getStartTime(index);
@@ -215,7 +248,7 @@ public class LucidMorningVABreakoutStudy extends Study {
             }
         }
 
-        // 2. Track 09:30 - 09:44 Opening Range (compatible with 1m, 3m, 5m, 15m)
+        // 2. Track 09:30 - 09:44 Opening Range
         if (hour == 9 && min == 30) {
             OpeningRange15 or = orByDate.computeIfAbsent(today, d -> new OpeningRange15());
             or.open930 = open;
@@ -230,187 +263,310 @@ public class LucidMorningVABreakoutStudy extends Study {
             }
             or.high15 = Double.isInfinite(or.high15) ? high : Math.max(or.high15, high);
             or.low15 = Double.isInfinite(or.low15) ? low : Math.min(or.low15, low);
-            or.close944 = close; // tracks the latest close leading up to 09:45
+            or.close944 = close;
             or.complete = true;
         }
 
         // 3. Evaluate Signal on the first bar at or after 09:45:00 ET sharp
         if (hour == 9 && min >= 45 && !processedDays.contains(today)) {
             OpeningRange15 or = orByDate.get(today);
-            if (or == null || !or.complete || Double.isNaN(or.open930)) return;
+            if (or != null && or.complete && !Double.isNaN(or.open930)) {
+                processedDays.add(today);
 
-            // Fire exactly once per session
-            processedDays.add(today);
+                LocalDate priorDay = null;
+                for (LocalDate d : profilesByDate.keySet()) {
+                    if (d.isBefore(today)) {
+                        if (priorDay == null || d.isAfter(priorDay)) {
+                            priorDay = d;
+                        }
+                    }
+                }
 
-            // Retrieve the most recent completed prior day's RTH profile
-            LocalDate priorDay = null;
-            for (LocalDate d : profilesByDate.keySet()) {
-                if (d.isBefore(today)) {
-                    if (priorDay == null || d.isAfter(priorDay)) {
-                        priorDay = d;
+                SessionProfile priorProf = (priorDay != null) ? profilesByDate.get(priorDay) : null;
+                if (priorProf != null && !priorProf.computed) {
+                    priorProf.computeValueArea(tickSize);
+                }
+
+                boolean hasPriorVA = (priorProf != null && !Double.isNaN(priorProf.vah) && !Double.isNaN(priorProf.val));
+                if (!hasPriorVA) {
+                    if (getSettings().getBoolean(SHOW_NO_SETUP_MARKER, true)) {
+                        Coordinate coord = new Coordinate(barStartTime, high + (tickSize * 4));
+                        MarkerInfo info = new MarkerInfo(Enums$MarkerType.CIRCLE, Enums$Size.MEDIUM, new Color(100, 100, 100), Color.WHITE, Color.LIGHT_GRAY, true);
+                        Marker marker = new Marker(coord, Enums$Position.TOP, info);
+                        marker.setTextValue("NO TRADE: Prior Day Profile Not Found (Load >= 2 days of chart history)");
+                        addFigure(marker);
+                    }
+                    return;
+                }
+
+                double priorVah = priorProf.vah;
+                double priorVal = priorProf.val;
+
+                double orRange = or.high15 - or.low15;
+                if (orRange > 0.0) {
+                    double retPct = (or.close944 - or.open930) / or.open930;
+                    double closeLoc = (or.close944 - or.low15) / orRange;
+
+                    double minRet = getSettings().getDouble(MIN_RETURN_PCT, 0.0010);
+                    double minLongLoc = getSettings().getDouble(MIN_LONG_CLOSE_LOC, 0.65);
+                    double maxShortLoc = getSettings().getDouble(MAX_SHORT_CLOSE_LOC, 0.35);
+                    double rrRatio = getSettings().getDouble(REWARD_RISK_RATIO, 1.5);
+                    double riskBudget = getSettings().getDouble(RISK_BUDGET_DOLLARS, 250.0);
+                    int ratchetOverride = getSettings().getInteger(RATCHET_TIER_OVERRIDE, 0);
+                    boolean newsGuard = getSettings().getBoolean(ENABLE_10AM_NEWS_GUARD, true);
+                    boolean soundAlert = getSettings().getBoolean(ENABLE_SOUND_ALERT, true);
+                    boolean showLines = getSettings().getBoolean(SHOW_LEVEL_LINES, true);
+
+                    String sym = (series.getInstrument() != null) ? series.getInstrument().getSymbol().toUpperCase() : "NQ";
+                    boolean isES = sym.contains("ES") || sym.contains("MES");
+                    double minStop = 15.0;
+                    double maxStop = isES ? 35.0 : 60.0;
+                    double ptVal = isES ? 5.00 : 2.00;
+                    String microSym = isES ? "MES" : "MNQ";
+
+                    double stopPts = Math.min(maxStop, Math.max(minStop, orRange));
+
+                    int contracts;
+                    if (ratchetOverride >= 1 && ratchetOverride <= 4) {
+                        contracts = ratchetOverride;
+                    } else {
+                        contracts = (int) Math.round(riskBudget / (stopPts * ptVal));
+                        contracts = Math.max(1, Math.min(4, contracts));
+                    }
+
+                    boolean isLong = (retPct >= minRet) && (closeLoc >= minLongLoc) && (or.close944 > priorVah);
+                    boolean isShort = (retPct <= -minRet) && (closeLoc <= maxShortLoc) && (or.close944 < priorVal);
+
+                    if (isLong || isShort) {
+                        double entryPrice = open;
+                        double stopPrice = isLong ? (entryPrice - stopPts) : (entryPrice + stopPts);
+                        double targetPts = stopPts * rrRatio;
+                        double targetPrice = isLong ? (entryPrice + targetPts) : (entryPrice - targetPts);
+                        double actualRiskDollars = stopPts * ptVal * contracts;
+                        double actualRewardDollars = targetPts * ptVal * contracts;
+
+                        long entryTime = barStartTime;                 // 09:45:00 ET
+                        long newsTime = entryTime + (15 * 60 * 1000L); // 10:00:00 ET
+                        long exitTime = entryTime + (30 * 60 * 1000L); // 10:15:00 ET
+
+                        ActiveTrade trade = new ActiveTrade();
+                        trade.date = today;
+                        trade.isLong = isLong;
+                        trade.entryPrice = entryPrice;
+                        trade.stopPrice = stopPrice;
+                        trade.targetPrice = targetPrice;
+                        trade.entryTime = entryTime;
+                        trade.maxExitTime = exitTime;
+                        trade.contracts = contracts;
+                        trade.microSym = microSym;
+                        trade.ptVal = ptVal;
+                        trade.closed = false;
+
+                        if (isLong) {
+                            Coordinate coord = new Coordinate(entryTime, low - (stopPts * 0.15));
+                            MarkerInfo info = new MarkerInfo(Enums$MarkerType.ARROW, Enums$Size.LARGE, Color.GREEN, Color.GREEN, true);
+                            Marker marker = new Marker(coord, Enums$Position.BOTTOM, info);
+                            marker.setTextValue(String.format("BUY %dx %s @ %.2f | SL: %.2f (-$%.0f) | TP: %.2f (+$%.0f, 1.5R) | MAX: 10:15",
+                                contracts, microSym, entryPrice, stopPrice, actualRiskDollars, targetPrice, actualRewardDollars));
+                            addFigure(marker);
+
+                            if (showLines) {
+                                Line slLine = new Line(entryTime, stopPrice, exitTime, stopPrice);
+                                slLine.setColor(Color.RED);
+                                slLine.setText(String.format("STOP LOSS: %.2f (-$%.0f)", stopPrice, actualRiskDollars), LINE_FONT);
+                                addFigure(slLine);
+                                trade.slLine = slLine;
+
+                                Line tpLine = new Line(entryTime, targetPrice, exitTime, targetPrice);
+                                tpLine.setColor(Color.GREEN);
+                                tpLine.setText(String.format("PROFIT TARGET 1.5R: %.2f (+$%.0f)", targetPrice, actualRewardDollars), LINE_FONT);
+                                addFigure(tpLine);
+                                trade.tpLine = tpLine;
+
+                                Line entryLine = new Line(entryTime, entryPrice, exitTime, entryPrice);
+                                entryLine.setColor(Color.WHITE);
+                                entryLine.setText(String.format("ENTRY: %.2f (%dx %s)", entryPrice, contracts, microSym), LINE_FONT);
+                                addFigure(entryLine);
+                                trade.entryLine = entryLine;
+
+                                if (newsGuard && is10amNewsDay(today)) {
+                                    Line newsLine = new Line(newsTime, stopPrice, newsTime, targetPrice);
+                                    newsLine.setColor(Color.ORANGE);
+                                    newsLine.setText("10:00 AM NEWS GUARD: Flatten @ 09:59 if Red-Folder Data", LINE_FONT);
+                                    addFigure(newsLine);
+                                }
+
+                                Line exitLine = new Line(exitTime, stopPrice, exitTime, targetPrice);
+                                exitLine.setColor(Color.CYAN);
+                                exitLine.setText("10:15 MAX TIME EXIT", LINE_FONT);
+                                addFigure(exitLine);
+                            }
+
+                            ctx.signal(index, SIGNAL_BUY, String.format("VA BREAKOUT BUY %dx %s @ %.2f (SL: %.2f, TP: %.2f)", contracts, microSym, entryPrice, stopPrice, targetPrice), entryPrice);
+                        } else {
+                            Coordinate coord = new Coordinate(entryTime, high + (stopPts * 0.15));
+                            MarkerInfo info = new MarkerInfo(Enums$MarkerType.ARROW, Enums$Size.LARGE, Color.RED, Color.RED, true);
+                            Marker marker = new Marker(coord, Enums$Position.TOP, info);
+                            marker.setTextValue(String.format("SELL %dx %s @ %.2f | SL: %.2f (-$%.0f) | TP: %.2f (+$%.0f, 1.5R) | MAX: 10:15",
+                                contracts, microSym, entryPrice, stopPrice, actualRiskDollars, targetPrice, actualRewardDollars));
+                            addFigure(marker);
+
+                            if (showLines) {
+                                Line slLine = new Line(entryTime, stopPrice, exitTime, stopPrice);
+                                slLine.setColor(Color.RED);
+                                slLine.setText(String.format("STOP LOSS: %.2f (-$%.0f)", stopPrice, actualRiskDollars), LINE_FONT);
+                                addFigure(slLine);
+                                trade.slLine = slLine;
+
+                                Line tpLine = new Line(entryTime, targetPrice, exitTime, targetPrice);
+                                tpLine.setColor(Color.GREEN);
+                                tpLine.setText(String.format("PROFIT TARGET 1.5R: %.2f (+$%.0f)", targetPrice, actualRewardDollars), LINE_FONT);
+                                addFigure(tpLine);
+                                trade.tpLine = tpLine;
+
+                                Line entryLine = new Line(entryTime, entryPrice, exitTime, entryPrice);
+                                entryLine.setColor(Color.WHITE);
+                                entryLine.setText(String.format("ENTRY: %.2f (%dx %s)", entryPrice, contracts, microSym), LINE_FONT);
+                                addFigure(entryLine);
+                                trade.entryLine = entryLine;
+
+                                if (newsGuard && is10amNewsDay(today)) {
+                                    Line newsLine = new Line(newsTime, stopPrice, newsTime, targetPrice);
+                                    newsLine.setColor(Color.ORANGE);
+                                    newsLine.setText("10:00 AM NEWS GUARD: Flatten @ 09:59 if Red-Folder Data", LINE_FONT);
+                                    addFigure(newsLine);
+                                }
+
+                                Line exitLine = new Line(exitTime, targetPrice, exitTime, stopPrice);
+                                exitLine.setColor(Color.CYAN);
+                                exitLine.setText("10:15 MAX TIME EXIT", LINE_FONT);
+                                addFigure(exitLine);
+                            }
+
+                            ctx.signal(index, SIGNAL_SELL, String.format("VA BREAKOUT SELL %dx %s @ %.2f (SL: %.2f, TP: %.2f)", contracts, microSym, entryPrice, stopPrice, targetPrice), entryPrice);
+                        }
+
+                        tradesByDate.put(today, trade);
+
+                        if (soundAlert) {
+                            Toolkit.getDefaultToolkit().beep();
+                        }
+                    } else if (getSettings().getBoolean(SHOW_NO_SETUP_MARKER, true)) {
+                        StringBuilder reason = new StringBuilder("NO TRADE: ");
+                        if (or.close944 <= priorVah && or.close944 >= priorVal) {
+                            reason.append(String.format("Inside Prior VA [VAL: %.2f | VAH: %.2f | Close: %.2f]", priorVal, priorVah, or.close944));
+                        } else if (Math.abs(retPct) < minRet) {
+                            reason.append(String.format("Weak Momentum (Return: %+.2f%% vs req +/-%.2f%%)", retPct * 100.0, minRet * 100.0));
+                        } else if (retPct > 0 && closeLoc < minLongLoc) {
+                            reason.append(String.format("Upper Wick Reject (CloseLoc: %.2f vs req >= %.2f)", closeLoc, minLongLoc));
+                        } else if (retPct < 0 && closeLoc > maxShortLoc) {
+                            reason.append(String.format("Lower Wick Reject (CloseLoc: %.2f vs req <= %.2f)", closeLoc, maxShortLoc));
+                        } else {
+                            reason.append("Breakout acceptance criteria not met");
+                        }
+
+                        Coordinate coord = new Coordinate(barStartTime, high + (tickSize * 4));
+                        MarkerInfo info = new MarkerInfo(Enums$MarkerType.CIRCLE, Enums$Size.MEDIUM, new Color(100, 100, 100), Color.WHITE, Color.LIGHT_GRAY, true);
+                        Marker marker = new Marker(coord, Enums$Position.TOP, info);
+                        marker.setTextValue(reason.toString());
+                        addFigure(marker);
                     }
                 }
             }
+        }
 
-            SessionProfile priorProf = (priorDay != null) ? profilesByDate.get(priorDay) : null;
-            if (priorProf != null && !priorProf.computed) {
-                priorProf.computeValueArea(tickSize);
-            }
-
-            boolean hasPriorVA = (priorProf != null && !Double.isNaN(priorProf.vah) && !Double.isNaN(priorProf.val));
-            if (!hasPriorVA) {
-                if (getSettings().getBoolean(SHOW_NO_SETUP_MARKER, true)) {
-                    Coordinate coord = new Coordinate(barStartTime, high + (tickSize * 4));
-                    MarkerInfo info = new MarkerInfo(Enums$MarkerType.CIRCLE, Enums$Size.MEDIUM, new Color(100, 100, 100), Color.WHITE, Color.LIGHT_GRAY, true);
-                    Marker marker = new Marker(coord, Enums$Position.TOP, info);
-                    marker.setTextValue("NO TRADE: Prior Day Profile Not Found (Load >= 2 days of chart history)");
-                    addFigure(marker);
-                    info("NO TRADE: Prior Day Profile Not Found (Load >= 2 days of chart history)");
-                }
-                return;
-            }
-
-            double priorVah = priorProf.vah;
-            double priorVal = priorProf.val;
-
-            double orRange = or.high15 - or.low15;
-            if (orRange <= 0.0) return;
-
-            double retPct = (or.close944 - or.open930) / or.open930;
-            double closeLoc = (or.close944 - or.low15) / orRange;
-
-            double minRet = getSettings().getDouble(MIN_RETURN_PCT, 0.0010);
-            double minLongLoc = getSettings().getDouble(MIN_LONG_CLOSE_LOC, 0.65);
-            double maxShortLoc = getSettings().getDouble(MAX_SHORT_CLOSE_LOC, 0.35);
-            double rrRatio = getSettings().getDouble(REWARD_RISK_RATIO, 1.5);
-            double riskBudget = getSettings().getDouble(RISK_BUDGET_DOLLARS, 250.0);
+        // 4. Bar-by-Bar Active Trade Lifecycle & Outcome Tracker (Non-Repainting)
+        ActiveTrade activeTrade = tradesByDate.get(today);
+        if (activeTrade != null && !activeTrade.closed && barStartTime > activeTrade.entryTime) {
+            boolean exitTriggered = false;
+            double exitPrice = 0.0;
+            String outcomeText = "";
+            Color outcomeColor = Color.GREEN;
             boolean newsGuard = getSettings().getBoolean(ENABLE_10AM_NEWS_GUARD, true);
-            boolean soundAlert = getSettings().getBoolean(ENABLE_SOUND_ALERT, true);
-            boolean showLines = getSettings().getBoolean(SHOW_LEVEL_LINES, true);
+            boolean isNewsDay = is10amNewsDay(today);
 
-            // Instrument recognition (NQ vs ES)
-            String sym = (series.getInstrument() != null) ? series.getInstrument().getSymbol().toUpperCase() : "NQ";
-            boolean isES = sym.contains("ES") || sym.contains("MES");
-            double minStop = 15.0;
-            double maxStop = isES ? 35.0 : 60.0;
-            double ptVal = isES ? 5.00 : 2.00;
-            String microSym = isES ? "MES" : "MNQ";
-
-            // Full Opening Range Invalidation Stop (clamped between limits)
-            double stopPts = Math.min(maxStop, Math.max(minStop, orRange));
-
-            // Dynamic Volatility Risk Budgeting: $250 Dollar Risk / (Stop_Pts * Point_Val)
-            int contracts = (int) Math.round(riskBudget / (stopPts * ptVal));
-            contracts = Math.max(1, Math.min(4, contracts)); // Clamped 1 to 4 Micros
-
-            // Core Breakout Acceptance Rules
-            boolean isLong = (retPct >= minRet) && (closeLoc >= minLongLoc) && (or.close944 > priorVah);
-            boolean isShort = (retPct <= -minRet) && (closeLoc <= maxShortLoc) && (or.close944 < priorVal);
-
-            if (isLong || isShort) {
-                // Exact execution happens on the open of the 09:45 bar
-                double entryPrice = open;
-                double stopPrice = isLong ? (entryPrice - stopPts) : (entryPrice + stopPts);
-                double targetPts = stopPts * rrRatio;
-                double targetPrice = isLong ? (entryPrice + targetPts) : (entryPrice - targetPts);
-                double actualRiskDollars = stopPts * ptVal * contracts;
-                double actualRewardDollars = targetPts * ptVal * contracts;
-
-                long entryTime = barStartTime;                 // 09:45:00 ET
-                long newsTime = entryTime + (15 * 60 * 1000L); // 10:00:00 ET
-                long exitTime = entryTime + (30 * 60 * 1000L); // 10:15:00 ET
-
-                if (isLong) {
-                    Coordinate coord = new Coordinate(entryTime, low - (stopPts * 0.15));
-                    MarkerInfo info = new MarkerInfo(Enums$MarkerType.ARROW, Enums$Size.LARGE, Color.GREEN, Color.GREEN, true);
-                    Marker marker = new Marker(coord, Enums$Position.BOTTOM, info);
-                    marker.setTextValue(String.format("BUY %dx %s @ %.2f | SL: %.2f (-$%.0f) | TP: %.2f (+$%.0f, 1.5R) | NEWS EXIT: 09:59 | MAX: 10:15",
-                        contracts, microSym, entryPrice, stopPrice, actualRiskDollars, targetPrice, actualRewardDollars));
-                    addFigure(marker);
-
-                    if (showLines) {
-                        Line slLine = new Line(entryTime, stopPrice, exitTime, stopPrice);
-                        slLine.setColor(Color.RED);
-                        slLine.setText(String.format("STOP LOSS: %.2f (-$%.0f)", stopPrice, actualRiskDollars), LINE_FONT);
-                        addFigure(slLine);
-
-                        Line tpLine = new Line(entryTime, targetPrice, exitTime, targetPrice);
-                        tpLine.setColor(Color.GREEN);
-                        tpLine.setText(String.format("PROFIT TARGET 1.5R: %.2f (+$%.0f)", targetPrice, actualRewardDollars), LINE_FONT);
-                        addFigure(tpLine);
-
-                        if (newsGuard) {
-                            Line newsLine = new Line(newsTime, stopPrice, newsTime, targetPrice);
-                            newsLine.setColor(Color.ORANGE);
-                            newsLine.setText("10:00 AM NEWS GUARD: Flatten @ 09:59 if Red-Folder Data", LINE_FONT);
-                            addFigure(newsLine);
-                        }
-
-                        Line exitLine = new Line(exitTime, stopPrice, exitTime, targetPrice);
-                        exitLine.setColor(Color.CYAN);
-                        exitLine.setText("10:15 MAX TIME EXIT", LINE_FONT);
-                        addFigure(exitLine);
-                    }
-
-                    ctx.signal(index, SIGNAL_BUY, String.format("VA BREAKOUT BUY %dx %s @ %.2f (SL: %.2f, TP: %.2f)", contracts, microSym, entryPrice, stopPrice, targetPrice), entryPrice);
-                } else {
-                    Coordinate coord = new Coordinate(entryTime, high + (stopPts * 0.15));
-                    MarkerInfo info = new MarkerInfo(Enums$MarkerType.ARROW, Enums$Size.LARGE, Color.RED, Color.RED, true);
-                    Marker marker = new Marker(coord, Enums$Position.TOP, info);
-                    marker.setTextValue(String.format("SELL %dx %s @ %.2f | SL: %.2f (-$%.0f) | TP: %.2f (+$%.0f, 1.5R) | NEWS EXIT: 09:59 | MAX: 10:15",
-                        contracts, microSym, entryPrice, stopPrice, actualRiskDollars, targetPrice, actualRewardDollars));
-                    addFigure(marker);
-
-                    if (showLines) {
-                        Line slLine = new Line(entryTime, stopPrice, exitTime, stopPrice);
-                        slLine.setColor(Color.RED);
-                        slLine.setText(String.format("STOP LOSS: %.2f (-$%.0f)", stopPrice, actualRiskDollars), LINE_FONT);
-                        addFigure(slLine);
-
-                        Line tpLine = new Line(entryTime, targetPrice, exitTime, targetPrice);
-                        tpLine.setColor(Color.GREEN);
-                        tpLine.setText(String.format("PROFIT TARGET 1.5R: %.2f (+$%.0f)", targetPrice, actualRewardDollars), LINE_FONT);
-                        addFigure(tpLine);
-
-                        if (newsGuard) {
-                            Line newsLine = new Line(newsTime, stopPrice, newsTime, targetPrice);
-                            newsLine.setColor(Color.ORANGE);
-                            newsLine.setText("10:00 AM NEWS GUARD: Flatten @ 09:59 if Red-Folder Data", LINE_FONT);
-                            addFigure(newsLine);
-                        }
-
-                        Line exitLine = new Line(exitTime, targetPrice, exitTime, stopPrice);
-                        exitLine.setColor(Color.CYAN);
-                        exitLine.setText("10:15 MAX TIME EXIT", LINE_FONT);
-                        addFigure(exitLine);
-                    }
-
-                    ctx.signal(index, SIGNAL_SELL, String.format("VA BREAKOUT SELL %dx %s @ %.2f (SL: %.2f, TP: %.2f)", contracts, microSym, entryPrice, stopPrice, targetPrice), entryPrice);
+            if (activeTrade.isLong) {
+                if (high >= activeTrade.targetPrice) {
+                    exitTriggered = true;
+                    exitPrice = activeTrade.targetPrice;
+                    double pts = exitPrice - activeTrade.entryPrice;
+                    double netDollars = pts * activeTrade.ptVal * activeTrade.contracts;
+                    outcomeText = String.format("TARGET HIT 1.5R: %.2f (+%.2f pts | +$%.2f) @ %02d:%02d",
+                        exitPrice, pts, netDollars, hour, min);
+                    outcomeColor = Color.GREEN;
+                } else if (low <= activeTrade.stopPrice) {
+                    exitTriggered = true;
+                    exitPrice = activeTrade.stopPrice;
+                    double pts = exitPrice - activeTrade.entryPrice;
+                    double netDollars = pts * activeTrade.ptVal * activeTrade.contracts;
+                    outcomeText = String.format("STOPPED OUT: %.2f (%.2f pts | -$%.2f) @ %02d:%02d",
+                        exitPrice, pts, Math.abs(netDollars), hour, min);
+                    outcomeColor = Color.RED;
+                } else if (newsGuard && isNewsDay && (hour == 9 && min >= 59)) {
+                    exitTriggered = true;
+                    exitPrice = close;
+                    double pts = exitPrice - activeTrade.entryPrice;
+                    double netDollars = pts * activeTrade.ptVal * activeTrade.contracts;
+                    outcomeText = String.format("NEWS FLATTEN (09:59): %.2f (%+.2f pts | %+$%.2f)",
+                        exitPrice, pts, netDollars);
+                    outcomeColor = Color.ORANGE;
+                } else if (barStartTime >= activeTrade.maxExitTime || (hour == 10 && min >= 15)) {
+                    exitTriggered = true;
+                    exitPrice = close;
+                    double pts = exitPrice - activeTrade.entryPrice;
+                    double netDollars = pts * activeTrade.ptVal * activeTrade.contracts;
+                    outcomeText = String.format("TIME EXIT (10:15): %.2f (%+.2f pts | %+$%.2f)",
+                        exitPrice, pts, netDollars);
+                    outcomeColor = Color.CYAN;
                 }
-
-                if (soundAlert) {
-                    Toolkit.getDefaultToolkit().beep();
+            } else { // Short trade
+                if (low <= activeTrade.targetPrice) {
+                    exitTriggered = true;
+                    exitPrice = activeTrade.targetPrice;
+                    double pts = activeTrade.entryPrice - exitPrice;
+                    double netDollars = pts * activeTrade.ptVal * activeTrade.contracts;
+                    outcomeText = String.format("TARGET HIT 1.5R: %.2f (+%.2f pts | +$%.2f) @ %02d:%02d",
+                        exitPrice, pts, netDollars, hour, min);
+                    outcomeColor = Color.GREEN;
+                } else if (high >= activeTrade.stopPrice) {
+                    exitTriggered = true;
+                    exitPrice = activeTrade.stopPrice;
+                    double pts = activeTrade.entryPrice - exitPrice;
+                    double netDollars = pts * activeTrade.ptVal * activeTrade.contracts;
+                    outcomeText = String.format("STOPPED OUT: %.2f (-%.2f pts | -$%.2f) @ %02d:%02d",
+                        exitPrice, pts, Math.abs(netDollars), hour, min);
+                    outcomeColor = Color.RED;
+                } else if (newsGuard && isNewsDay && (hour == 9 && min >= 59)) {
+                    exitTriggered = true;
+                    exitPrice = close;
+                    double pts = activeTrade.entryPrice - exitPrice;
+                    double netDollars = pts * activeTrade.ptVal * activeTrade.contracts;
+                    outcomeText = String.format("NEWS FLATTEN (09:59): %.2f (%+.2f pts | %+$%.2f)",
+                        exitPrice, pts, netDollars);
+                    outcomeColor = Color.ORANGE;
+                } else if (barStartTime >= activeTrade.maxExitTime || (hour == 10 && min >= 15)) {
+                    exitTriggered = true;
+                    exitPrice = close;
+                    double pts = activeTrade.entryPrice - exitPrice;
+                    double netDollars = pts * activeTrade.ptVal * activeTrade.contracts;
+                    outcomeText = String.format("TIME EXIT (10:15): %.2f (%+.2f pts | %+$%.2f)",
+                        exitPrice, pts, netDollars);
+                    outcomeColor = Color.CYAN;
                 }
-            } else if (getSettings().getBoolean(SHOW_NO_SETUP_MARKER, true)) {
-                StringBuilder reason = new StringBuilder("NO TRADE: ");
-                if (or.close944 <= priorVah && or.close944 >= priorVal) {
-                    reason.append(String.format("Inside Prior VA [VAL: %.2f | VAH: %.2f | Close: %.2f]", priorVal, priorVah, or.close944));
-                } else if (Math.abs(retPct) < minRet) {
-                    reason.append(String.format("Weak Momentum (Return: %+.2f%% vs req +/-%.2f%%)", retPct * 100.0, minRet * 100.0));
-                } else if (retPct > 0 && closeLoc < minLongLoc) {
-                    reason.append(String.format("Upper Wick Reject (CloseLoc: %.2f vs req >= %.2f)", closeLoc, minLongLoc));
-                } else if (retPct < 0 && closeLoc > maxShortLoc) {
-                    reason.append(String.format("Lower Wick Reject (CloseLoc: %.2f vs req <= %.2f)", closeLoc, maxShortLoc));
-                } else {
-                    reason.append("Breakout acceptance criteria not met");
-                }
+            }
 
-                Coordinate coord = new Coordinate(barStartTime, high + (tickSize * 4));
-                MarkerInfo info = new MarkerInfo(Enums$MarkerType.CIRCLE, Enums$Size.MEDIUM, new Color(100, 100, 100), Color.WHITE, Color.LIGHT_GRAY, true);
-                Marker marker = new Marker(coord, Enums$Position.TOP, info);
-                marker.setTextValue(reason.toString());
+            if (exitTriggered) {
+                activeTrade.closed = true;
+                if (activeTrade.slLine != null) activeTrade.slLine.setEnd(barStartTime, activeTrade.stopPrice);
+                if (activeTrade.tpLine != null) activeTrade.tpLine.setEnd(barStartTime, activeTrade.targetPrice);
+                if (activeTrade.entryLine != null) activeTrade.entryLine.setEnd(barStartTime, activeTrade.entryPrice);
+
+                double markerY = activeTrade.isLong ? (exitPrice + (tickSize * 6)) : (exitPrice - (tickSize * 6));
+                Coordinate coord = new Coordinate(barStartTime, markerY);
+                MarkerInfo info = new MarkerInfo(Enums$MarkerType.CIRCLE, Enums$Size.LARGE, outcomeColor, outcomeColor, true);
+                Marker marker = new Marker(coord, activeTrade.isLong ? Enums$Position.TOP : Enums$Position.BOTTOM, info);
+                marker.setTextValue(outcomeText);
                 addFigure(marker);
-                info(reason.toString());
             }
         }
     }
