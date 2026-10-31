@@ -18,10 +18,12 @@ Monitors live morning bars (via Yahoo Finance 1m stream + local CQG fallback) an
 from __future__ import annotations
 
 import argparse
+import io
 import subprocess
 import sys
 import time
 from datetime import datetime
+from io import StringIO
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -71,16 +73,57 @@ def send_macos_alert(title: str, subtitle: str, message: str, speak_text: str | 
             pass
 
 
-def load_bars_with_local_fallback(yf_ticker: str, local_parquet: Path) -> pd.DataFrame:
+def load_bars_with_local_fallback(
+    yf_ticker: str,
+    local_parquet: Path,
+    cqg_csv: Path | None = None,
+    prefer_cqg: bool = True,
+) -> pd.DataFrame:
+    """
+    Loads 1-minute intraday bars with strict feed priority:
+      1. Primary (Real-Time): MotiveWave AMP CQG CSV export (zero lag).
+      2. Secondary (Archive): Converted local Parquet dataset.
+      3. Emergency Fallback: Yahoo Finance (with explicit warning of 10-15m CME exchange delay).
+    """
+    # 1. Primary: Real-time MotiveWave CQG CSV export
+    if prefer_cqg and cqg_csv and cqg_csv.exists():
+        try:
+            res = subprocess.run(
+                ["tail", "-n", "8000", str(cqg_csv)],
+                capture_output=True,
+                text=True,
+                timeout=4,
+            )
+            if res.stdout.strip():
+                df_cqg = pd.read_csv(
+                    StringIO(res.stdout),
+                    names=["dt_str", "open", "high", "low", "close", "volume"],
+                )
+                df_cqg["time"] = pd.to_datetime(df_cqg["dt_str"], format="%d/%m/%Y %H:%M:%S", errors="coerce")
+                df_cqg = df_cqg.dropna(subset=["time"]).drop(columns=["dt_str"]).reset_index(drop=True)
+                if not df_cqg.empty:
+                    return df_cqg
+        except Exception:
+            pass
+
+    # 2. Secondary: Local Parquet archive
+    if local_parquet.exists():
+        try:
+            df_loc = pd.read_parquet(local_parquet)
+            if not df_loc.empty:
+                return df_loc.tail(8000).reset_index(drop=True)
+        except Exception:
+            pass
+
+    # 3. Emergency Fallback: Yahoo Finance
     try:
+        print(f"[DATA WARNING] Fetching {yf_ticker} from Yahoo Finance. Free CME futures data on Yahoo Finance is delayed by 10-15 minutes!")
         df = fetch_live_morning_bars(yf_ticker, period="5d")
         if not df.empty:
             return df
     except Exception:
         pass
-    if local_parquet.exists():
-        df_loc = pd.read_parquet(local_parquet)
-        return df_loc.tail(8000).reset_index(drop=True)
+
     return pd.DataFrame()
 
 
@@ -206,9 +249,21 @@ def run_evaluation_and_notify(*, speak: bool = True, auto_log: bool = True) -> d
     tier_contracts = eval_state.recommended_micros
     tier_label = eval_state.recommended_tier
 
-    bars_nq = load_bars_with_local_fallback("NQ=F", ROOT / "data/raw/nq_1m_2017_2026_cqg_et.parquet")
-    bars_es = load_bars_with_local_fallback("ES=F", ROOT / "data/raw/es_1m_2020_2026_cqg_et.parquet")
-    bars_gc = load_bars_with_local_fallback("GC=F", ROOT / "data/raw/gc_1m_2020_2026_et.parquet")
+    bars_nq = load_bars_with_local_fallback(
+        "NQ=F",
+        ROOT / "data/raw/nq_1m_2017_2026_cqg_et.parquet",
+        cqg_csv=ROOT / "data/raw/@NQ.CQG_1.csv",
+    )
+    bars_es = load_bars_with_local_fallback(
+        "ES=F",
+        ROOT / "data/raw/es_1m_2020_2026_cqg_et.parquet",
+        cqg_csv=ROOT / "data/raw/@ES.CQG_1.csv",
+    )
+    bars_gc = load_bars_with_local_fallback(
+        "GC=F",
+        ROOT / "data/raw/gc_1m_2020_2026_et.parquet",
+        cqg_csv=ROOT / "data/raw/@GC.CQG_1.csv",
+    )
     bars_vix = fetch_live_morning_bars("^VIX", period="5d")
 
     vix_chg_pct = None

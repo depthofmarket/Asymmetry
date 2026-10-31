@@ -16,8 +16,10 @@ Supports Two Non-Overlapping Institutional Windows:
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
 from datetime import datetime
+from io import StringIO
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -57,6 +59,49 @@ def fetch_live_morning_bars(ticker: str, period: str = "5d") -> pd.DataFrame:
     df = df.rename(columns=col_map)[["time", "open", "high", "low", "close", "volume"]]
     df["time"] = pd.to_datetime(df["time"]).dt.tz_localize(None)
     return df
+
+
+def load_asset_bars_priority(
+    sym: str,
+    yf_ticker: str,
+    local_parquet: Path,
+    cqg_csv: Path | None = None,
+) -> pd.DataFrame:
+    """
+    Loads intraday 1m bars prioritizing zero-delay local CQG CSV exports from MotiveWave / AMP.
+    Falls back to converted parquet archive.
+    Yahoo Finance is queried only as a tertiary emergency fallback with an explicit delay warning.
+    """
+    if cqg_csv and cqg_csv.exists():
+        try:
+            res = subprocess.run(
+                ["tail", "-n", "8000", str(cqg_csv)],
+                capture_output=True,
+                text=True,
+                timeout=4,
+            )
+            if res.stdout.strip():
+                df_cqg = pd.read_csv(
+                    StringIO(res.stdout),
+                    names=["dt_str", "open", "high", "low", "close", "volume"],
+                )
+                df_cqg["time"] = pd.to_datetime(df_cqg["dt_str"], format="%d/%m/%Y %H:%M:%S", errors="coerce")
+                df_cqg = df_cqg.dropna(subset=["time"]).drop(columns=["dt_str"]).reset_index(drop=True)
+                if not df_cqg.empty:
+                    return df_cqg
+        except Exception:
+            pass
+
+    if local_parquet.exists():
+        try:
+            df_pq = pd.read_parquet(local_parquet)
+            if not df_pq.empty:
+                return df_pq.tail(8000).reset_index(drop=True)
+        except Exception:
+            pass
+
+    print(f"[DATA WARNING] Fetching {yf_ticker} from Yahoo Finance. Free CME futures data on Yahoo Finance is delayed by 10-15 minutes!")
+    return fetch_live_morning_bars(yf_ticker, period="5d")
 
 
 def compute_prior_va_for_latest_session(
@@ -431,14 +476,29 @@ def main() -> int:
     base_contracts = eval_state.recommended_micros
     tier_label = eval_state.recommended_tier
 
-    print("Fetching live morning 1m bars for NQ, ES, GC, and VIX...")
+    print("Loading morning 1m bars (prioritizing real-time MotiveWave CQG feed)...")
     try:
-        bars_nq = fetch_live_morning_bars("NQ=F", period="5d")
-        bars_es = fetch_live_morning_bars("ES=F", period="5d")
-        bars_gc = fetch_live_morning_bars("GC=F", period="5d")
+        bars_nq = load_asset_bars_priority(
+            "NQ",
+            "NQ=F",
+            REPO_ROOT / "data/raw/nq_1m_2017_2026_cqg_et.parquet",
+            cqg_csv=REPO_ROOT / "data/raw/@NQ.CQG_1.csv",
+        )
+        bars_es = load_asset_bars_priority(
+            "ES",
+            "ES=F",
+            REPO_ROOT / "data/raw/es_1m_2020_2026_cqg_et.parquet",
+            cqg_csv=REPO_ROOT / "data/raw/@ES.CQG_1.csv",
+        )
+        bars_gc = load_asset_bars_priority(
+            "GC",
+            "GC=F",
+            REPO_ROOT / "data/raw/gc_1m_2020_2026_et.parquet",
+            cqg_csv=REPO_ROOT / "data/raw/@GC.CQG_1.csv",
+        )
         bars_vix = fetch_live_morning_bars("^VIX", period="2d")
     except Exception as exc:
-        print(f"Error fetching live data: {exc}")
+        print(f"Error loading morning data: {exc}")
         return 1
 
     vix_chg = None
