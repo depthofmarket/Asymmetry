@@ -281,11 +281,22 @@ def summarize_trades(
     max_drawdown = float(np.nanmax((peak - equity) / peak) * 100.0) if equity.size else 0.0
 
     daily_pnl = df.groupby(df["exit_time"].dt.normalize())["pnl"].sum()
+    active_trade_days = len(daily_pnl)
+    if active_trade_days > 1 and pre_df is not None and "time" in pre_df.columns and not pre_df.empty:
+        src_times = pd.to_datetime(pre_df["time"], errors="coerce").dropna()
+        hm_min = src_times.dt.hour * 60 + src_times.dt.minute
+        rth_dates = src_times.loc[(hm_min >= 9 * 60 + 30) & (hm_min <= 16 * 60)].dt.normalize().unique()
+        session_dates = pd.DatetimeIndex(sorted(rth_dates if len(rth_dates) >= 2 else src_times.dt.normalize().unique()))
+        if len(session_dates) >= 2:
+            daily_pnl = daily_pnl.reindex(session_dates.union(daily_pnl.index)).fillna(0.0).sort_index()
+    elif active_trade_days >= 2:
+        b_dates = pd.bdate_range(daily_pnl.index.min(), daily_pnl.index.max())
+        daily_pnl = daily_pnl.reindex(b_dates.union(daily_pnl.index)).fillna(0.0).sort_index()
     daily_equity = daily_pnl.cumsum() + float(starting_capital)
     daily_returns = daily_equity.pct_change().dropna()
     sharpe = (
         float(daily_returns.mean() / daily_returns.std() * np.sqrt(252))
-        if len(daily_returns) > 1 and daily_returns.std() > 0
+        if active_trade_days > 1 and len(daily_returns) > 1 and daily_returns.std() > 0
         else 0.0
     )
 
@@ -441,9 +452,12 @@ def run_walk_forward(
     start = df["time"].min().to_pydatetime()
     end = df["time"].max().to_pydatetime()
 
-    # Fold boundaries using month arithmetic via pandas offsets
+    # Fold boundaries using month arithmetic via pandas offsets.
+    # Allow up to 5 calendar days of year-end/weekend slack so a full-year slice
+    # like 2021-01-03..2024-12-31 does not drop its final 6-month H2 fold.
     t0 = pd.Timestamp(start).normalize()
     tf = pd.Timestamp(end).normalize()
+    tf_horizon = tf + pd.Timedelta(days=5)
 
     folds: list[WalkForwardFoldResult] = []
     stitched_trades: list[pd.DataFrame] = []
@@ -455,7 +469,7 @@ def run_walk_forward(
 
     estimated_folds = 0
     probe_cursor = t0 + pd.DateOffset(years=train_years)
-    while probe_cursor + pd.DateOffset(months=test_months) <= tf:
+    while probe_cursor + pd.DateOffset(months=test_months) <= tf_horizon:
         estimated_folds += 1
         probe_cursor = probe_cursor + pd.DateOffset(months=step_months)
 
@@ -469,7 +483,7 @@ def run_walk_forward(
 
     fold_idx = 0
     cursor = t0 + pd.DateOffset(years=train_years)
-    while cursor + pd.DateOffset(months=test_months) <= tf:
+    while cursor + pd.DateOffset(months=test_months) <= tf_horizon:
         planned_train_start_ts = t0 if window_mode == "anchored" else cursor - pd.DateOffset(years=train_years)
         planned_train_end_ts = cursor
         train_start = planned_train_start_ts.to_pydatetime()

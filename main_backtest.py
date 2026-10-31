@@ -195,6 +195,7 @@ def parse_args() -> argparse.Namespace:
             "volume_profile_regime",
             "market_profile_cross",
             "hybrid_profile_regime_no_orb",
+            "morning_va_breakout",
         ],
         help="Override strategy_name from config for this run.",
     )

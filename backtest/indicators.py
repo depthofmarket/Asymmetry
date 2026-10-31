@@ -13,6 +13,25 @@ from backtest.markov_regime import add_markov_regime_features
 from backtest.point_in_time import mask_columns_before_clock
 from backtest.volume_spread import add_volume_spread_features
 
+_HM_LOOKUP = np.array([f"{h:02d}:{m:02d}" for h in range(24) for m in range(60)], dtype=object)
+
+
+def _hm_to_minutes(hm: str) -> int:
+    h, m = str(hm).split(":", 1)
+    return int(h) * 60 + int(m)
+
+
+def _fast_hour_min(dt: pd.Series) -> pd.Series:
+    idx = (dt.dt.hour.to_numpy(dtype=int) * 60 + dt.dt.minute.to_numpy(dtype=int)) % 1440
+    return pd.Series(_HM_LOOKUP[idx], index=dt.index, dtype=object)
+
+
+def _fast_date_str(dt: pd.Series) -> pd.Series:
+    norm = dt.dt.normalize()
+    uniq = pd.Index(norm.dropna().unique())
+    mapping = pd.Series(uniq.strftime("%Y-%m-%d"), index=uniq)
+    return norm.map(mapping)
+
 
 class IndicatorMixin:
     """Mixin extracted from BacktestEngine — Data preprocessing, indicator computation, regime classification."""
@@ -184,10 +203,12 @@ class IndicatorMixin:
 
     def _time_mask(self, times: pd.Series, start: str, end: str) -> pd.Series:
         dt = pd.to_datetime(times)
-        hour_min = dt.dt.strftime("%H:%M")
-        if start <= end:
-            return hour_min.ge(start) & hour_min.lt(end)
-        return hour_min.ge(start) | hour_min.lt(end)
+        hm_min = dt.dt.hour * 60 + dt.dt.minute
+        s_min = _hm_to_minutes(start)
+        e_min = _hm_to_minutes(end)
+        if s_min <= e_min:
+            return hm_min.ge(s_min) & hm_min.lt(e_min)
+        return hm_min.ge(s_min) | hm_min.lt(e_min)
 
     def _vwap_session_key(self, times: pd.Series, session_mode: str) -> pd.Series:
         dt = pd.to_datetime(times)
@@ -282,15 +303,15 @@ class IndicatorMixin:
         profile_start = p.get('vp_profile_start', p.get('orb_start', '09:30'))
         profile_end = p.get('vp_profile_end', p.get('orb_end', '10:00'))
 
-        df = df_1m.copy()
-        df['time'] = pd.to_datetime(df['time'])
-        df['date_str'] = df['time'].dt.strftime('%Y-%m-%d')
-        df['hour_min'] = df['time'].dt.strftime('%H:%M')
-
-        profile_mask = (df['hour_min'] >= profile_start) & (df['hour_min'] < profile_end)
-        profile_df = df.loc[profile_mask, ['date_str', 'high', 'low', 'close', 'volume']].copy()
+        t_series = pd.to_datetime(df_1m['time'])
+        hm_min = t_series.dt.hour * 60 + t_series.dt.minute
+        s_min = _hm_to_minutes(profile_start)
+        e_min = _hm_to_minutes(profile_end)
+        profile_mask = (hm_min >= s_min) & (hm_min < e_min)
+        profile_df = df_1m.loc[profile_mask, ['high', 'low', 'close', 'volume']].copy()
         if profile_df.empty:
             return pd.DataFrame(columns=['date_str', 'vp_poc', 'vp_val', 'vp_vah', 'vp_width'])
+        profile_df['date_str'] = _fast_date_str(t_series.loc[profile_mask])
 
         typical_price = (profile_df['high'] + profile_df['low'] + profile_df['close']) / 3.0
         profile_df['price_bin'] = np.round((typical_price / tick_size)) * tick_size
@@ -309,6 +330,101 @@ class IndicatorMixin:
             })
 
         return pd.DataFrame(profile_rows)
+
+    def compute_prior_rth_and_or15_features(self, df_1m: pd.DataFrame) -> pd.DataFrame:
+        p = self.strategy_params
+        bin_size = float(p.get('prior_rth_profile_bin_size', 1.0))
+        value_area_pct = float(p.get('prior_rth_value_area_pct', p.get('vp_value_area_pct', 0.70)))
+        rth_start = str(p.get('rth_start', '09:30'))
+        rth_end = str(p.get('rth_end', '16:00'))
+        or15_end_1m = str(p.get('or15_end_1m', '09:44'))
+
+        df = df_1m[['time', 'open', 'high', 'low', 'close', 'volume']].copy()
+        df['time'] = pd.to_datetime(df['time'])
+        if not df['time'].is_monotonic_increasing or df['time'].isna().any():
+            df = df.dropna(subset=['time']).sort_values('time', kind='stable').reset_index(drop=True)
+        hm_min = df['time'].dt.hour * 60 + df['time'].dt.minute
+        rth_s_min = _hm_to_minutes(rth_start)
+        rth_e_min = _hm_to_minutes(rth_end)
+        or15_e_min = _hm_to_minutes(or15_end_1m)
+
+        rth_mask = (hm_min >= rth_s_min) & (hm_min <= rth_e_min)
+        rth = df.loc[rth_mask].copy()
+        if rth.empty:
+            return pd.DataFrame(
+                columns=[
+                    'date_str',
+                    'prior_rth_poc',
+                    'prior_rth_vah',
+                    'prior_rth_val',
+                    'prior_rth_close_1m',
+                    'or15_open',
+                    'or15_high',
+                    'or15_low',
+                    'or15_close',
+                    'or15_range_points',
+                    'or15_close_location',
+                    'first15_return_points',
+                    'first15_return_pct',
+                ]
+            )
+        rth['date_str'] = _fast_date_str(rth['time'])
+
+        from backtest.poc_rejection_signal import _compute_prior_session_profiles
+
+        prior_profiles = _compute_prior_session_profiles(
+            rth,
+            bin_size=bin_size,
+            value_area_pct=value_area_pct,
+        )
+        prior_profiles['date_str'] = pd.to_datetime(prior_profiles['session']).dt.strftime('%Y-%m-%d')
+        prior_close_by_date = rth.groupby('date_str', sort=True)['close'].last().shift(1)
+        prior_profiles['prior_rth_close_1m'] = prior_profiles['date_str'].map(prior_close_by_date)
+        prior_profiles = prior_profiles.rename(
+            columns={
+                'prior_poc': 'prior_rth_poc',
+                'prior_vah': 'prior_rth_vah',
+                'prior_val': 'prior_rth_val',
+            }
+        )[['date_str', 'prior_rth_poc', 'prior_rth_vah', 'prior_rth_val', 'prior_rth_close_1m']]
+
+        or15_mask = (hm_min >= rth_s_min) & (hm_min <= or15_e_min)
+        or15_bars = df.loc[or15_mask].copy()
+        if not or15_bars.empty:
+            or15_bars['date_str'] = _fast_date_str(or15_bars['time'])
+        if or15_bars.empty:
+            for col in (
+                'or15_open',
+                'or15_high',
+                'or15_low',
+                'or15_close',
+                'or15_range_points',
+                'or15_close_location',
+                'first15_return_points',
+                'first15_return_pct',
+            ):
+                prior_profiles[col] = np.nan
+            return prior_profiles
+
+        or15_stats = (
+            or15_bars.groupby('date_str', sort=True)
+            .agg(
+                or15_open=('open', 'first'),
+                or15_high=('high', 'max'),
+                or15_low=('low', 'min'),
+                or15_close=('close', 'last'),
+            )
+            .reset_index()
+        )
+        or15_range = (or15_stats['or15_high'] - or15_stats['or15_low']).replace(0.0, np.nan)
+        or15_stats['or15_range_points'] = or15_range
+        or15_stats['or15_close_location'] = (or15_stats['or15_close'] - or15_stats['or15_low']) / or15_range
+        or15_stats['first15_return_points'] = or15_stats['or15_close'] - or15_stats['or15_open']
+        or15_stats['first15_return_pct'] = (
+            or15_stats['first15_return_points'] / or15_stats['or15_open'].replace(0.0, np.nan)
+        )
+
+        return prior_profiles.merge(or15_stats, on='date_str', how='left')
 
 
     def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -415,8 +531,8 @@ class IndicatorMixin:
         df = self.add_market_memory(df)
 
         df['time_dt'] = pd.to_datetime(df['time'])
-        df['hour_min'] = df['time_dt'].dt.strftime('%H:%M')
-        df['date_str'] = df['time_dt'].dt.strftime('%Y-%m-%d')
+        df['hour_min'] = _fast_hour_min(df['time_dt'])
+        df['date_str'] = _fast_date_str(df['time_dt'])
         df = add_futures_auction_context(
             df,
             rth_start=str(p.get('rth_start', '09:30')),

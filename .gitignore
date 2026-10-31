@@ -9,3 +9,7 @@ results/
 .kilo/
 .venv/
 .pytest_cache/
+build/
+scratch/
+tools/
+

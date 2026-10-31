@@ -29,6 +29,8 @@ class SignalMixin:
             return self.generate_signals_market_profile_cross(df)
         if strategy_name == 'hybrid_profile_regime_no_orb':
             return self.generate_signals_hybrid_profile_regime_no_orb(df)
+        if strategy_name == 'morning_va_breakout':
+            return self.generate_signals_morning_va_breakout(df)
 
         long_trade_start = self.get_directional_param('long', 'trade_start', p.get('trade_start', '09:30'))
         long_trade_end = self.get_directional_param('long', 'trade_end', p.get('trade_end', '16:00'))
@@ -800,6 +802,130 @@ class SignalMixin:
         df.loc[mr_short, ['signal', 'signal_type']] = [-1, 'mr']
         df.loc[trend_long, ['signal', 'signal_type']] = [1, 'trend']
         df.loc[trend_short, ['signal', 'signal_type']] = [-1, 'trend']
+        return df
+
+    def generate_signals_morning_va_breakout(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Morning Outside-Value-Area Breakout + Opening Drive (H4).
+
+        Evaluates the first 15 minutes of RTH (09:30..09:44, corresponding to the
+        close of the 09:40 5-min bar) for directional expansion outside the prior
+        completed RTH session's Value Area (VAH / VAL) aligned with the overnight gap.
+        """
+        p = self.strategy_params
+        df = df.copy()
+        df['signal'] = 0
+        df['signal_type'] = ''
+
+        required_cols = {
+            'hour_min',
+            'prior_rth_vah',
+            'prior_rth_val',
+            'prior_rth_poc',
+            'or15_open',
+            'or15_high',
+            'or15_low',
+            'or15_close',
+            'or15_close_location',
+            'first15_return_pct',
+        }
+        if not required_cols.issubset(df.columns):
+            return df
+
+        allow_long = bool(p.get('allow_long', True)) and self.is_signal_direction_enabled('va_breakout', 'long')
+        allow_short = bool(p.get('allow_short', True)) and self.is_signal_direction_enabled('va_breakout', 'short')
+        if not allow_long and not allow_short:
+            return df
+
+        signal_bar_5m = str(p.get('or15_signal_bar_5m', '09:40'))
+        at_signal_bar = df['hour_min'].eq(signal_bar_5m)
+
+        min_abs_ret = float(p.get('va_breakout_min_abs_return_pct', 0.0010))
+        min_long_loc = float(p.get('va_breakout_min_long_close_location', 0.65))
+        max_short_loc = float(p.get('va_breakout_max_short_close_location', 0.35))
+        require_outside_va = bool(p.get('va_breakout_require_outside_prior_va', True))
+        require_with_gap = bool(p.get('va_breakout_require_with_gap', True))
+
+        or15_close = pd.to_numeric(df['or15_close'], errors='coerce')
+        or15_open = pd.to_numeric(df['or15_open'], errors='coerce')
+        or15_high = pd.to_numeric(df['or15_high'], errors='coerce')
+        or15_low = pd.to_numeric(df['or15_low'], errors='coerce')
+        or15_loc = pd.to_numeric(df['or15_close_location'], errors='coerce')
+        ret_pct = pd.to_numeric(df['first15_return_pct'], errors='coerce')
+        prior_vah = pd.to_numeric(df['prior_rth_vah'], errors='coerce')
+        prior_val = pd.to_numeric(df['prior_rth_val'], errors='coerce')
+        prior_poc = pd.to_numeric(df['prior_rth_poc'], errors='coerce')
+        prior_close = pd.to_numeric(
+            df.get('prior_rth_close_1m', df.get('prior_rth_close', pd.Series(np.nan, index=df.index))),
+            errors='coerce',
+        )
+
+        long_above_vah = or15_close.gt(prior_vah)
+        long_poc_break = or15_low.le(prior_poc) & or15_close.gt(prior_poc)
+        long_val_break = or15_low.le(prior_val) & or15_close.gt(prior_val)
+        long_struct_ok = long_above_vah if require_outside_va else (long_above_vah | long_poc_break | long_val_break)
+
+        short_below_val = or15_close.lt(prior_val)
+        short_poc_break = or15_high.ge(prior_poc) & or15_close.lt(prior_poc)
+        short_vah_break = or15_high.ge(prior_vah) & or15_close.lt(prior_vah)
+        short_struct_ok = short_below_val if require_outside_va else (short_below_val | short_poc_break | short_vah_break)
+
+        gap_pts = or15_open - prior_close
+        long_gap_ok = gap_pts.gt(0.0) if require_with_gap else pd.Series(True, index=df.index)
+        short_gap_ok = gap_pts.lt(0.0) if require_with_gap else pd.Series(True, index=df.index)
+
+        long_cond = (
+            allow_long
+            & at_signal_bar
+            & prior_vah.notna()
+            & ret_pct.ge(min_abs_ret)
+            & or15_loc.ge(min_long_loc)
+            & long_struct_ok
+            & long_gap_ok
+        )
+        short_cond = (
+            allow_short
+            & at_signal_bar
+            & prior_val.notna()
+            & ret_pct.le(-min_abs_ret)
+            & or15_loc.le(max_short_loc)
+            & short_struct_ok
+            & short_gap_ok
+        )
+
+        df.loc[long_cond, ['signal', 'signal_type']] = [1, 'va_breakout']
+        df.loc[short_cond & df['signal'].eq(0), ['signal', 'signal_type']] = [-1, 'va_breakout']
+
+        enable_continuation = bool(p.get('enable_morning_continuation', False))
+        if enable_continuation and allow_long:
+            date_col = 'date_str' if 'date_str' in df.columns else ('date' if 'date' in df.columns else None)
+            if date_col is None and 'time' in df.columns:
+                df['date_str'] = pd.to_datetime(df['time']).dt.strftime('%Y-%m-%d')
+                date_col = 'date_str'
+
+            if date_col is not None:
+                primary_dates = set(df.loc[long_cond, date_col])
+                if primary_dates:
+                    cont_start = str(p.get('continuation_start', '10:20'))
+                    cont_end = str(p.get('continuation_end', '12:00'))
+                    cont_buf = float(p.get('continuation_buffer_points', 1.0))
+                    req_above_vwap = bool(p.get('continuation_require_above_vwap', True))
+
+                    is_prim = df[date_col].isin(primary_dates)
+                    m1015 = df['hour_min'].le('10:15')
+                    h1015_by_date = df.loc[m1015].groupby(df[date_col])['high'].max()
+                    session_h1015 = df[date_col].map(h1015_by_date)
+
+                    in_win = df['hour_min'].ge(cont_start) & df['hour_min'].le(cont_end)
+                    vwap_ok = (df['close'] > df['vwap']) if (req_above_vwap and 'vwap' in df.columns) else True
+                    cross = (
+                        df['close'].gt(session_h1015 + cont_buf)
+                        & df['close'].shift(1).le(session_h1015.shift(1) + cont_buf)
+                    )
+                    cont_mask = is_prim & in_win & cross & vwap_ok & df['signal'].eq(0)
+                    first_idx = df[cont_mask].groupby(df[date_col]).head(1).index
+                    df.loc[first_idx, ['signal', 'signal_type']] = [1, 'va_continuation']
+
         return df
 
 

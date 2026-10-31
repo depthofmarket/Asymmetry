@@ -223,7 +223,7 @@ def _compute_prior_session_profiles(
     if rth.empty:
         return pd.DataFrame(columns=["session", "prior_poc", "prior_vah", "prior_val", "prior_range"])
 
-    session_col = rth["time"].dt.date
+    session_col = rth["time"].dt.normalize()
     rows: list[dict[str, object]] = []
     for sess, grp in rth.groupby(session_col, sort=True):
         s_high = float(grp["high"].max())
@@ -233,14 +233,14 @@ def _compute_prior_session_profiles(
         bins = np.round(typical / bin_size) * bin_size
         vol_by_price = grp.groupby(bins, sort=True)["volume"].sum()
         if vol_by_price.empty or float(vol_by_price.sum()) <= 0.0:
-            rows.append({"session": sess, "poc": np.nan, "vah": np.nan, "val": np.nan, "range": s_range})
+            rows.append({"session": sess.date(), "poc": np.nan, "vah": np.nan, "val": np.nan, "range": s_range})
             continue
         prices = vol_by_price.index.to_numpy(dtype=float)
         weights = vol_by_price.to_numpy(dtype=float)
         poc_idx = int(np.argmax(weights))
         poc = float(prices[poc_idx])
         val, vah = _value_area_two_pointer(prices, weights, value_area_pct=value_area_pct)
-        rows.append({"session": sess, "poc": poc, "vah": vah, "val": val, "range": s_range})
+        rows.append({"session": sess.date(), "poc": poc, "vah": vah, "val": val, "range": s_range})
 
     daily = pd.DataFrame(rows)
     daily["prior_poc"] = daily["poc"].shift(1)

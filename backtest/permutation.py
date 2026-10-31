@@ -118,8 +118,16 @@ def permute_ohlcv(
         raise ValueError(f"Missing required OHLCV columns: {missing}")
 
     df = data[required].copy()
-    df["time"] = pd.to_datetime(df["time"])
-    df = df.sort_values("time").drop_duplicates(subset="time", keep="first").reset_index(drop=True)
+    if not (
+        pd.api.types.is_datetime64_any_dtype(df["time"])
+        and isinstance(df.index, pd.RangeIndex)
+        and df.index.start == 0
+        and df.index.step == 1
+        and df["time"].is_monotonic_increasing
+        and df["time"].is_unique
+    ):
+        df["time"] = pd.to_datetime(df["time"])
+        df = df.sort_values("time").drop_duplicates(subset="time", keep="first").reset_index(drop=True)
 
     if len(df) < 3:
         return df
@@ -148,14 +156,12 @@ def permute_ohlcv(
     intrabar_order = rng.permutation(m)
 
     out = log_ohlc.copy()
-    for j in range(m):
-        i = start_index + 1 + j
-        open_log = out[i - 1, 3] + gaps[gap_order[j]]
-        shape = intrabar[intrabar_order[j]]
-        out[i, 0] = open_log
-        out[i, 1] = open_log + shape[0]
-        out[i, 2] = open_log + shape[1]
-        out[i, 3] = open_log + shape[2]
+    shuf_gaps = gaps[gap_order]
+    shuf_shapes = intrabar[intrabar_order]
+    out[start_index + 1 :, 3] = out[start_index, 3] + np.cumsum(shuf_gaps + shuf_shapes[:, 2])
+    out[start_index + 1 :, 0] = out[start_index : -1, 3] + shuf_gaps
+    out[start_index + 1 :, 1] = out[start_index + 1 :, 0] + shuf_shapes[:, 0]
+    out[start_index + 1 :, 2] = out[start_index + 1 :, 0] + shuf_shapes[:, 1]
 
     prices = np.exp(out)
     # Protect against any malformed source bar where high/low relationships were odd.

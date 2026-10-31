@@ -1246,6 +1246,88 @@ def _simulate_profile(
     return _attach_eval_metadata(_simulate_eval_arrays(net, low, high, rules, trade_count), rules)
 
 
+def simulate_ratchet_profile(
+    daily_paths: pd.DataFrame,
+    profile: dict[str, Any],
+    *,
+    ratchet_tiers: list[tuple[float, float]] | None = None,
+    n_sims: int = 5000,
+    seed: int = 42,
+    max_days: int | None = None,
+) -> pd.DataFrame:
+    """
+    Simulate prop firm evaluation with dynamic Anti-Martingale ratchet sizing.
+    
+    ratchet_tiers is a list of (profit_threshold, size_multiplier) tuples,
+    sorted by profit_threshold ascending.
+    Example for LucidFlex 25K:
+        ratchet_tiers=[(0.0, 0.2), (350.0, 0.3), (750.0, 0.4)]
+    - If profit < $350, multiplier = 0.2 (2 micros).
+    - If profit >= $350, multiplier = 0.3 (3 micros).
+    - If profit >= $750, multiplier = 0.4 (4 micros).
+    - If profit drops back down, multiplier steps down defensively.
+    """
+    rules = _normalize_profile(profile)
+    rng = np.random.default_rng(seed)
+    horizon = int(max_days or rules["max_trading_days"])
+    
+    if ratchet_tiers is None:
+        ratchet_tiers = [(0.0, 0.2), (350.0, 0.3), (750.0, 0.4)]
+    ratchet_tiers = sorted(ratchet_tiers, key=lambda x: x[0])
+    
+    account_size = float(rules["account_size"])
+    profit_target = float(rules["profit_target"])
+    max_drawdown = float(rules["max_drawdown"])
+    daily_loss_limit = float(rules["daily_loss_limit"])
+    drawdown_mode = str(rules["drawdown_mode"]).lower()
+    
+    net_raw, low_raw, high_raw, trade_count = _sample_daily_arrays(daily_paths, horizon, n_sims, rng)
+    
+    equity = np.full(n_sims, account_size, dtype=float)
+    eod_peak = np.full(n_sims, account_size, dtype=float)
+    status = np.zeros(n_sims, dtype=np.int8)  # 0: active/pending, 1: pass, 2: fail
+    days_taken = np.zeros(n_sims, dtype=int)
+    
+    for day_idx in range(horizon):
+        active = status == 0
+        if not active.any():
+            break
+            
+        profit_so_far = equity - account_size
+        mults = np.full(n_sims, ratchet_tiers[0][1], dtype=float)
+        for thresh, m in ratchet_tiers:
+            mults = np.where(profit_so_far >= thresh, m, mults)
+            
+        day_net = np.where(active, net_raw[:, day_idx] * mults, 0.0)
+        day_low = np.where(active, low_raw[:, day_idx] * mults, 0.0)
+        
+        intraday_breach = active & (daily_loss_limit > 0) & (day_low <= -daily_loss_limit)
+        
+        equity[active] += day_net[active]
+        days_taken[active] = day_idx + 1
+        eod_peak[active] = np.maximum(eod_peak[active], equity[active])
+        
+        if drawdown_mode in ("eod_trailing", "trailing", "trailing_eod", "eod_trailing_lock_at_initial", "eod_lock"):
+            dd_floor = eod_peak - max_drawdown
+        else:
+            dd_floor = np.full(n_sims, account_size - max_drawdown)
+            
+        fail_dd = active & (equity <= dd_floor)
+        failed = intraday_breach | fail_dd
+        status[failed] = 2
+        
+        passed = active & ~failed & ((equity - account_size) >= profit_target)
+        status[passed] = 1
+        
+    status_str = np.where(status == 1, "pass", np.where(status == 2, "fail", "timeout"))
+    return pd.DataFrame({
+        "status": status_str,
+        "days": days_taken,
+        "final_equity": equity,
+        "pnl": equity - account_size,
+    })
+
+
 def _evaluate_funded_path(daily_pnls: Any, profile: dict[str, Any]) -> dict[str, Any]:
     rules = _normalize_profile(profile)
     account_size = float(rules["account_size"])

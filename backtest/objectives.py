@@ -48,11 +48,23 @@ def bar_objective_metrics(
             "bar_exposed_observations": 0.0,
         }
 
-    bars = pre_df[["time", "close"]].copy()
-    bars["time"] = pd.to_datetime(bars["time"])
-    bars = bars.sort_values("time").drop_duplicates(subset="time", keep="first").reset_index(drop=True)
-    bar_times = bars["time"].to_numpy(dtype="datetime64[ns]")
-    close = bars["close"].astype(float).to_numpy()
+    if (
+        pd.api.types.is_datetime64_any_dtype(pre_df["time"])
+        and isinstance(pre_df.index, pd.RangeIndex)
+        and pre_df.index.start == 0
+        and pre_df.index.step == 1
+        and pre_df["time"].is_monotonic_increasing
+        and pre_df["time"].is_unique
+    ):
+        bars = pre_df
+        bar_times = bars["time"].to_numpy(dtype="datetime64[ns]", copy=False)
+        close = bars["close"].to_numpy(dtype=float, copy=False)
+    else:
+        bars = pre_df[["time", "close"]].copy()
+        bars["time"] = pd.to_datetime(bars["time"])
+        bars = bars.sort_values("time").drop_duplicates(subset="time", keep="first").reset_index(drop=True)
+        bar_times = bars["time"].to_numpy(dtype="datetime64[ns]")
+        close = bars["close"].astype(float).to_numpy()
 
     position_contracts = np.zeros(len(bars), dtype=float)
     trades = trades_df.copy()
@@ -180,11 +192,23 @@ def regime_weighted_bar_metrics(
     if base.get("bar_observations", 0) < 3:
         return {f"regime_{k}": v for k, v in base.items()}
 
-    bars = pre_df[["time", "close"]].copy()
-    bars["time"] = pd.to_datetime(bars["time"])
-    bars = bars.sort_values("time").drop_duplicates(subset="time", keep="first").reset_index(drop=True)
-    bar_times = bars["time"].to_numpy(dtype="datetime64[ns]")
-    close = bars["close"].astype(float).to_numpy()
+    if (
+        pd.api.types.is_datetime64_any_dtype(pre_df["time"])
+        and isinstance(pre_df.index, pd.RangeIndex)
+        and pre_df.index.start == 0
+        and pre_df.index.step == 1
+        and pre_df["time"].is_monotonic_increasing
+        and pre_df["time"].is_unique
+    ):
+        bars = pre_df
+        bar_times = bars["time"].to_numpy(dtype="datetime64[ns]", copy=False)
+        close = bars["close"].to_numpy(dtype=float, copy=False)
+    else:
+        bars = pre_df[["time", "close"]].copy()
+        bars["time"] = pd.to_datetime(bars["time"])
+        bars = bars.sort_values("time").drop_duplicates(subset="time", keep="first").reset_index(drop=True)
+        bar_times = bars["time"].to_numpy(dtype="datetime64[ns]")
+        close = bars["close"].astype(float).to_numpy()
 
     position_contracts = np.zeros(len(bars), dtype=float)
     trades = trades_df.copy()
@@ -282,11 +306,23 @@ def volatility_weighted_bar_metrics(
     if base.get("bar_observations", 0) < 3:
         return {f"vol_{k}": v for k, v in base.items()}
 
-    bars = pre_df[["time", "close"]].copy()
-    bars["time"] = pd.to_datetime(bars["time"])
-    bars = bars.sort_values("time").drop_duplicates(subset="time", keep="first").reset_index(drop=True)
-    bar_times = bars["time"].to_numpy(dtype="datetime64[ns]")
-    close = bars["close"].astype(float).to_numpy()
+    if (
+        pd.api.types.is_datetime64_any_dtype(pre_df["time"])
+        and isinstance(pre_df.index, pd.RangeIndex)
+        and pre_df.index.start == 0
+        and pre_df.index.step == 1
+        and pre_df["time"].is_monotonic_increasing
+        and pre_df["time"].is_unique
+    ):
+        bars = pre_df
+        bar_times = bars["time"].to_numpy(dtype="datetime64[ns]", copy=False)
+        close = bars["close"].to_numpy(dtype=float, copy=False)
+    else:
+        bars = pre_df[["time", "close"]].copy()
+        bars["time"] = pd.to_datetime(bars["time"])
+        bars = bars.sort_values("time").drop_duplicates(subset="time", keep="first").reset_index(drop=True)
+        bar_times = bars["time"].to_numpy(dtype="datetime64[ns]")
+        close = bars["close"].astype(float).to_numpy()
 
     position_contracts = np.zeros(len(bars), dtype=float)
     trades = trades_df.copy()

@@ -14,6 +14,16 @@ FUTURES_SPECS = {
     'slippage_limit_points': 0.75,
 }
 
+# ES Futures Specifications (S&P 500 E-mini)
+ES_FUTURES_SPECS = {
+    'symbol': 'ES',
+    'contract_value': 50.0,
+    'commission_per_round_trip': 3.50,
+    'slippage_points': 0.25,
+    'slippage_stop_points': 0.50,
+    'slippage_limit_points': 0.25,
+}
+
 EXECUTION_COST_EVIDENCE = {
     'assumption_version': 'l2_topbook_20260531',
     'recommendation_path': (
@@ -1616,6 +1626,274 @@ MICROSTRUCTURE_EXECUTION_FIRST_CANDIDATES = {
 }
 CANDIDATE_CONFIGS.update(MICROSTRUCTURE_EXECUTION_FIRST_CANDIDATES)
 
+# === Morning Value-Area & Opening Drive Breakout candidates (H4) ===
+#
+# Pre-registered in docs/research_hypotheses/2026-10-22_morning_value_area_breakout_h4.md
+# and validated through the pre-candidate signal gate (2021-2024 dev sample):
+# - 30m active_ic = +0.1708, +9.43 pts net after 1.50pt cost (Long + Short, N=238),
+#   clock-matched placebo edge +11.35 pts (p = 0.002), 81.25% positive quarters.
+# - Long-only subset (N=140): +12.55 pts net after 1.50pt cost, 64.3% hit rate,
+#   positive in all 4 calendar years (2021..2024), placebo edge +14.59 pts (p = 0.004),
+#   and survives 4.25pt stress execution cost on both fixed 30m and OR15 barrier exits.
+MORNING_VA_BREAKOUT_CANDIDATES = {
+    'morning_va_breakout_with_gap': make_candidate(
+        strategy_name='morning_va_breakout',
+        allow_long=True,
+        allow_short=True,
+        va_breakout_long_enabled=True,
+        va_breakout_short_enabled=True,
+        va_breakout_min_abs_return_pct=0.0010,
+        va_breakout_min_long_close_location=0.65,
+        va_breakout_max_short_close_location=0.35,
+        va_breakout_require_outside_prior_va=True,
+        va_breakout_require_with_gap=True,
+        or15_end_1m='09:44',
+        or15_signal_bar_5m='09:40',
+        or15_min_stop_points=15.0,
+        or15_max_stop_points=60.0,
+        or15_reward_risk_ratio=1.5,
+        entry_mode='next_bar_open',
+        entry_delay_bars=0,
+        exit_mode='or15_barrier',
+        max_hold_bars=6,
+        max_trades_per_day=1,
+        position_sizing_mode='fixed_contracts',
+        fixed_contracts=1,
+        max_contracts=1,
+        trail_trigger_dollars=0,
+        trail_distance_points=0.0,
+        breakeven_trigger_dollars=0,
+        target_fill_mode='trade_through',
+        target_fill_trade_through_ticks=1,
+        managed_stop_activation_mode='next_bar',
+        vsa_enabled=False,
+        hawkes_enabled=False,
+        cusum_event_enabled=False,
+        market_memory_enabled=False,
+        markov_regime_enabled=False,
+        market_structure_enabled=False,
+        options_flow_enabled=False,
+        wf_param_grid={
+            'va_breakout_min_abs_return_pct': [0.0008, 0.0010, 0.0012],
+            'max_hold_bars': [4, 5, 6],
+        },
+        wf_random_samples=9,
+        wf_selection_mode='stable',
+        wf_min_trades_train=20,
+        wf_min_trades_test=3,
+        sweep_specs=[
+            {
+                'name': 'va_breakout_return_vs_hold',
+                'metric': 'profit_factor',
+                'min_trades': 20,
+                'x_param': 'va_breakout_min_abs_return_pct',
+                'x_values': [0.0008, 0.0010, 0.0012],
+                'y_param': 'max_hold_bars',
+                'y_values': [4, 5, 6],
+            },
+        ],
+    ),
+    'morning_va_breakout_with_gap_long_only': make_candidate(
+        strategy_name='morning_va_breakout',
+        allow_long=True,
+        allow_short=False,
+        va_breakout_long_enabled=True,
+        va_breakout_short_enabled=False,
+        va_breakout_min_abs_return_pct=0.0010,
+        va_breakout_min_long_close_location=0.65,
+        va_breakout_max_short_close_location=0.35,
+        va_breakout_require_outside_prior_va=True,
+        va_breakout_require_with_gap=True,
+        or15_end_1m='09:44',
+        or15_signal_bar_5m='09:40',
+        or15_min_stop_points=15.0,
+        or15_max_stop_points=60.0,
+        or15_reward_risk_ratio=1.5,
+        entry_mode='next_bar_open',
+        entry_delay_bars=0,
+        exit_mode='or15_barrier',
+        max_hold_bars=6,
+        max_trades_per_day=1,
+        position_sizing_mode='fixed_contracts',
+        fixed_contracts=1,
+        max_contracts=1,
+        trail_trigger_dollars=0,
+        trail_distance_points=0.0,
+        breakeven_trigger_dollars=0,
+        target_fill_mode='trade_through',
+        target_fill_trade_through_ticks=1,
+        managed_stop_activation_mode='next_bar',
+        vsa_enabled=False,
+        hawkes_enabled=False,
+        cusum_event_enabled=False,
+        market_memory_enabled=False,
+        markov_regime_enabled=False,
+        market_structure_enabled=False,
+        options_flow_enabled=False,
+        wf_param_grid={
+            'va_breakout_min_abs_return_pct': [0.0008, 0.0010, 0.0012],
+            'max_hold_bars': [4, 5, 6],
+        },
+        wf_random_samples=9,
+        wf_selection_mode='stable',
+        wf_min_trades_train=20,
+        wf_min_trades_test=3,
+        sweep_specs=[
+            {
+                'name': 'va_breakout_long_return_vs_hold',
+                'metric': 'profit_factor',
+                'min_trades': 20,
+                'x_param': 'va_breakout_min_abs_return_pct',
+                'x_values': [0.0008, 0.0010, 0.0012],
+                'y_param': 'max_hold_bars',
+                'y_values': [4, 5, 6],
+            },
+        ],
+    ),
+    'morning_va_breakout_with_gap_long_only_time_exit': make_candidate(
+        strategy_name='morning_va_breakout',
+        allow_long=True,
+        allow_short=False,
+        va_breakout_long_enabled=True,
+        va_breakout_short_enabled=False,
+        va_breakout_min_abs_return_pct=0.0010,
+        va_breakout_min_long_close_location=0.65,
+        va_breakout_max_short_close_location=0.35,
+        va_breakout_require_outside_prior_va=True,
+        va_breakout_require_with_gap=True,
+        or15_end_1m='09:44',
+        or15_signal_bar_5m='09:40',
+        or15_min_stop_points=60.0,
+        or15_max_stop_points=100.0,
+        or15_reward_risk_ratio=0.0,
+        entry_mode='next_bar_open',
+        entry_delay_bars=0,
+        exit_mode='or15_barrier',
+        max_hold_bars=6,
+        max_trades_per_day=1,
+        position_sizing_mode='fixed_contracts',
+        fixed_contracts=1,
+        max_contracts=1,
+        trail_trigger_dollars=0,
+        trail_distance_points=0.0,
+        breakeven_trigger_dollars=0,
+        target_fill_mode='trade_through',
+        target_fill_trade_through_ticks=1,
+        managed_stop_activation_mode='next_bar',
+        vsa_enabled=False,
+        hawkes_enabled=False,
+        cusum_event_enabled=False,
+        market_memory_enabled=False,
+        markov_regime_enabled=False,
+        market_structure_enabled=False,
+        options_flow_enabled=False,
+        wf_param_grid={
+            'va_breakout_min_abs_return_pct': [0.0008, 0.0010, 0.0012],
+            'max_hold_bars': [4, 5, 6],
+        },
+        wf_random_samples=9,
+        wf_selection_mode='stable',
+        wf_min_trades_train=20,
+        wf_min_trades_test=3,
+        sweep_specs=[
+            {
+                'name': 'va_breakout_long_time_return_vs_hold',
+                'metric': 'profit_factor',
+                'min_trades': 20,
+                'x_param': 'va_breakout_min_abs_return_pct',
+                'x_values': [0.0008, 0.0010, 0.0012],
+                'y_param': 'max_hold_bars',
+                'y_values': [4, 5, 6],
+            },
+        ],
+    ),
+}
+MORNING_VA_BREAKOUT_CANDIDATES['morning_va_breakout_with_gap_long_only_time_exit_vx_level_gate'] = make_candidate(
+    base=MORNING_VA_BREAKOUT_CANDIDATES['morning_va_breakout_with_gap_long_only_time_exit'],
+    cross_asset_context_enabled=True,
+    cross_asset_filter='vx_min_level',
+    cross_asset_min_vx_close_945=16.0,
+    cross_asset_allow_missing=True,
+    wf_param_grid={
+        'va_breakout_min_abs_return_pct': [0.0008, 0.0010, 0.0012],
+        'max_hold_bars': [4, 5, 6],
+        'cross_asset_min_vx_close_945': [15.0, 16.0, 17.0],
+    },
+)
+MORNING_VA_BREAKOUT_CANDIDATES['morning_va_breakout_with_gap_long_only_time_exit_vx_compression_gate'] = make_candidate(
+    base=MORNING_VA_BREAKOUT_CANDIDATES['morning_va_breakout_with_gap_long_only_time_exit'],
+    cross_asset_context_enabled=True,
+    cross_asset_filter='vx_compressing_on_long',
+    cross_asset_max_vx_or15_change_long=0.0,
+    cross_asset_allow_missing=True,
+    wf_param_grid={
+        'va_breakout_min_abs_return_pct': [0.0008, 0.0010, 0.0012],
+        'max_hold_bars': [4, 5, 6],
+        'cross_asset_max_vx_or15_change_long': [-0.05, 0.0, 0.05],
+    },
+)
+MORNING_VA_BREAKOUT_CANDIDATES['morning_va_breakout_with_gap_long_only_time_exit_tick_exhaustion_gate'] = make_candidate(
+    base=MORNING_VA_BREAKOUT_CANDIDATES['morning_va_breakout_with_gap_long_only_time_exit'],
+    cross_asset_context_enabled=True,
+    cross_asset_filter='tick_not_exhausted',
+    cross_asset_max_tick_or15_mean_long=100.0,
+    cross_asset_allow_missing=True,
+    wf_param_grid={
+        'va_breakout_min_abs_return_pct': [0.0008, 0.0010, 0.0012],
+        'max_hold_bars': [4, 5, 6],
+        'cross_asset_max_tick_or15_mean_long': [50.0, 100.0, 150.0],
+    },
+)
+MORNING_VA_BREAKOUT_CANDIDATES['morning_va_breakout_with_gap_continuation_long_only_time_exit'] = make_candidate(
+    base=MORNING_VA_BREAKOUT_CANDIDATES['morning_va_breakout_with_gap_long_only_time_exit'],
+    enable_morning_continuation=True,
+    continuation_start='10:20',
+    continuation_end='12:00',
+    continuation_buffer_points=1.0,
+    continuation_require_above_vwap=True,
+    continuation_max_hold_bars=12,
+    max_trades_per_day=2,
+    wf_param_grid={
+        'va_breakout_min_abs_return_pct': [0.0008, 0.0010, 0.0012],
+        'continuation_max_hold_bars': [6, 12],
+    },
+)
+MORNING_VA_BREAKOUT_CANDIDATES['morning_va_breakout_with_gap_continuation_long_only_time_exit_vx_compression_gate'] = make_candidate(
+    base=MORNING_VA_BREAKOUT_CANDIDATES['morning_va_breakout_with_gap_continuation_long_only_time_exit'],
+    cross_asset_context_enabled=True,
+    cross_asset_filter='vx_compressing_on_long',
+    cross_asset_max_vx_or15_change_long=0.0,
+    cross_asset_allow_missing=True,
+)
+MORNING_VA_BREAKOUT_CANDIDATES['morning_va_breakout_bidirectional_with_gap_continuation'] = make_candidate(
+    base=MORNING_VA_BREAKOUT_CANDIDATES['morning_va_breakout_with_gap_continuation_long_only_time_exit'],
+    allow_long=True,
+    allow_short=True,
+    va_breakout_long_enabled=True,
+    va_breakout_short_enabled=True,
+)
+MORNING_VA_BREAKOUT_CANDIDATES['morning_va_breakout_bidirectional_with_gap_continuation_vx_compression_gate'] = make_candidate(
+    base=MORNING_VA_BREAKOUT_CANDIDATES['morning_va_breakout_bidirectional_with_gap_continuation'],
+    cross_asset_context_enabled=True,
+    cross_asset_filter='vx_compressing_on_long',
+    cross_asset_max_vx_or15_change_long=0.0,
+    cross_asset_allow_missing=True,
+)
+MORNING_VA_BREAKOUT_CANDIDATES['es_morning_va_breakout_bidirectional_with_gap_continuation'] = make_candidate(
+    base=MORNING_VA_BREAKOUT_CANDIDATES['morning_va_breakout_bidirectional_with_gap_continuation'],
+    continuation_buffer_points=0.50,
+    or15_min_stop_points=15.0,
+    or15_max_stop_points=35.0,
+)
+MORNING_VA_BREAKOUT_CANDIDATES['es_morning_va_breakout_bidirectional_with_gap_continuation_vx_compression_gate'] = make_candidate(
+    base=MORNING_VA_BREAKOUT_CANDIDATES['es_morning_va_breakout_bidirectional_with_gap_continuation'],
+    cross_asset_context_enabled=True,
+    cross_asset_filter='vx_compressing_on_long',
+    cross_asset_max_vx_or15_change_long=0.0,
+    cross_asset_allow_missing=True,
+)
+CANDIDATE_CONFIGS.update(MORNING_VA_BREAKOUT_CANDIDATES)
+
 
 # Optional: walk-forward + parameter sweep tooling
 RESEARCH_CONFIG = {
@@ -1920,6 +2198,20 @@ RESEARCH_CONFIG = {
         ],
         'microstructure_execution_first': [
             'edge_microstructure_liquidity_taking_trend_probe',
+        ],
+        'morning_va_breakout_h4': [
+            'morning_va_breakout_with_gap',
+            'morning_va_breakout_with_gap_long_only',
+            'morning_va_breakout_with_gap_long_only_time_exit',
+            'morning_va_breakout_with_gap_long_only_time_exit_vx_level_gate',
+            'morning_va_breakout_with_gap_long_only_time_exit_vx_compression_gate',
+            'morning_va_breakout_with_gap_long_only_time_exit_tick_exhaustion_gate',
+            'morning_va_breakout_with_gap_continuation_long_only_time_exit',
+            'morning_va_breakout_with_gap_continuation_long_only_time_exit_vx_compression_gate',
+            'morning_va_breakout_bidirectional_with_gap_continuation',
+            'morning_va_breakout_bidirectional_with_gap_continuation_vx_compression_gate',
+            'es_morning_va_breakout_bidirectional_with_gap_continuation',
+            'es_morning_va_breakout_bidirectional_with_gap_continuation_vx_compression_gate',
         ],
     },
 

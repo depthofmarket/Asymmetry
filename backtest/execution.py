@@ -402,6 +402,21 @@ class ExecutionMixin:
             else:
                 levels['stop_loss'] = entry_price + stop_distance
                 levels['profit_target'] = entry_price - (stop_distance * target_multiplier)
+        elif exit_mode == 'or15_barrier' and entry_row is not None:
+            or15_rng = float(entry_row.get('or15_range_points', np.nan))
+            min_stop = float(self.get_signal_param(signal_type, direction, 'or15_min_stop_points', p.get('or15_min_stop_points', 15.0)))
+            max_stop = float(self.get_signal_param(signal_type, direction, 'or15_max_stop_points', p.get('or15_max_stop_points', 60.0)))
+            rr_ratio = float(self.get_signal_param(signal_type, direction, 'or15_reward_risk_ratio', p.get('or15_reward_risk_ratio', 1.5)))
+            if np.isfinite(or15_rng) and or15_rng > 0:
+                clipped_stop = float(np.clip(or15_rng, min_stop, max_stop))
+                if direction == 'long':
+                    levels['stop_loss'] = entry_price - clipped_stop
+                    if rr_ratio > 0:
+                        levels['profit_target'] = entry_price + clipped_stop * rr_ratio
+                else:
+                    levels['stop_loss'] = entry_price + clipped_stop
+                    if rr_ratio > 0:
+                        levels['profit_target'] = entry_price - clipped_stop * rr_ratio
 
         # If provided, use the reference target only when it is a favorable
         # exit. Bad source rows or next-bar gaps can otherwise put a target on

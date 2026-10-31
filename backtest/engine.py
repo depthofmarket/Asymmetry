@@ -4,6 +4,11 @@ import ta
 from datetime import datetime
 
 from backtest.auction_context import add_futures_auction_context
+from backtest.cross_asset_context import (
+    ALL_CROSS_ASSET_COLUMNS,
+    DEFAULT_CROSS_ASSET_FEATURES_PATH,
+    add_morning_cross_asset_features,
+)
 from backtest.event_sampling import add_cusum_event_features
 from backtest.hawkes import add_hawkes_volatility_features
 from backtest.market_structure import add_market_structure_features
@@ -19,11 +24,17 @@ from backtest.execution import ExecutionMixin
 from backtest.indicators import IndicatorMixin
 from backtest.signals import SignalMixin
 
+_EXECUTION_1M_CACHE: dict[tuple[int, int], tuple[pd.DataFrame, np.ndarray, bool]] = {}
+
+
 class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
     """Motas's Playground"""
 
     def __init__(self, data: pd.DataFrame, portfolio, futures_specs: dict, strategy_params: dict):
-        self.data = data.reset_index(drop=True)
+        if isinstance(data.index, pd.RangeIndex) and data.index.start == 0 and data.index.step == 1:
+            self.data = data
+        else:
+            self.data = data.reset_index(drop=True)
         self.portfolio = portfolio
         self.futures_specs = futures_specs
         self.strategy_params = strategy_params
@@ -902,6 +913,83 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
             out.loc[filtered, 'signal_type'] = ''
         return out
 
+    def should_compute_cross_asset_context(self) -> bool:
+        p = self.strategy_params
+        mode = str(p.get('cross_asset_filter', 'off')).lower()
+        return bool(
+            p.get('cross_asset_context_enabled', False)
+            or p.get('cross_asset_features_path')
+            or mode not in ('off', 'none', 'false', '0')
+        )
+
+    def add_cross_asset_context(self, df: pd.DataFrame) -> pd.DataFrame:
+        if not self.should_compute_cross_asset_context():
+            return df
+        p = self.strategy_params
+        path = p.get('cross_asset_features_path', DEFAULT_CROSS_ASSET_FEATURES_PATH)
+        return add_morning_cross_asset_features(
+            df,
+            path,
+            rth_start=str(p.get('rth_start', '09:30')),
+            or15_available_at=str(p.get('or15_signal_bar_5m', '09:40')),
+        )
+
+    def apply_cross_asset_signal_filters(self, df: pd.DataFrame) -> pd.DataFrame:
+        p = self.strategy_params
+        mode = str(p.get('cross_asset_filter', 'off')).lower()
+        if mode in ('off', 'none', 'false', '0') or 'signal' not in df.columns:
+            return df
+
+        out = df.copy()
+        signal = out['signal'].fillna(0).astype(int)
+        active = signal != 0
+        if not active.any():
+            return out
+
+        allow_missing = bool(p.get('cross_asset_allow_missing', True))
+        keep = pd.Series(True, index=out.index)
+        long_signal = active & signal.gt(0)
+        short_signal = active & signal.lt(0)
+
+        vx_close = pd.to_numeric(out.get('vx_close_945', pd.Series(np.nan, index=out.index)), errors='coerce')
+        vx_chg = pd.to_numeric(out.get('vx_or15_change', pd.Series(np.nan, index=out.index)), errors='coerce')
+        spx_iv = pd.to_numeric(out.get('spx_iv_close_945', pd.Series(np.nan, index=out.index)), errors='coerce')
+        spx_ret = pd.to_numeric(out.get('spx_or15_return_pct', pd.Series(np.nan, index=out.index)), errors='coerce')
+        tick_mean = pd.to_numeric(out.get('tick_or15_mean', pd.Series(np.nan, index=out.index)), errors='coerce')
+        term_spread = pd.to_numeric(out.get('vx_minus_vix_spot_945', pd.Series(np.nan, index=out.index)), errors='coerce')
+
+        if mode == 'vx_min_level':
+            min_vx = float(p.get('cross_asset_min_vx_close_945', 16.0))
+            cond = vx_close.ge(min_vx)
+            keep &= ~active | (cond | (allow_missing & vx_close.isna()))
+        elif mode == 'vx_compressing_on_long':
+            max_vx_chg = float(p.get('cross_asset_max_vx_or15_change_long', 0.0))
+            cond = vx_chg.le(max_vx_chg)
+            keep &= ~long_signal | (cond | (allow_missing & vx_chg.isna()))
+        elif mode == 'spx_iv_min_level':
+            min_iv = float(p.get('cross_asset_min_spx_iv_945', 0.14))
+            cond = spx_iv.ge(min_iv)
+            keep &= ~active | (cond | (allow_missing & spx_iv.isna()))
+        elif mode == 'spx_direction_confirm':
+            long_ok = spx_ret.gt(0.0) | (allow_missing & spx_ret.isna())
+            short_ok = spx_ret.lt(0.0) | (allow_missing & spx_ret.isna())
+            keep &= (~long_signal | long_ok) & (~short_signal | short_ok)
+        elif mode == 'tick_not_exhausted':
+            max_tick_long = float(p.get('cross_asset_max_tick_or15_mean_long', 100.0))
+            cond = tick_mean.le(max_tick_long)
+            keep &= ~long_signal | (cond | (allow_missing & tick_mean.isna()))
+        elif mode == 'vix_contango':
+            cond = term_spread.ge(0.0)
+            keep &= ~active | (cond | (allow_missing & term_spread.isna()))
+        else:
+            return out
+
+        filtered = active & ~keep
+        out.loc[filtered, 'signal'] = 0
+        if 'signal_type' in out.columns:
+            out.loc[filtered, 'signal_type'] = ''
+        return out
+
     def execution_timeframe(self) -> str:
         return str(self.strategy_params.get('execution_timeframe', '5min')).lower()
 
@@ -915,19 +1003,40 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
             self._execution_times = np.array([], dtype='datetime64[ns]')
             return self._execution_1m
 
-        cols = ['time', 'open', 'high', 'low', 'close']
-        df = self.data[cols].copy()
-        df['volume'] = self.data['volume'].to_numpy() if 'volume' in self.data.columns else 0.0
-        df['time'] = pd.to_datetime(df['time'])
-        df = df.sort_values('time').drop_duplicates(subset='time', keep='first').reset_index(drop=True)
+        cache_key = (id(self.data), len(self.data))
+        cached = _EXECUTION_1M_CACHE.get(cache_key)
+        if cached is not None:
+            base_df, base_times, _ = cached
+        else:
+            cols = ['time', 'open', 'high', 'low', 'close']
+            base_df = self.data[cols].copy()
+            base_df['volume'] = self.data['volume'].to_numpy() if 'volume' in self.data.columns else 0.0
+            base_df['time'] = pd.to_datetime(base_df['time'])
+            base_df = base_df.sort_values('time').drop_duplicates(subset='time', keep='first').reset_index(drop=True)
+            base_times = base_df['time'].to_numpy(dtype='datetime64[ns]')
+            is_1m = False
+            if len(base_df) >= 2:
+                diffs = base_df['time'].diff().dropna()
+                if not diffs.empty:
+                    is_1m = bool(diffs.mode().iloc[0] <= pd.Timedelta(minutes=1))
+            if len(_EXECUTION_1M_CACHE) >= 4:
+                _EXECUTION_1M_CACHE.clear()
+            _EXECUTION_1M_CACHE[cache_key] = (base_df, base_times, is_1m)
+
+        df = base_df
+        times_arr = base_times
         if self._preprocessed_5m is not None and 'time' in self._preprocessed_5m.columns and not self._preprocessed_5m.empty:
             pre_times = pd.to_datetime(self._preprocessed_5m['time'], errors='coerce').dropna()
             if not pre_times.empty:
-                start_time = pre_times.min()
-                end_time = pre_times.max() + pd.Timedelta(minutes=5)
-                df = df.loc[(df['time'] >= start_time) & (df['time'] < end_time)].reset_index(drop=True)
+                start_time = np.datetime64(pre_times.min())
+                end_time = np.datetime64(pre_times.max() + pd.Timedelta(minutes=5))
+                s_idx = int(base_times.searchsorted(start_time, side='left'))
+                e_idx = int(base_times.searchsorted(end_time, side='left'))
+                if s_idx > 0 or e_idx < len(base_df):
+                    df = base_df.iloc[s_idx:e_idx].reset_index(drop=True)
+                    times_arr = base_times[s_idx:e_idx]
         self._execution_1m = df
-        self._execution_times = df['time'].to_numpy(dtype='datetime64[ns]')
+        self._execution_times = times_arr
         return self._execution_1m
 
     def can_use_1min_execution(self) -> bool:
@@ -937,6 +1046,11 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
         exec_df = self._get_execution_1m()
         if len(exec_df) < 2:
             return False
+
+        cache_key = (id(self.data), len(self.data))
+        cached = _EXECUTION_1M_CACHE.get(cache_key)
+        if cached is not None:
+            return cached[2]
 
         diffs = exec_df['time'].diff().dropna()
         if diffs.empty:
@@ -957,7 +1071,7 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
 
     def _prepare_signal_frame(self, pre_df: pd.DataFrame) -> pd.DataFrame:
         df = pre_df.copy()
-        if {'orb_high', 'orb_low', 'orb_range'}.issubset(df.columns):
+        if {'orb_high', 'orb_low', 'orb_range'}.issubset(df.columns) and self.strategy_params.get('strategy_name') not in ('morning_va_breakout', 'morning_or15_fade'):
             df = self.classify_day_regime(df)
         df = self.generate_signals(df)
         df = self.apply_market_profile_signal_filters(df)
@@ -966,6 +1080,7 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
         df = self.apply_markov_regime_signal_filters(df)
         df = self.apply_market_memory_signal_filters(df)
         df = self.apply_options_flow_signal_filters(df)
+        df = self.apply_cross_asset_signal_filters(df)
         df = self.apply_signal_filters(df)
 
         # Guard: zero out signals on bars where VWAP is missing.  Pre-RTH bars
@@ -1025,6 +1140,18 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
             'vp_poc',
             'vp_val',
             'vp_vah',
+            'prior_rth_poc',
+            'prior_rth_vah',
+            'prior_rth_val',
+            'prior_rth_close_1m',
+            'or15_open',
+            'or15_high',
+            'or15_low',
+            'or15_close',
+            'or15_range_points',
+            'or15_close_location',
+            'first15_return_points',
+            'first15_return_pct',
             'vwap',
             'vwap_side',
             'vwap_side_prev',
@@ -1112,6 +1239,7 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
             'options_put_wall_role',
             'options_call_wall_distance',
             'options_put_wall_distance',
+            *ALL_CROSS_ASSET_COLUMNS,
         ]
         metadata = {}
         for col in context_cols:
@@ -1140,6 +1268,7 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
         # Compute VWAP from 1-min data before resampling
         vwap_5m = self.compute_1min_vwap(self.data)
         opening_profile = self.compute_opening_volume_profile(self.data)
+        prior_rth_or15 = self.compute_prior_rth_and_or15_features(self.data)
 
         df = self.resample_to_5min(self.data)
 
@@ -1156,8 +1285,25 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
                 ('vp_poc', 'vp_val', 'vp_vah', 'vp_width'),
                 available_at=str(self.strategy_params.get('vp_profile_end', self.strategy_params.get('orb_end', '10:00'))),
             )
+        if not prior_rth_or15.empty:
+            df = df.merge(prior_rth_or15, on='date_str', how='left')
+            df = mask_columns_before_clock(
+                df,
+                (
+                    'or15_open',
+                    'or15_high',
+                    'or15_low',
+                    'or15_close',
+                    'or15_range_points',
+                    'or15_close_location',
+                    'first15_return_points',
+                    'first15_return_pct',
+                ),
+                available_at=str(self.strategy_params.get('or15_signal_bar_5m', '09:40')),
+            )
         df = self.calculate_opening_ranges(df)
         df = self.add_options_flow(df)
+        df = self.add_cross_asset_context(df)
         df = df.reset_index(drop=True)
         self._preprocessed_5m = df
         return df
@@ -1178,11 +1324,13 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
         entry_delay_bars = self.entry_delay_bars()
 
         i = 1
+        signal_arr = pd.to_numeric(df['signal'], errors='coerce').fillna(0).to_numpy(dtype=int) if 'signal' in df.columns else np.zeros(len(df), dtype=int)
+        atr_arr = pd.to_numeric(df['atr'], errors='coerce').to_numpy(dtype=float) if 'atr' in df.columns else np.full(len(df), np.nan)
         while i < len(df):
-            signal_row = df.iloc[i]
-            if pd.isna(signal_row['atr']) or int(signal_row.get('signal', 0)) == 0:
+            if signal_arr[i] == 0 or np.isnan(atr_arr[i]):
                 i += 1
                 continue
+            signal_row = df.iloc[i]
 
             if p.get('entry_mode', 'same_bar_close') == 'next_bar_open':
                 entry_i = i + 1 + entry_delay_bars
@@ -1263,11 +1411,15 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
             )
             daily_trade_count[trade_date] += 1
 
+            trade_max_hold = max_hold_minutes
+            if signal_type == 'va_continuation' and 'continuation_max_hold_bars' in p:
+                trade_max_hold = int(p['continuation_max_hold_bars']) * 5
+
             exit_time, exit_price, exit_reason = self._simulate_trade_on_1m(
                 open_position,
                 exit_levels,
                 entry_time=entry_time,
-                max_hold_minutes=max_hold_minutes,
+                max_hold_minutes=trade_max_hold,
                 hawkes_exit_time=self.next_hawkes_exit_time(df, entry_i, open_position),
             )
             open_position.reason = exit_reason
@@ -1300,17 +1452,28 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
         p = self.strategy_params
         entry_delay_bars = self.entry_delay_bars()
 
-        for i in range(1, len(df)):
-            open_price  = df.loc[i, 'open']
-            close_price = df.loc[i, 'close']
-            high_price  = df.loc[i, 'high']
-            low_price   = df.loc[i, 'low']
-            timestamp   = df.loc[i, 'time']
-            atr         = df.loc[i, 'atr']
+        opens = df['open'].to_numpy(dtype=float)
+        closes = df['close'].to_numpy(dtype=float)
+        highs = df['high'].to_numpy(dtype=float)
+        lows = df['low'].to_numpy(dtype=float)
+        timestamps = df['time'].to_numpy()
+        atrs = pd.to_numeric(df['atr'], errors='coerce').to_numpy(dtype=float)
+        signals = pd.to_numeric(df['signal'], errors='coerce').fillna(0).to_numpy(dtype=int) if 'signal' in df.columns else np.zeros(len(df), dtype=int)
+        signal_types = df['signal_type'].to_numpy() if 'signal_type' in df.columns else np.array([None] * len(df))
 
-            if pd.isna(atr):
+        for i in range(1, len(df)):
+            atr = atrs[i]
+            if np.isnan(atr):
                 self.equity_curve.append(self.portfolio.get_equity())
                 continue
+
+            open_price  = opens[i]
+            close_price = closes[i]
+            high_price  = highs[i]
+            low_price   = lows[i]
+            timestamp   = timestamps[i]
+            sig         = signals[i]
+            sig_type    = signal_types[i]
 
             if open_position is not None:
                 exit_flag = False
@@ -1338,7 +1501,8 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
                 if not exit_flag and not use_current_bar_excursion:
                     self.update_trade_excursions(open_position, high_price, low_price)
 
-                if not exit_flag and i - entry_bar >= p['max_hold_bars']:
+                active_hold_bars = int(p.get('continuation_max_hold_bars', p.get('max_hold_bars', 0))) if getattr(open_position, 'signal_type', '') == 'va_continuation' else int(p.get('max_hold_bars', 0))
+                if not exit_flag and active_hold_bars > 0 and i - entry_bar >= active_hold_bars:
                     exit_flag, exit_reason, exit_price = True, "time_exit", close_price
 
                 if (
@@ -1427,18 +1591,18 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
                 pending_context_i = None
                 pending_entry_delay_remaining = 0
 
-            if open_position is None and pending_signal is None and df.loc[i, 'signal'] != 0:
+            if open_position is None and pending_signal is None and sig != 0:
                 if p.get('entry_mode', 'same_bar_close') == 'next_bar_open':
-                    pending_signal = df.loc[i, 'signal']
-                    pending_signal_type = df.loc[i, 'signal_type'] if 'signal_type' in df.columns else None
+                    pending_signal = sig
+                    pending_signal_type = sig_type
                     pending_context_i = i
                     pending_entry_delay_remaining = entry_delay_bars
                     self.equity_curve.append(self.portfolio.get_equity())
                     continue
 
                 if entry_delay_bars > 0:
-                    pending_signal = df.loc[i, 'signal']
-                    pending_signal_type = df.loc[i, 'signal_type'] if 'signal_type' in df.columns else None
+                    pending_signal = sig
+                    pending_signal_type = sig_type
                     pending_context_i = i
                     pending_entry_delay_remaining = max(0, entry_delay_bars - 1)
                     self.equity_curve.append(self.portfolio.get_equity())
@@ -1450,8 +1614,8 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
                     self.equity_curve.append(self.portfolio.get_equity())
                     continue
 
-                signal_type = df.loc[i, 'signal_type'] if 'signal_type' in df.columns else None
-                direction = 'long' if df.loc[i, 'signal'] == 1 else 'short'
+                signal_type = sig_type
+                direction = 'long' if sig == 1 else 'short'
                 setup_tag = f"{signal_type}_{direction}" if signal_type else direction
                 contracts = self.calculate_contracts(atr, direction, signal_type)
                 if contracts == 0:
@@ -1588,11 +1752,24 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
         avg_hold = trades_df['hold_minutes'].mean()
 
         daily_pnl = trades_df.groupby(trades_df['exit_time'].dt.normalize())['pnl'].sum()
+        active_trade_days = len(daily_pnl)
+        source_df = self._preprocessed_5m if self._preprocessed_5m is not None else self.data
+        if active_trade_days > 1 and source_df is not None and 'time' in source_df.columns and not source_df.empty:
+            src_times = pd.to_datetime(source_df['time'], errors='coerce').dropna()
+            rth_s_parts = str(self.strategy_params.get('rth_start', '09:30')).split(':')
+            rth_e_parts = str(self.strategy_params.get('rth_end', '16:00')).split(':')
+            rth_s_min = int(rth_s_parts[0]) * 60 + int(rth_s_parts[1])
+            rth_e_min = int(rth_e_parts[0]) * 60 + int(rth_e_parts[1])
+            hm_min = src_times.dt.hour * 60 + src_times.dt.minute
+            rth_dates = src_times.loc[(hm_min >= rth_s_min) & (hm_min <= rth_e_min)].dt.normalize().unique()
+            session_dates = pd.DatetimeIndex(sorted(rth_dates if len(rth_dates) >= 2 else src_times.dt.normalize().unique()))
+            if len(session_dates) >= 2:
+                daily_pnl = daily_pnl.reindex(session_dates.union(daily_pnl.index)).fillna(0.0).sort_index()
         daily_equity = daily_pnl.cumsum() + self.portfolio.initial_capital
         daily_returns = daily_equity.pct_change().dropna()
         sharpe = (
             daily_returns.mean() / daily_returns.std() * np.sqrt(252)
-            if len(daily_returns) > 1 and daily_returns.std() > 0
+            if active_trade_days > 1 and len(daily_returns) > 1 and daily_returns.std() > 0
             else 0
         )
 
