@@ -360,7 +360,7 @@ def main() -> int:
 
     print("[Watcher] Armed in continuous morning watch mode (America/New_York).")
     print("[Watcher] Automatic logging is ENABLED: No-trade days and completed trades are logged without user input.")
-    print("[Watcher] Will automatically evaluate and alert at 09:45:02 ET, 10:15:02 ET, and 11:00:02 ET.")
+    print("[Watcher] Will automatically evaluate and alert at 08:35 ET, 09:25 ET, 09:45 ET, 10:15 ET, and 11:00 ET.")
     fired_windows: set[str] = set()
     last_mtime = 0.0
 
@@ -377,11 +377,22 @@ def main() -> int:
             ]
             cur_mtime = max((p.stat().st_mtime for p in csv_files if p.exists()), default=0.0)
 
+            w0_key = f"{d_str}_0835"
+            w0_exit = f"{d_str}_0925"
             w1_key = f"{d_str}_0945"
             w2_key = f"{d_str}_1015"
             w3_key = f"{d_str}_1100"
 
-            if ("09:45:02" <= hhmmss <= "09:46:30" and w1_key not in fired_windows) or (
+            if "08:35:02" <= hhmmss <= "08:36:30" and w0_key not in fired_windows:
+                fired_windows.add(w0_key)
+                last_mtime = cur_mtime
+                run_evaluation_and_notify(speak=not args.no_voice, auto_log=not args.no_auto_log)
+            elif "09:25:02" <= hhmmss <= "09:26:30" and w0_exit not in fired_windows:
+                fired_windows.add(w0_exit)
+                last_mtime = cur_mtime
+                # Auto-resolves any open Window 1 trade before cash open
+                run_evaluation_and_notify(speak=not args.no_voice, auto_log=not args.no_auto_log)
+            elif ("09:45:02" <= hhmmss <= "09:46:30" and w1_key not in fired_windows) or (
                 last_mtime > 0 and cur_mtime > last_mtime
             ):
                 fired_windows.add(w1_key)
