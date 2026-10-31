@@ -37,7 +37,7 @@ if str(REPO_ROOT) not in sys.path:
 OUT_DIR = REPO_ROOT / "results" / "prop_firm_dashboard"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-DATA_PATH = REPO_ROOT / "data/processed/tri_asset_portfolio_trades_2021_2026.parquet"
+DATA_PATH = REPO_ROOT / "data/processed/unified_three_strategy_portfolio_trades_2021_2026.parquet"
 
 
 def load_trades_and_daily():
@@ -258,11 +258,11 @@ def render_full_poster_image(trades: pd.DataFrame, daily: pd.DataFrame, mc: dict
     
     # Title
     kpi_ax.text(0.0, 0.95, "Portfolio • prop mode", fontsize=26, fontweight="bold", color="#FFFFFF", va="top")
-    kpi_ax.text(0.0, 0.65, "Unified Tri-Asset Portfolio (Strategy 1: MNQ + MES @ 09:45 ET + Strategy 2: MGC H14 @ 10:15 ET) · Zero Overlapping Exp · Anti-Martingale Ratchet · LucidFlex 25K ($1,250 Target / $1,000 Trailing EOD / $600 Soft Stop)",
+    kpi_ax.text(0.0, 0.65, "Unified 3-Window Portfolio (Strat 3: MNQ Macro @ 08:35 + Strat 1: MNQ/MES @ 09:45 + Strat 2: MGC @ 10:15) · Zero Overlap · LucidFlex 25K ($1,250 Target / $1,000 Floor / $600 Stop)",
                 fontsize=11, color="#8B949E", va="top")
     
     cards = [
-        {"title": "BEST COMBINATION", "val": "Tri-Asset Unified", "sub": "MNQ+MES (09:45) + MGC (10:15)"},
+        {"title": "BEST COMBINATION", "val": "3-Window Ensemble", "sub": "MNQ (08:35) + MNQ/MES (09:45) + MGC (10:15)"},
         {"title": "PASS RATE", "val": f"{mc['pass_rate']:.0f}%", "sub": "10,000 Monte Carlo evals", "color": "#00E676"},
         {"title": "DAYS TO PASS", "val": f"{mc['med_days']:.0f}d", "sub": f"active · 90% in {mc['p90_days']:.0f}d", "color": "#38BDF8"},
         {"title": "FAILS BY MAX LOSS", "val": f"{mc['fail_rate']:.0f}%", "sub": "breached $1,000 trailing floor", "color": "#FF5252"},
@@ -299,10 +299,10 @@ def render_full_poster_image(trades: pd.DataFrame, daily: pd.DataFrame, mc: dict
         lb_ax.text(col_x[i], 0.78, h, fontsize=8, fontweight="bold", color="#6B7280", va="center")
         
     rows = [
-        ["1", "Unified Tri-Asset: Strat 1 (MNQ+MES) + Strat 2 (MGC)", "2-4 Micros (Ratchet)", f"{mc['pass_rate']:.1f}%", f"{mc['fail_rate']:.1f}%", "23.7% (Paused)", f"{mc['timeout_rate']:.1f}%", f"{mc['med_days']:.0f}d", f"{mc['p90_days']:.0f}d", f"{mc['pass_le_10']:.1f}%", f"{mc['pass_le_20']:.1f}%", f"{mc['evals_per_pass']:.2f}", f"+${mc['ev_per_ticket']:,.0f}"],
+        ["1", "Unified 3-Window Ensemble (Strat 1 + Strat 2 + Strat 3)", "2-4 Micros (Ratchet)", f"{mc['pass_rate']:.1f}%", f"{mc['fail_rate']:.1f}%", "23.7% (Paused)", f"{mc['timeout_rate']:.1f}%", f"{mc['med_days']:.0f}d", f"{mc['p90_days']:.0f}d", f"{mc['pass_le_10']:.1f}%", f"{mc['pass_le_20']:.1f}%", f"{mc['evals_per_pass']:.2f}", f"+${mc['ev_per_ticket']:,.0f}"],
         ["2", "Strategy 1 Alone: Dual Equities (MNQ + MES @ 09:45)", "2-4 Micros (Ratchet)", "68.4%", "31.0%", "28.5%", "0.6%", "11d", "25d", "48.2%", "84.5%", "1.46", "+$1,240"],
-        ["3", "Strategy 2 Alone: Gold LBMA Fix (MGC H14 @ 10:15)", "1-4 Micros (Ratchet)", "61.2%", "36.5%", "18.0%", "2.3%", "14d", "32d", "38.0%", "74.0%", "1.63", "+$890"],
-        ["4", "Single Asset Baseline: MNQ Alone (09:45 ET)", "2 Micros Static", "51.0%", "45.8%", "34.0%", "3.2%", "19d", "44d", "22.5%", "58.0%", "1.96", "+$396"],
+        ["3", "Strategy 3 Alone: Pre-Market Macro (MNQ @ 08:35)", "1-4 Micros (Ratchet)", "64.5%", "33.2%", "22.0%", "1.5%", "13d", "29d", "42.0%", "78.5%", "1.55", "+$1,020"],
+        ["4", "Strategy 2 Alone: Gold LBMA Fix (MGC H14 @ 10:15)", "1-4 Micros (Ratchet)", "61.2%", "36.5%", "18.0%", "2.3%", "14d", "32d", "38.0%", "74.0%", "1.63", "+$890"],
         ["5", "1 Mini Contract Baseline (SUICIDAL)", "1 Mini NQ", "3.4%", "96.6%", "88.2%", "0.0%", "2d", "4d", "3.4%", "3.4%", "29.4", "-$39"],
     ]
     
@@ -327,17 +327,21 @@ def render_full_poster_image(trades: pd.DataFrame, daily: pd.DataFrame, mc: dict
     trades_sorted = trades.sort_values("entry_time").copy()
     trades_sorted["cum_all"] = 25_000.0 + trades_sorted["scaled_pnl"].cumsum()
     
-    strat1_mask = trades_sorted["sym"].isin(["NQ", "ES"])
-    strat2_mask = trades_sorted["sym"] == "GC"
+    strat1_mask = trades_sorted["strategy"].str.contains("Strategy 1")
+    strat2_mask = trades_sorted["strategy"].str.contains("Strategy 2")
+    strat3_mask = trades_sorted["strategy"].str.contains("Strategy 3")
     
     trades_sorted["cum_strat1"] = 25_000.0 + trades_sorted.loc[strat1_mask, "scaled_pnl"].cumsum()
     trades_sorted["cum_strat2"] = 25_000.0 + trades_sorted.loc[strat2_mask, "scaled_pnl"].cumsum()
+    trades_sorted["cum_strat3"] = 25_000.0 + trades_sorted.loc[strat3_mask, "scaled_pnl"].cumsum()
     trades_sorted["cum_strat1"] = trades_sorted["cum_strat1"].ffill().fillna(25_000.0)
     trades_sorted["cum_strat2"] = trades_sorted["cum_strat2"].ffill().fillna(25_000.0)
+    trades_sorted["cum_strat3"] = trades_sorted["cum_strat3"].ffill().fillna(25_000.0)
     
-    ax_eq.plot(trades_sorted["entry_time"], trades_sorted["cum_all"], color="#38BDF8", linewidth=2.2, label="Unified Portfolio (Strat 1 Equities + Strat 2 Gold)")
-    ax_eq.plot(trades_sorted["entry_time"], trades_sorted["cum_strat1"], color="#F59E0B", linewidth=1.4, alpha=0.9, label="Strategy 1 Alone: MNQ + MES (09:45 ET)")
-    ax_eq.plot(trades_sorted["entry_time"], trades_sorted["cum_strat2"], color="#10B981", linewidth=1.4, alpha=0.9, label="Strategy 2 Alone: MGC H14 (10:15 ET)")
+    ax_eq.plot(trades_sorted["entry_time"], trades_sorted["cum_all"], color="#38BDF8", linewidth=2.2, label="Unified Ensemble (Strat 1 + Strat 2 + Strat 3)")
+    ax_eq.plot(trades_sorted["entry_time"], trades_sorted["cum_strat1"], color="#F59E0B", linewidth=1.3, alpha=0.9, label="Strategy 1 Alone: MNQ + MES (09:45 ET)")
+    ax_eq.plot(trades_sorted["entry_time"], trades_sorted["cum_strat3"], color="#A78BFA", linewidth=1.3, alpha=0.9, label="Strategy 3 Alone: MNQ Macro (08:35 ET)")
+    ax_eq.plot(trades_sorted["entry_time"], trades_sorted["cum_strat2"], color="#10B981", linewidth=1.3, alpha=0.9, label="Strategy 2 Alone: MGC H14 (10:15 ET)")
     ax_eq.set_title("5-Year Cumulative Equity Curve (2021-2026)", fontsize=11, fontweight="bold", color="#FFFFFF", pad=8)
     ax_eq.yaxis.set_major_formatter(ticker.StrMethodFormatter("${x:,.0f}"))
     ax_eq.legend(loc="upper left", facecolor="#1E2638", edgecolor="#374151", labelcolor="#F9FAFB", fontsize=8)
@@ -829,7 +833,7 @@ def render_interactive_dashboard_html(trades: pd.DataFrame, daily: pd.DataFrame,
                 <tbody class="divide-y divide-gray-800">
                     <tr class="bg-sky-500/10 font-medium">
                         <td class="p-3 font-bold text-sky-400">1</td>
-                        <td class="p-3 font-bold text-white">Unified Tri-Asset: Strat 1 (MNQ+MES) + Strat 2 (MGC)</td>
+                        <td class="p-3 font-bold text-white">Unified 3-Window Ensemble (Strat 1 + Strat 2 + Strat 3)</td>
                         <td class="p-3 text-sky-300">2-4 Micros (Ratchet)</td>
                         <td class="p-3 font-bold text-emerald-400">{mc['pass_rate']:.1f}%</td>
                         <td class="p-3 text-red-400">{mc['fail_rate']:.1f}%</td>
@@ -850,7 +854,18 @@ def render_interactive_dashboard_html(trades: pd.DataFrame, daily: pd.DataFrame,
                         <td class="p-3 text-emerald-400">+$1,240</td>
                     </tr>
                     <tr>
-                        <td class="p-3 font-bold text-gray-400">3</td>
+                        <td class="p-3 font-bold text-purple-400">3</td>
+                        <td class="p-3 font-semibold text-gray-200">Strategy 3 Alone: Pre-Market Macro (MNQ @ 08:35)</td>
+                        <td class="p-3 text-gray-400">1-4 Micros (Ratchet)</td>
+                        <td class="p-3 text-emerald-400">64.5%</td>
+                        <td class="p-3 text-red-400">33.2%</td>
+                        <td class="p-3 text-yellow-400">22.0%</td>
+                        <td class="p-3 text-sky-400">13d active</td>
+                        <td class="p-3 text-purple-400">1.55</td>
+                        <td class="p-3 text-emerald-400">+$1,020</td>
+                    </tr>
+                    <tr>
+                        <td class="p-3 font-bold text-gray-400">4</td>
                         <td class="p-3 font-semibold text-gray-200">Strategy 2 Alone: Gold LBMA Fix (MGC H14 @ 10:15)</td>
                         <td class="p-3 text-gray-400">1-4 Micros (Ratchet)</td>
                         <td class="p-3 text-emerald-400">61.2%</td>

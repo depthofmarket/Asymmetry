@@ -736,7 +736,7 @@ class DemoParityJournal:
             </div>
         </div>
         <div class="text-[11px] text-gray-500 font-mono pr-2">
-            Two-Window Architecture: Window 1 (09:45 ET MNQ+MES) &bull; Window 2 (10:15 ET MGC H14)
+            Three-Window Architecture: Window 1 (08:35 ET MNQ Macro) &bull; Window 2 (09:45 ET MNQ+MES) &bull; Window 3 (10:15 ET MGC H14)
         </div>
     </nav>
 
@@ -744,11 +744,11 @@ class DemoParityJournal:
     <header class="border-b border-[#1E2533] pb-4 flex flex-col md:flex-row justify-between items-start md:items-end gap-3">
         <div>
             <div class="text-[11px] font-mono font-bold text-sky-400 tracking-wider uppercase mb-1">
-                Dual-Strategy Portfolio &bull; Strategy 1 (MNQ+MES @ 09:45 ET) &amp; Strategy 2 (MGC @ 10:15 ET)
+                Multi-Strategy Ensemble &bull; Strat 3 (08:35 ET) &bull; Strat 1 (09:45 ET) &bull; Strat 2 (10:15 ET)
             </div>
             <h1 class="text-2xl font-bold tracking-tight text-white">Execution Ledger &amp; Capital Deployment Journal</h1>
             <p class="text-gray-400 text-xs mt-0.5">
-                Two sequential, non-overlapping windows: (1) Equity Opening VA Breakout (09:45-10:15 ET) &amp; (2) Gold Post-LBMA PM Fix Breakout (10:15-11:00 ET).
+                Three sequential, non-overlapping windows: (1) Macro Release (08:35-09:25 ET), (2) Equity Opening VA (09:45-10:15 ET) &amp; (3) Gold LBMA PM Fix (10:15-11:00 ET).
             </p>
         </div>
         <div class="text-left md:text-right font-mono text-xs">
@@ -1369,8 +1369,39 @@ class DemoParityJournal:
                             <td class="p-2.5 text-right text-sky-400 font-bold">2.31</td>
                         </tr>
 
+                        <tr class="hover:bg-gray-800/30 bg-purple-950/10 font-bold">
+                            <td colspan="7" class="p-2.5 text-purple-400 uppercase text-[10px] tracking-wider">Strategy 3: Pre-Market Macro Release Momentum (MNQ H17 @ 08:35 ET)</td>
+                        </tr>
+                        <tr class="hover:bg-gray-800/30">
+                            <td class="p-2.5 pl-6 text-gray-300">2021&ndash;2024 (Core Historical Baseline)</td>
+                            <td class="p-2.5 text-center text-gray-300">104</td>
+                            <td class="p-2.5 text-center text-emerald-400">48.1%</td>
+                            <td class="p-2.5 text-center text-emerald-400">1.22</td>
+                            <td class="p-2.5 text-right text-emerald-400 font-bold">+$1,916.69</td>
+                            <td class="p-2.5 text-right text-red-400">-$780.00</td>
+                            <td class="p-2.5 text-right text-sky-400">2.46</td>
+                        </tr>
+                        <tr class="hover:bg-gray-800/30">
+                            <td class="p-2.5 pl-6 text-gray-300">2025&ndash;2026 (Unseen High-Vol OOS)</td>
+                            <td class="p-2.5 text-center text-gray-300">39</td>
+                            <td class="p-2.5 text-center text-emerald-400">46.2%</td>
+                            <td class="p-2.5 text-center text-emerald-400">1.22</td>
+                            <td class="p-2.5 text-right text-emerald-400 font-bold">+$843.40</td>
+                            <td class="p-2.5 text-right text-red-400">-$320.00</td>
+                            <td class="p-2.5 text-right text-sky-400 font-bold">2.64</td>
+                        </tr>
+                        <tr class="hover:bg-gray-800/30 font-semibold bg-gray-900/40">
+                            <td class="p-2.5 pl-6 text-white">Full Strategy 3 Era (2021&ndash;2026)</td>
+                            <td class="p-2.5 text-center text-white">143</td>
+                            <td class="p-2.5 text-center text-emerald-400">47.6%</td>
+                            <td class="p-2.5 text-center text-emerald-400">1.22</td>
+                            <td class="p-2.5 text-right text-emerald-400 font-bold">+$2,760.09</td>
+                            <td class="p-2.5 text-right text-red-400">-$780.00</td>
+                            <td class="p-2.5 text-right text-sky-400 font-bold">3.54</td>
+                        </tr>
+
                         <tr class="hover:bg-gray-800/30 bg-purple-950/20 font-bold border-t-2 border-purple-500/40">
-                            <td colspan="7" class="p-2.5 text-purple-300 uppercase text-[10px] tracking-wider">Unified Tri-Asset Prop Portfolio (MNQ+MES Split @ 09:45 + MGC @ 10:15)</td>
+                            <td colspan="7" class="p-2.5 text-purple-300 uppercase text-[10px] tracking-wider">Unified 3-Window Prop Portfolio (Strat 3 @ 08:35 + Strat 1 @ 09:45 + Strat 2 @ 10:15)</td>
                         </tr>
                         <tr class="hover:bg-gray-800/30">
                             <td class="p-2.5 pl-6 text-gray-300">2021&ndash;2022 (Bull Peak &amp; Bear Crash)</td>

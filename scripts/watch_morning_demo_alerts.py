@@ -41,6 +41,7 @@ from backtest.demo_parity_engine import (
 )
 from scripts.run_demo_forward_test import (
     evaluate_gold_h14_signal,
+    evaluate_macro_momentum_signal,
     evaluate_signal_for_asset,
     fetch_live_morning_bars,
     get_or15_direction,
@@ -223,12 +224,21 @@ def run_evaluation_and_notify(*, speak: bool = True, auto_log: bool = True) -> d
     nq_dir = get_or15_direction(bars_nq)
     es_dir = get_or15_direction(bars_es)
 
+    sig_macro = evaluate_macro_momentum_signal(bars_nq)
     sig_nq = evaluate_signal_for_asset(bars_nq, "NQ", vix_chg_pct, other_index_dir=es_dir)
     sig_es = evaluate_signal_for_asset(bars_es, "ES", vix_chg_pct, other_index_dir=nq_dir)
     sig_gc = evaluate_gold_h14_signal(bars_gc)
 
     w1_fires = []
     fired_tuples: list[tuple[dict, pd.DataFrame, str, int]] = []
+
+    w_macro_fire = None
+    if sig_macro:
+        w_macro_fire = (
+            f"{sig_macro['action']} {tier_contracts} MNQ @ {sig_macro['entry_price']:.2f} "
+            f"(SL {sig_macro['stop_price']:.2f}, TP {sig_macro['target_price']:.2f})"
+        )
+        fired_tuples.append((sig_macro, bars_nq, "08:35", tier_contracts))
 
     nq_ok = bool(sig_nq and sig_nq.get("macro_pass"))
     es_ok = bool(sig_es and sig_es.get("macro_pass"))
@@ -262,9 +272,13 @@ def run_evaluation_and_notify(*, speak: bool = True, auto_log: bool = True) -> d
         fired_tuples.append((sig_gc, bars_gc, "10:15", tier_contracts))
 
     session_date = (
-        sig_nq["date_str"]
-        if sig_nq
-        else (sig_gc["date_str"] if sig_gc else bars_nq["time"].dt.strftime("%Y-%m-%d").max())
+        sig_macro["date_str"]
+        if sig_macro
+        else (
+            sig_nq["date_str"]
+            if sig_nq
+            else (sig_gc["date_str"] if sig_gc else bars_nq["time"].dt.strftime("%Y-%m-%d").max())
+        )
     )
 
     # Subprocess execution card display
@@ -275,17 +289,20 @@ def run_evaluation_and_notify(*, speak: bool = True, auto_log: bool = True) -> d
         f"  [MORNING WATCHER SUMMARY] Session {session_date} | "
         f"Balance: ${eval_state.balance:,.2f} | Tier: {tier_label} ({tier_contracts} Micros)"
     )
-    print(f"  Window 1 (09:45 ET MNQ+MES): {', '.join(w1_fires) if w1_fires else 'NO TRADE (Filtered/Flat)'}")
-    print(f"  Window 2 (10:15 ET MGC H14): {w2_fire if w2_fire else 'NO TRADE (Filtered/Flat)'}")
-    print(f"  HTML Parity Dashboard      : {DASHBOARD_HTML_PATH}")
+    print(f"  Window 1 (08:35 ET MNQ Macro): {w_macro_fire if w_macro_fire else 'NO TRADE (Filtered/Flat)'}")
+    print(f"  Window 2 (09:45 ET MNQ+MES):   {', '.join(w1_fires) if w1_fires else 'NO TRADE (Filtered/Flat)'}")
+    print(f"  Window 3 (10:15 ET MGC H14):   {w2_fire if w2_fire else 'NO TRADE (Filtered/Flat)'}")
+    print(f"  HTML Parity Dashboard        : {DASHBOARD_HTML_PATH}")
     print("=" * 88)
 
     # Auto-log if enabled
     if auto_log:
         auto_log_session_and_trades(journal, session_date, fired_tuples, eval_state)
 
-    if w1_fires or w2_fire:
+    if w_macro_fire or w1_fires or w2_fire:
         msg_parts = []
+        if w_macro_fire:
+            msg_parts.append("08:35: " + w_macro_fire)
         if w1_fires:
             msg_parts.append("09:45: " + " + ".join(w1_fires))
         if w2_fire:
@@ -301,7 +318,7 @@ def run_evaluation_and_notify(*, speak: bool = True, auto_log: bool = True) -> d
         send_macos_alert(
             title=f"Prop Check Complete ({session_date})",
             subtitle="No Trade Triggered",
-            message="Both 09:45 ET (MNQ/MES) and 10:15 ET (MGC) gates are flat.",
+            message="08:35 ET (Macro), 09:45 ET (MNQ/MES) and 10:15 ET (MGC) gates are flat.",
             speak_text="Morning signal check complete. No trade triggered." if speak else None,
         )
 

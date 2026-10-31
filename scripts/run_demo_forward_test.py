@@ -269,6 +269,74 @@ def evaluate_gold_h14_signal(bars_gc: pd.DataFrame) -> dict | None:
     }
 
 
+def evaluate_macro_momentum_signal(bars_nq: pd.DataFrame) -> dict | None:
+    """Evaluate 08:35 ET Pre-Market Macro Release Momentum on MNQ (Strategy 3 / H17)."""
+    if bars_nq.empty:
+        return None
+
+    latest_date = bars_nq["time"].dt.strftime("%Y-%m-%d").max()
+    df_today = bars_nq[bars_nq["time"].dt.strftime("%Y-%m-%d") == latest_date].copy()
+    df_today["time_et"] = df_today["time"].dt.strftime("%H:%M")
+
+    ovn_bars = df_today[df_today["time_et"].between("00:00", "08:29")]
+    spike_bars = df_today[df_today["time_et"].between("08:30", "08:34")]
+    if len(ovn_bars) < 30 or len(spike_bars) < 4:
+        return None
+
+    ovn_high = float(ovn_bars["high"].max())
+    ovn_low = float(ovn_bars["low"].min())
+    if ovn_high <= ovn_low:
+        return None
+
+    spike_vol = float(spike_bars["volume"].sum())
+    pre_vol_5m = float(ovn_bars["volume"].tail(30).mean() * 5.0) if len(ovn_bars) >= 10 else 1.0
+    if spike_vol < pre_vol_5m * 2.5:
+        return None
+
+    spike_open = float(spike_bars.iloc[0]["open"])
+    spike_close = float(spike_bars.iloc[-1]["close"])
+    spike_high = float(spike_bars["high"].max())
+    spike_low = float(spike_bars["low"].min())
+    spike_rng = spike_high - spike_low
+    if spike_rng <= 0:
+        return None
+
+    cl_loc = (spike_close - spike_low) / spike_rng
+
+    direction = 0
+    if spike_close > ovn_high and cl_loc >= 0.65:
+        direction = 1
+    elif spike_close < ovn_low and cl_loc <= 0.35:
+        direction = -1
+
+    if direction == 0:
+        return None
+
+    stop_pts = float(np.clip(spike_rng * 0.50, 20.0, 50.0))
+    entry_price = spike_close
+    stop_price = entry_price - direction * stop_pts
+    target_price = entry_price + direction * (stop_pts * 1.50)
+
+    return {
+        "date_str": str(latest_date),
+        "window_label": "08:35:00 ET (Strategy 3 / H17 — Pre-Market Macro Momentum)",
+        "exit_time_rule": "HARD FLATTEN AT 09:25:00 ET (Pre-Market cash open exit)",
+        "symbol": "NQ",
+        "contract": "MNQ",
+        "direction": "long" if direction == 1 else "short",
+        "action": "BUY" if direction == 1 else "SELL",
+        "entry_price": entry_price,
+        "stop_price": stop_price,
+        "target_price": target_price,
+        "stop_points": stop_pts,
+        "point_value": 2.00,
+        "macro_pass": True,
+        "macro_reason": f"High-Impact Macro Release Spike ({spike_vol:.0f} vs {pre_vol_5m:.0f} vol) breaking {'Overnight High' if direction==1 else 'Overnight Low'}",
+        "ret_pct": (spike_close - spike_open) / spike_open,
+        "close_loc": cl_loc,
+    }
+
+
 def print_execution_card(sig: dict, eval_state: AccountEvalState, contracts: int, tier_label: str) -> None:
     """Print the order execution card."""
     risk_dollars = sig["stop_points"] * sig["point_value"] * contracts
@@ -384,6 +452,7 @@ def main() -> int:
     nq_dir = get_or15_direction(bars_nq)
     es_dir = get_or15_direction(bars_es)
 
+    sig_macro = evaluate_macro_momentum_signal(bars_nq)
     sig_nq = evaluate_signal_for_asset(bars_nq, "NQ", vix_chg, other_index_dir=es_dir)
     sig_es = evaluate_signal_for_asset(bars_es, "ES", vix_chg, other_index_dir=nq_dir)
     sig_gc = evaluate_gold_h14_signal(bars_gc)
@@ -391,18 +460,19 @@ def main() -> int:
     eq_signals = [s for s in [sig_nq, sig_es] if s is not None]
     both_eq_passed = len([s for s in eq_signals if s["macro_pass"]]) == 2
 
-    print("\n--- DAILY TRI-ASSET SIGNAL SCAN SUMMARY ---")
-    print(f"  [09:45 ET] MNQ (Strategy 1): {'SIGNAL FIRED' if sig_nq else 'NO SIGNAL'}")
-    print(f"  [09:45 ET] MES (Strategy 1): {'SIGNAL FIRED' if sig_es else 'NO SIGNAL'}")
-    print(f"  [10:15 ET] MGC (Strategy 2 / H14): {'SIGNAL FIRED' if sig_gc else 'NO SIGNAL'}")
-    print("-------------------------------------------")
+    print("\n--- DAILY MULTI-STRATEGY ENSEMBLE SIGNAL SCAN ---")
+    print(f"  [08:35 ET] MNQ (Strategy 3 / Macro): {'SIGNAL FIRED' if sig_macro else 'NO SIGNAL'}")
+    print(f"  [09:45 ET] MNQ (Strategy 1 / Cash):  {'SIGNAL FIRED' if sig_nq else 'NO SIGNAL'}")
+    print(f"  [09:45 ET] MES (Strategy 1 / Cash):  {'SIGNAL FIRED' if sig_es else 'NO SIGNAL'}")
+    print(f"  [10:15 ET] MGC (Strategy 2 / Fix):   {'SIGNAL FIRED' if sig_gc else 'NO SIGNAL'}")
+    print("--------------------------------------------------")
 
-    all_signals = eq_signals + ([sig_gc] if sig_gc is not None else [])
+    all_signals = ([sig_macro] if sig_macro is not None else []) + eq_signals + ([sig_gc] if sig_gc is not None else [])
 
     if not all_signals:
         today_str = datetime.now().strftime("%Y-%m-%d")
         print(
-            "\n[NO SIGNAL TODAY] Neither 09:45 ET (MNQ/MES) nor 10:15 ET (MGC H14) met the structural breakout criteria."
+            "\n[NO SIGNAL TODAY] None of 08:35 ET (Macro), 09:45 ET (Cash VA), or 10:15 ET (Fix) met breakout criteria."
         )
         print(f"Account Balance: ${eval_state.balance:,.2f} | Trailing Floor: ${eval_state.trailing_floor:,.2f}")
         journal.record_session(
@@ -410,12 +480,17 @@ def main() -> int:
                 date=today_str,
                 setup_detected=False,
                 setup_fired=False,
-                diagnostic_reason="NO SIGNAL: 09:45 ET (MNQ/MES) and 10:15 ET (MGC H14) criteria not met",
+                diagnostic_reason="NO SIGNAL: 08:35 ET (MNQ Macro), 09:45 ET (MNQ/MES), and 10:15 ET (MGC) flat",
                 end_of_day_balance=eval_state.balance,
             )
         )
         journal.generate_html_dashboard()
         return 0
+
+    if sig_macro is not None:
+        print_execution_card(sig_macro, eval_state, base_contracts, f"{tier_label} (08:35 ET Macro Release)")
+        if args.interactive and sig_macro["macro_pass"]:
+            record_trade_prompt(sig_macro, base_contracts, journal)
 
     for sig in eq_signals:
         leg_contracts = max(1, base_contracts // 2) if both_eq_passed else base_contracts
