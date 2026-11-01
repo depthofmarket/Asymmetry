@@ -5,9 +5,16 @@ Renders all backtest metrics in the exact academic / quantitative Python style:
 - Clean white background (#FFFFFF)
 - Crisp black box spines (#000000)
 - Light gray grid lines (#E5E5E5)
-- Standard Matplotlib / Seaborn tab10 color palette (Blue #1f77b4, Orange #ff7f0e, Green #2ca02c, Red #d62728)
+- Standard Matplotlib tab10 color palette (Blue #1f77b4, Orange #ff7f0e, Green #2ca02c, Red #d62728, Purple #9467bd)
 - Clean sans-serif typography with tabular monospaced numbers
 - Complete inventory of EVERY metric used on the strategies
+- Multi-sheet PNG Tearsheet Suite:
+    01_strategy_equity_curves_and_drawdown.png
+    02_strategy_trade_distributions_and_monthly.png
+    03_strategy_performance_and_risk_scorecard.png
+    04_strategy_stress_tests_and_markov_regimes.png
+    strategy_performance_quant_report.png (Master Overview Poster)
+- Interactive HTML Dashboard with Strategy Tabs, Charts, Tables, and Blotter
 """
 
 from __future__ import annotations
@@ -192,6 +199,318 @@ def compute_monthly_matrix(trades: pd.DataFrame) -> list[dict]:
     return res
 
 
+def format_spines_and_grid(ax):
+    ax.set_facecolor("#FFFFFF")
+    ax.grid(True, color="#E5E5E5", linestyle="-", linewidth=0.8)
+    for sp in ax.spines.values():
+        sp.set_color("#000000")
+        sp.set_linewidth(1.0)
+    ax.tick_params(colors="#000000", labelsize=9)
+
+
+# ── SHEET 1: EQUITY CURVES & DRAWDOWN ────────────────────────────────────────
+def render_strategy_sheet_01_equity(
+    df: pd.DataFrame,
+    m_comp: dict,
+    m_s1: dict,
+    m_s2: dict,
+    m_s3: dict,
+) -> Path:
+    plt.style.use("default")
+    fig = plt.figure(figsize=(16, 11), dpi=200)
+    fig.patch.set_facecolor("#FFFFFF")
+
+    gs = fig.add_gridspec(2, 1, height_ratios=[2.4, 1.2], hspace=0.25)
+
+    df_s = df.sort_values("entry_time").reset_index(drop=True)
+    comp_cum = df_s["pnl"].cumsum() + 25_000.0
+    comp_peak = comp_cum.cummax()
+    s1_cum = df_s.apply(lambda r: r["pnl"] if r["window"] == 1 else 0.0, axis=1).cumsum() + 25_000.0
+    s2_cum = df_s.apply(lambda r: r["pnl"] if r["window"] == 2 else 0.0, axis=1).cumsum() + 25_000.0
+    s3_cum = df_s.apply(lambda r: r["pnl"] if r["window"] == 3 else 0.0, axis=1).cumsum() + 25_000.0
+
+    # Panel 1: Main Equity Curves
+    ax_main = fig.add_subplot(gs[0])
+    format_spines_and_grid(ax_main)
+
+    ax_main.plot(df_s["entry_time"], comp_cum, color="#1f77b4", linewidth=2.0, label="Unified Composite (All 3)")
+    ax_main.plot(df_s["entry_time"], s1_cum, color="#ff7f0e", linewidth=1.5, label="Strategy 1 (09:45 VA Breakout)")
+    ax_main.plot(df_s["entry_time"], s2_cum, color="#2ca02c", linewidth=1.5, label="Strategy 2 (10:15 Gold Fix)")
+    ax_main.plot(df_s["entry_time"], s3_cum, color="#d62728", linewidth=1.5, label="Strategy 3 (08:35 Macro Momentum)")
+    ax_main.plot(df_s["entry_time"], comp_peak, color="#9467bd", linestyle="--", linewidth=1.0, alpha=0.8, label="Running High-Water Mark")
+
+    ax_main.set_title("Backtest Results - Multi-Strategy Equity Curves ($25,000 Base)", fontsize=14, color="#000000", pad=10)
+    ax_main.set_xlabel("Date", fontsize=10, color="#000000")
+    ax_main.set_ylabel("Portfolio Value ($)", fontsize=10, color="#000000")
+    ax_main.yaxis.set_major_formatter(ticker.StrMethodFormatter("${x:,.0f}"))
+    ax_main.xaxis.set_major_locator(mdates.YearLocator())
+    ax_main.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
+
+    leg = ax_main.legend(title="Strategy", loc="upper left", frameon=True, facecolor="#FFFFFF", edgecolor="#000000", fontsize=9)
+    leg.get_title().set_fontsize(9.5)
+    leg.get_title().set_fontweight("bold")
+
+    # Panel 2: Underwater Drawdown
+    ax_dd = fig.add_subplot(gs[1])
+    format_spines_and_grid(ax_dd)
+
+    dd_vals = comp_cum - comp_peak
+    ax_dd.fill_between(df_s["entry_time"], dd_vals, 0, color="#d62728", alpha=0.25)
+    ax_dd.plot(df_s["entry_time"], dd_vals, color="#d62728", linewidth=1.2, label=f"Drawdown (Max: -${abs(m_comp['max_dd']):,.2f})")
+
+    ax_dd.set_title("Drawdown ($ Below Running Peak)", fontsize=11, color="#000000", pad=8)
+    ax_dd.set_xlabel("Date", fontsize=9.5, color="#000000")
+    ax_dd.set_ylabel("Drawdown ($)", fontsize=9.5, color="#000000")
+    ax_dd.yaxis.set_major_formatter(ticker.StrMethodFormatter("${x:,.0f}"))
+    ax_dd.xaxis.set_major_locator(mdates.YearLocator())
+    ax_dd.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
+    ax_dd.legend(loc="lower left", frameon=True, facecolor="#FFFFFF", edgecolor="#000000", fontsize=8.5)
+
+    out_path = OUT_DIR / "01_strategy_equity_curves_and_drawdown.png"
+    plt.savefig(out_path, dpi=200, facecolor=fig.get_facecolor(), bbox_inches="tight")
+    plt.close()
+    return out_path
+
+
+# ── SHEET 2: TRADE DISTRIBUTIONS & MONTHLY RETURNS ───────────────────────────
+def render_strategy_sheet_02_distributions_monthly(
+    df: pd.DataFrame,
+    m_comp: dict,
+) -> Path:
+    plt.style.use("default")
+    fig = plt.figure(figsize=(16, 12), dpi=200)
+    fig.patch.set_facecolor("#FFFFFF")
+
+    gs = fig.add_gridspec(2, 1, height_ratios=[1.4, 1.8], hspace=0.35)
+
+    # Panel 1: Trade Outcome Histogram
+    ax_hist = fig.add_subplot(gs[0])
+    format_spines_and_grid(ax_hist)
+
+    wins = df[df["pnl"] > 0]["pnl"]
+    losses = df[df["pnl"] <= 0]["pnl"]
+    ax_hist.hist(wins, bins=30, color="#1f77b4", edgecolor="#000000", alpha=0.85, label=f"Wins ({len(wins)} · avg +${wins.mean():.0f})")
+    ax_hist.hist(losses, bins=30, color="#d62728", edgecolor="#000000", alpha=0.85, label=f"Losses ({len(losses)} · avg -${abs(losses.mean()):.0f})")
+    ax_hist.axvline(m_comp["avg_trade"], color="#2ca02c", linestyle="--", linewidth=1.8, label=f"Expectancy: +${m_comp['avg_trade']:.2f}")
+
+    ax_hist.set_title("Backtest Results - Trade Outcome Distribution (Net P&L per Execution)", fontsize=13, color="#000000", pad=10)
+    ax_hist.set_xlabel("Net P&L per Trade ($)", fontsize=9.5, color="#000000")
+    ax_hist.set_ylabel("Trade Count", fontsize=9.5, color="#000000")
+    ax_hist.xaxis.set_major_formatter(ticker.StrMethodFormatter("${x:,.0f}"))
+    ax_hist.legend(loc="upper right", frameon=True, facecolor="#FFFFFF", edgecolor="#000000", fontsize=8.5)
+
+    # Panel 2: Monthly Matrix Table
+    ax_mo = fig.add_subplot(gs[1])
+    ax_mo.set_facecolor("#FFFFFF")
+    ax_mo.axis("off")
+
+    ax_mo.text(0.02, 0.96, "Monthly Returns Matrix (USD Net Profit 2021 - 2026)", fontsize=11, fontweight="bold", color="#000000")
+
+    piv = df.pivot_table(index="year", columns="month", values="pnl", aggfunc="sum").fillna(0.0)
+    mo_lbls = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "YTD Net", "Trades", "Win Rate"]
+    col_w = 0.058
+    ax_mo.text(0.02, 0.85, "Year", fontsize=8.2, fontweight="bold", color="#000000")
+    for i, m_name in enumerate(mo_lbls):
+        ax_mo.text(0.09 + i * col_w, 0.85, m_name, fontsize=8.0, fontweight="bold", color="#000000", ha="right")
+
+    y_pos = 0.72
+    for yr in sorted(piv.index):
+        sub_yr = df[df["year"] == yr]
+        yr_sum = piv.loc[yr].sum()
+        yr_wr = (sub_yr["pnl"] > 0).mean() * 100.0
+        ax_mo.axhline(y_pos + 0.02, color="#E5E5E5", linewidth=0.5, xmin=0.02, xmax=0.98)
+        ax_mo.text(0.02, y_pos, str(yr), fontsize=8.2, fontweight="bold", color="#000000")
+        for m_idx in range(1, 13):
+            val = piv.loc[yr, m_idx] if m_idx in piv.columns else 0.0
+            txt = f"{val:+.0f}" if val != 0 else "-"
+            c = "#2ca02c" if val > 0 else ("#d62728" if val < 0 else "#777777")
+            ax_mo.text(0.09 + (m_idx - 1) * col_w, y_pos, txt, fontsize=8.0, color=c, ha="right")
+        ytd_c = "#1f77b4" if yr_sum > 0 else "#d62728"
+        ax_mo.text(0.09 + 12 * col_w, y_pos, f"${yr_sum:+,.0f}", fontsize=8.2, fontweight="bold", color=ytd_c, ha="right")
+        ax_mo.text(0.09 + 13 * col_w, y_pos, f"{len(sub_yr)}", fontsize=8.0, color="#000000", ha="right")
+        ax_mo.text(0.09 + 14 * col_w, y_pos, f"{yr_wr:.1f}%", fontsize=8.0, fontweight="bold", color="#000000", ha="right")
+        y_pos -= 0.12
+
+    out_path = OUT_DIR / "02_strategy_trade_distributions_and_monthly.png"
+    plt.savefig(out_path, dpi=200, facecolor=fig.get_facecolor(), bbox_inches="tight")
+    plt.close()
+    return out_path
+
+
+# ── SHEET 3: FULL SCORECARD TABLE ────────────────────────────────────────────
+def render_strategy_sheet_03_scorecard(
+    m_comp: dict,
+    m_s1: dict,
+    m_s2: dict,
+    m_s3: dict,
+) -> Path:
+    plt.style.use("default")
+    fig = plt.figure(figsize=(16, 14), dpi=200)
+    fig.patch.set_facecolor("#FFFFFF")
+
+    ax = fig.add_subplot(111)
+    ax.set_facecolor("#FFFFFF")
+    ax.axis("off")
+
+    ax.text(0.02, 0.98, "Backtest Results - Comprehensive Performance & Risk Scorecard", fontsize=14, fontweight="bold", color="#000000")
+    ax.text(0.02, 0.955, "Complete Multi-Window Inventory across 543 Executions (2021-01-07 to 2026-10-30)", fontsize=9, color="#555555")
+
+    table_data = [
+        ("Execution Window & Time", "All 3 Windows", "09:45 - 10:15 ET", "10:15 - 10:45 ET", "08:35 - 09:15 ET"),
+        ("Traded Instruments", "MNQ, MES, MGC", "MNQ, MES", "MGC", "MNQ"),
+        ("Total Executions / Trades", f"{m_comp['trades']}", f"{m_s1['trades']}", f"{m_s2['trades']}", f"{m_s3['trades']}"),
+        ("Net Profit (USD)", f"${m_comp['net_profit']:,.2f}", f"${m_s1['net_profit']:,.2f}", f"${m_s2['net_profit']:,.2f}", f"${m_s3['net_profit']:,.2f}"),
+        ("Gross Profit / Gross Loss", f"${m_comp['gross_profit']:,.0f} / -${m_comp['gross_loss']:,.0f}", f"${m_s1['gross_profit']:,.0f} / -${m_s1['gross_loss']:,.0f}", f"${m_s2['gross_profit']:,.0f} / -${m_s2['gross_loss']:,.0f}", f"${m_s3['gross_profit']:,.0f} / -${m_s3['gross_loss']:,.0f}"),
+        ("Profit Factor", f"{m_comp['profit_factor']:.2f}", f"{m_s1['profit_factor']:.2f}", f"{m_s2['profit_factor']:.2f}", f"{m_s3['profit_factor']:.2f}"),
+        ("Win Rate / Loss Rate", f"{m_comp['win_rate']:.1f}% / {m_comp['loss_rate']:.1f}%", f"{m_s1['win_rate']:.1f}% / {m_s1['loss_rate']:.1f}%", f"{m_s2['win_rate']:.1f}% / {m_s2['loss_rate']:.1f}%", f"{m_s3['win_rate']:.1f}% / {m_s3['loss_rate']:.1f}%"),
+        ("Average Win / Average Loss", f"+${m_comp['avg_win']:.2f} / -${m_comp['avg_loss']:.2f}", f"+${m_s1['avg_win']:.2f} / -${m_s1['avg_loss']:.2f}", f"+${m_s2['avg_win']:.2f} / -${m_s2['avg_loss']:.2f}", f"+${m_s3['avg_win']:.2f} / -${m_s3['avg_loss']:.2f}"),
+        ("Win / Loss Payoff Ratio", f"{m_comp['payoff_ratio']:.2f}x", f"{m_s1['payoff_ratio']:.2f}x", f"{m_s2['payoff_ratio']:.2f}x", f"{m_s3['payoff_ratio']:.2f}x"),
+        ("Expectancy per Trade", f"+${m_comp['avg_trade']:.2f}", f"+${m_s1['avg_trade']:.2f}", f"+${m_s2['avg_trade']:.2f}", f"+${m_s3['avg_trade']:.2f}"),
+        ("Median Trade P&L", f"+${m_comp['median_trade']:.2f}", f"+${m_s1['median_trade']:.2f}", f"+${m_s2['median_trade']:.2f}", f"+${m_s3['median_trade']:.2f}"),
+        ("Maximum Drawdown ($)", f"-${abs(m_comp['max_dd']):,.2f}", f"-${abs(m_s1['max_dd']):,.2f}", f"-${abs(m_s2['max_dd']):,.2f}", f"-${abs(m_s3['max_dd']):,.2f}"),
+        ("Maximum Drawdown (% on $25k)", f"{m_comp['max_dd_pct']:.2f}%", f"{m_s1['max_dd_pct']:.2f}%", f"{m_s2['max_dd_pct']:.2f}%", f"{m_s3['max_dd_pct']:.2f}%"),
+        ("Max Drawdown Duration (Trades)", f"{m_comp['max_dd_dur_trades']} trades", f"{m_s1['max_dd_dur_trades']} trades", f"{m_s2['max_dd_dur_trades']} trades", f"{m_s3['max_dd_dur_trades']} trades"),
+        ("Recovery Factor (Net / Max DD)", f"{m_comp['recovery_factor']:.2f}x", f"{m_s1['recovery_factor']:.2f}x", f"{m_s2['recovery_factor']:.2f}x", f"{m_s3['recovery_factor']:.2f}x"),
+        ("Daily Sharpe Ratio (Ann. sqrt 252)", f"{m_comp['sharpe']:.2f}", f"{m_s1['sharpe']:.2f}", f"{m_s2['sharpe']:.2f}", f"{m_s3['sharpe']:.2f}"),
+        ("Daily Sortino Ratio (Ann. sqrt 252)", f"{m_comp['sortino']:.2f}", f"{m_s1['sortino']:.2f}", f"{m_s2['sortino']:.2f}", f"{m_s3['sortino']:.2f}"),
+        ("Calmar Ratio (Ann. Return / Max DD)", f"{m_comp['calmar']:.2f}", f"{m_s1['calmar']:.2f}", f"{m_s2['calmar']:.2f}", f"{m_s3['calmar']:.2f}"),
+        ("Annual Net Profit ($/year)", f"${m_comp['annual_profit']:,.2f}", f"${m_s1['annual_profit']:,.2f}", f"${m_s2['annual_profit']:,.2f}", f"${m_s3['annual_profit']:,.2f}"),
+        ("Annualized Return (CAGR on $25k)", f"{m_comp['cagr_pct']:.2f}%", f"{m_s1['cagr_pct']:.2f}%", f"{m_s2['cagr_pct']:.2f}%", f"{m_s3['cagr_pct']:.2f}%"),
+        ("Daily Session Win Rate (%)", f"{m_comp['daily_wr']:.1f}% ({m_comp['profit_days']}/{m_comp['total_days']})", f"{m_s1['daily_wr']:.1f}%", f"{m_s2['daily_wr']:.1f}%", f"{m_s3['daily_wr']:.1f}%"),
+        ("Worst Single Day P&L", f"-${abs(m_comp['worst_day']):,.2f}", f"-${abs(m_s1['worst_day']):,.2f}", f"-${abs(m_s2['worst_day']):,.2f}", f"-${abs(m_s3['worst_day']):,.2f}"),
+        ("Daily Value at Risk (VaR 95%)", f"-${abs(m_comp['var_95_daily']):.2f}", f"-${abs(m_s1['var_95_daily']):.2f}", f"-${abs(m_s2['var_95_daily']):.2f}", f"-${abs(m_s3['var_95_daily']):.2f}"),
+        ("Daily Expected Shortfall (CVaR 95%)", f"-${abs(m_comp['cvar_95_daily']):.2f}", f"-${abs(m_s1['cvar_95_daily']):.2f}", f"-${abs(m_s2['cvar_95_daily']):.2f}", f"-${abs(m_s3['cvar_95_daily']):.2f}"),
+        ("Largest Single Win", f"+${m_comp['largest_win']:.2f}", f"+${m_s1['largest_win']:.2f}", f"+${m_s2['largest_win']:.2f}", f"+${m_s3['largest_win']:.2f}"),
+        ("Largest Single Loss", f"-${abs(m_comp['largest_loss']):.2f}", f"-${abs(m_s1['largest_loss']):.2f}", f"-${abs(m_s2['largest_loss']):.2f}", f"-${abs(m_s3['largest_loss']):.2f}"),
+        ("Consecutive Wins / Losses (Max)", f"{m_comp['max_consec_wins']} W / {m_comp['max_consec_losses']} L", f"{m_s1['max_consec_wins']} W / {m_s1['max_consec_losses']} L", f"{m_s2['max_consec_wins']} W / {m_s2['max_consec_losses']} L", f"{m_s3['max_consec_wins']} W / {m_s3['max_consec_losses']} L"),
+        ("Average Holding Time", f"{m_comp['avg_hold_min']:.1f} mins", f"{m_s1['avg_hold_min']:.1f} mins", f"{m_s2['avg_hold_min']:.1f} mins", f"{m_s3['avg_hold_min']:.1f} mins"),
+        ("Long Performance", f"{m_comp['long_trades']}t · ${m_comp['long_net']:,.0f} ({m_comp['long_wr']:.1f}%)", f"{m_s1['long_trades']}t · ${m_s1['long_net']:,.0f}", f"{m_s2['long_trades']}t · ${m_s2['long_net']:,.0f}", f"{m_s3['long_trades']}t · ${m_s3['long_net']:,.0f}"),
+        ("Short Performance", f"{m_comp['short_trades']}t · ${m_comp['short_net']:,.0f} ({m_comp['short_wr']:.1f}%)", f"{m_s1['short_trades']}t · ${m_s1['short_net']:,.0f}", f"{m_s2['short_trades']}t · ${m_s2['short_net']:,.0f}", f"{m_s3['short_trades']}t · ${m_s3['short_net']:,.0f}"),
+    ]
+
+    th_headers = ["Metric Specification", "Unified Composite", "Strategy 1 (09:45 VA)", "Strategy 2 (10:15 Gold)", "Strategy 3 (08:35 Macro)"]
+    t_x = [0.02, 0.40, 0.58, 0.73, 0.88]
+    for i, h in enumerate(th_headers):
+        ax.text(t_x[i], 0.92, h, fontsize=8.5, fontweight="bold", color="#000000", ha="left" if i == 0 else "right")
+
+    y_t = 0.88
+    for row_idx, r in enumerate(table_data):
+        ax.axhline(y_t + 0.005, color="#E5E5E5", linewidth=0.5, xmin=0.02, xmax=0.98)
+        is_bold = row_idx in [2, 3, 5, 6, 11, 15]
+        for c_idx, val in enumerate(r):
+            f_w = "bold" if is_bold else "normal"
+            c_txt = "#1f77b4" if (c_idx == 1 and is_bold) else "#000000"
+            ax.text(t_x[c_idx], y_t - 0.005, val, fontsize=8.0, fontweight=f_w, color=c_txt, ha="left" if c_idx == 0 else "right")
+        y_t -= 0.029
+
+    out_path = OUT_DIR / "03_strategy_performance_and_risk_scorecard.png"
+    plt.savefig(out_path, dpi=200, facecolor=fig.get_facecolor(), bbox_inches="tight")
+    plt.close()
+    return out_path
+
+
+# ── SHEET 4: STRESS TESTS, FRICTION & MARKOV REGIMES ─────────────────────────
+def render_strategy_sheet_04_stress_tests_markov(df: pd.DataFrame) -> Path:
+    plt.style.use("default")
+    fig = plt.figure(figsize=(16, 12), dpi=200)
+    fig.patch.set_facecolor("#FFFFFF")
+
+    gs = fig.add_gridspec(2, 2, height_ratios=[1.6, 1.4], hspace=0.35, wspace=0.22)
+
+    # Panel A: Slippage Breakeven Cliff
+    ax_slip = fig.add_subplot(gs[0, 0])
+    format_spines_and_grid(ax_slip)
+
+    extra_ticks = [0, 1, 2, 3, 4, 6, 8]
+    pfs = [1.56, 1.46, 1.37, 1.29, 1.21, 1.06, 0.93]
+    ax_slip.plot(extra_ticks, pfs, marker="o", color="#1f77b4", linewidth=1.8, label="Profit Factor")
+    ax_slip.axhline(1.0, color="#d62728", linestyle="--", linewidth=1.2, label="Breakeven Cliff (PF=1.00)")
+    ax_slip.axvline(6.5, color="#9467bd", linestyle=":", linewidth=1.2, label="Breakeven at +6.5 ticks")
+
+    ax_slip.set_title("Slippage Sensitivity & Friction Breakeven Cliff", fontsize=11, color="#000000", pad=8)
+    ax_slip.set_xlabel("Extra Adverse Ticks per Leg (Entry + Exit)", fontsize=9, color="#000000")
+    ax_slip.set_ylabel("Profit Factor", fontsize=9, color="#000000")
+    ax_slip.legend(loc="upper right", frameon=True, facecolor="#FFFFFF", edgecolor="#000000", fontsize=8)
+
+    # Panel B: Markov Regime Contributions
+    ax_mkv = fig.add_subplot(gs[0, 1])
+    format_spines_and_grid(ax_mkv)
+
+    reg_pnl = df.groupby("markov_state_label")["pnl"].sum().reindex(["low_vol", "mid_vol", "high_vol"])
+    reg_wr = df.groupby("markov_state_label")["pnl"].agg(lambda x: (x > 0).mean() * 100).reindex(["low_vol", "mid_vol", "high_vol"])
+    b_mkv = ax_mkv.bar(["Low-Vol (1.25x)", "Mid-Vol (1.00x)", "High-Vol (0.50x S3)"], reg_pnl, color=["#2ca02c", "#1f77b4", "#ff7f0e"], edgecolor="#000000", width=0.5)
+    for idx, b in enumerate(b_mkv):
+        h = b.get_height()
+        ax_mkv.annotate(f"${h:,.0f}\n({reg_wr.iloc[idx]:.1f}% WR)", xy=(b.get_x() + b.get_width() / 2, h), xytext=(0, 3),
+                        textcoords="offset points", ha="center", va="bottom", color="#000000", fontweight="bold", fontsize=8)
+
+    ax_mkv.set_title("Markov Volatility Regime Allocation (Option 2 Sizing)", fontsize=11, color="#000000", pad=8)
+    ax_mkv.set_ylabel("Net Profit ($)", fontsize=9, color="#000000")
+    ax_mkv.yaxis.set_major_formatter(ticker.StrMethodFormatter("${x:,.0f}"))
+    ax_mkv.set_ylim(0, max(reg_pnl) * 1.25)
+
+    # Panel C: In-Sample vs Out-of-Sample Table
+    ax_oos = fig.add_subplot(gs[1, 0])
+    ax_oos.set_facecolor("#FFFFFF")
+    ax_oos.axis("off")
+
+    ax_oos.text(0.02, 0.94, "In-Sample (DEV 2021-2024) vs Out-of-Sample (OOS 2025-2026)", fontsize=10.5, fontweight="bold", color="#000000")
+
+    oos_rows = [
+        ("Trade Count", "352 trades", "191 trades"),
+        ("Win Rate", "57.4%", "50.8%"),
+        ("Profit Factor", "1.63", "1.48"),
+        ("Net Profit ($)", "+$9,515.92", "+$5,400.12"),
+        ("Daily Sharpe", "3.24", "2.98"),
+        ("Max Drawdown", "-$1,511.51", "-$1,378.38"),
+        ("Return / Max DD", "6.30x", "3.92x"),
+    ]
+    t_x1 = [0.02, 0.52, 0.82]
+    ax_oos.text(t_x1[0], 0.82, "Metric", fontsize=8.2, fontweight="bold", color="#000000")
+    ax_oos.text(t_x1[1], 0.82, "DEV (2021-2024)", fontsize=8.2, fontweight="bold", color="#000000", ha="right")
+    ax_oos.text(t_x1[2], 0.82, "OOS (2025-2026)", fontsize=8.2, fontweight="bold", color="#000000", ha="right")
+
+    y_pos1 = 0.70
+    for r in oos_rows:
+        ax_oos.axhline(y_pos1 + 0.015, color="#E5E5E5", linewidth=0.5, xmin=0.02, xmax=0.98)
+        ax_oos.text(t_x1[0], y_pos1, r[0], fontsize=8.0, color="#444444")
+        ax_oos.text(t_x1[1], y_pos1, r[1], fontsize=8.2, fontweight="bold", color="#000000", ha="right")
+        ax_oos.text(t_x1[2], y_pos1, r[2], fontsize=8.2, fontweight="bold", color="#1f77b4" if "$" in r[2] else "#000000", ha="right")
+        y_pos1 -= 0.10
+
+    # Panel D: Asset Breakdown Table
+    ax_ast = fig.add_subplot(gs[1, 1])
+    ax_ast.set_facecolor("#FFFFFF")
+    ax_ast.axis("off")
+
+    ax_ast.text(0.02, 0.94, "Traded Instrument Breakdown (MNQ, MES, MGC)", fontsize=10.5, fontweight="bold", color="#000000")
+
+    ast_rows = [
+        ("Micro Nasdaq (MNQ)", "315 trades", "51.7%", "1.48", "+$9,261.06", "2.66"),
+        ("Micro S&P (MES)", "144 trades", "60.4%", "1.89", "+$4,268.36", "3.82"),
+        ("Micro Gold (MGC)", "84 trades", "58.3%", "1.59", "+$1,386.62", "2.80"),
+    ]
+    t_x2 = [0.02, 0.38, 0.52, 0.65, 0.83, 0.95]
+    a_hdrs = ["Asset", "Trades", "Win Rate", "PF", "Net P&L", "Sharpe"]
+    for i, h in enumerate(a_hdrs):
+        ax_ast.text(t_x2[i], 0.82, h, fontsize=8.2, fontweight="bold", color="#000000", ha="left" if i == 0 else "right")
+
+    y_pos2 = 0.68
+    for r in ast_rows:
+        ax_ast.axhline(y_pos2 + 0.02, color="#E5E5E5", linewidth=0.5, xmin=0.02, xmax=0.98)
+        for c_idx, val in enumerate(r):
+            f_w = "bold" if c_idx in [0, 4] else "normal"
+            c_val = "#1f77b4" if c_idx == 4 else "#000000"
+            ax_ast.text(t_x2[c_idx], y_pos2, val, fontsize=8.0, fontweight=f_w, color=c_val, ha="left" if c_idx == 0 else "right")
+        y_pos2 -= 0.14
+
+    out_path = OUT_DIR / "04_strategy_stress_tests_and_markov_regimes.png"
+    plt.savefig(out_path, dpi=200, facecolor=fig.get_facecolor(), bbox_inches="tight")
+    plt.close()
+    return out_path
+
+
+# ── MASTER OVERVIEW POSTER ───────────────────────────────────────────────────
 def render_screenshot_style_poster(
     df: pd.DataFrame,
     m_comp: dict,
@@ -199,41 +518,19 @@ def render_screenshot_style_poster(
     m_s2: dict,
     m_s3: dict,
 ) -> Path:
-    """
-    Renders the exact visual style from the user's reference screenshot:
-    - Pure white background (#FFFFFF)
-    - Black box borders around all plots (#000000, linewidth=1.0)
-    - Subtle gray gridlines (#E5E5E5)
-    - Title: "Backtest Results" centered at top
-    - Tab10 lines: Blue, Orange, Green, Red, Purple
-    - Legend box with title "Strategy"
-    - Clean academic spreadsheet-style tables below
-    """
     plt.style.use("default")
     fig = plt.figure(figsize=(18, 26), dpi=200)
     fig.patch.set_facecolor("#FFFFFF")
 
-    # Layout:
-    # Row 0: Main Backtest Results line chart (exactly matching screenshot)
-    # Row 1: Underwater Drawdown chart
-    # Row 2: Trade P&L Distribution Histogram & Monthly P&L Table
-    # Row 3: Full Multi-Strategy Metrics Spreadsheet Table
-    # Row 4: Slippage Breakeven Cliff & Markov Volatility Regimes
     gs = fig.add_gridspec(5, 2, height_ratios=[3.6, 1.8, 2.2, 3.4, 2.0], hspace=0.35, wspace=0.20)
 
     # ── PANEL 1: MAIN BACKTEST RESULTS (EXACT MATCH TO SCREENSHOT) ───────────
     ax_main = fig.add_subplot(gs[0, :])
-    ax_main.set_facecolor("#FFFFFF")
-    ax_main.grid(True, color="#E5E5E5", linestyle="-", linewidth=0.8)
-    for sp in ax_main.spines.values():
-        sp.set_color("#000000")
-        sp.set_linewidth(1.0)
+    format_spines_and_grid(ax_main)
 
     df_s = df.sort_values("entry_time").reset_index(drop=True)
     comp_cum = df_s["pnl"].cumsum() + 25_000.0
     comp_peak = comp_cum.cummax()
-
-    # Calculate portfolio values starting at $25,000 baseline
     s1_cum = df_s.apply(lambda r: r["pnl"] if r["window"] == 1 else 0.0, axis=1).cumsum() + 25_000.0
     s2_cum = df_s.apply(lambda r: r["pnl"] if r["window"] == 2 else 0.0, axis=1).cumsum() + 25_000.0
     s3_cum = df_s.apply(lambda r: r["pnl"] if r["window"] == 3 else 0.0, axis=1).cumsum() + 25_000.0
@@ -254,15 +551,10 @@ def render_screenshot_style_poster(
     leg = ax_main.legend(title="Strategy", loc="upper left", frameon=True, facecolor="#FFFFFF", edgecolor="#000000", fontsize=9.5)
     leg.get_title().set_fontsize(10)
     leg.get_title().set_fontweight("bold")
-    ax_main.tick_params(colors="#000000", labelsize=9.5)
 
     # ── PANEL 2: UNDERWATER DRAWDOWN ─────────────────────────────────────────
     ax_dd = fig.add_subplot(gs[1, :])
-    ax_dd.set_facecolor("#FFFFFF")
-    ax_dd.grid(True, color="#E5E5E5", linestyle="-", linewidth=0.8)
-    for sp in ax_dd.spines.values():
-        sp.set_color("#000000")
-        sp.set_linewidth(1.0)
+    format_spines_and_grid(ax_dd)
 
     dd_vals = comp_cum - comp_peak
     ax_dd.fill_between(df_s["entry_time"], dd_vals, 0, color="#d62728", alpha=0.25)
@@ -275,15 +567,10 @@ def render_screenshot_style_poster(
     ax_dd.xaxis.set_major_locator(mdates.YearLocator())
     ax_dd.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
     ax_dd.legend(loc="lower left", frameon=True, facecolor="#FFFFFF", edgecolor="#000000", fontsize=9)
-    ax_dd.tick_params(colors="#000000", labelsize=9)
 
-    # ── PANEL 3A: TRADE P&L DISTRIBUTION (MATCHING SCREENSHOT THUMBNAIL) ─────
+    # ── PANEL 3A: TRADE P&L DISTRIBUTION ─────────────────────────────────────
     ax_hist = fig.add_subplot(gs[2, 0])
-    ax_hist.set_facecolor("#FFFFFF")
-    ax_hist.grid(True, color="#E5E5E5", linestyle="-", linewidth=0.8)
-    for sp in ax_hist.spines.values():
-        sp.set_color("#000000")
-        sp.set_linewidth(1.0)
+    format_spines_and_grid(ax_hist)
 
     wins = df[df["pnl"] > 0]["pnl"]
     losses = df[df["pnl"] <= 0]["pnl"]
@@ -296,15 +583,11 @@ def render_screenshot_style_poster(
     ax_hist.set_ylabel("Trade Count", fontsize=9.5, color="#000000")
     ax_hist.xaxis.set_major_formatter(ticker.StrMethodFormatter("${x:,.0f}"))
     ax_hist.legend(loc="upper right", frameon=True, facecolor="#FFFFFF", edgecolor="#000000", fontsize=8.5)
-    ax_hist.tick_params(colors="#000000", labelsize=8.5)
 
-    # ── PANEL 3B: MONTHLY P&L MATRIX (CLASSIC ACADEMIC TABLE) ────────────────
+    # ── PANEL 3B: MONTHLY P&L MATRIX ─────────────────────────────────────────
     ax_mo = fig.add_subplot(gs[2, 1])
     ax_mo.set_facecolor("#FFFFFF")
     ax_mo.axis("off")
-    for sp in ax_mo.spines.values():
-        sp.set_color("#000000")
-        sp.set_linewidth(1.0)
 
     ax_mo.text(0.02, 0.96, "Monthly Returns Matrix (USD Net)", fontsize=11, fontweight="bold", color="#000000")
 
@@ -375,7 +658,6 @@ def render_screenshot_style_poster(
 
     y_t = 0.87
     for row_idx, r in enumerate(table_data):
-        # Draw subtle horizontal divider
         ax_tab.axhline(y_t + 0.005, color="#E5E5E5", linewidth=0.5, xmin=0.02, xmax=0.98)
         is_bold = row_idx in [2, 3, 5, 6, 11, 15]
         for c_idx, val in enumerate(r):
@@ -386,15 +668,10 @@ def render_screenshot_style_poster(
 
     # ── PANEL 5A: SLIPPAGE SENSITIVITY BREAKEVEN CLIFF ───────────────────────
     ax_slip = fig.add_subplot(gs[4, 0])
-    ax_slip.set_facecolor("#FFFFFF")
-    ax_slip.grid(True, color="#E5E5E5", linestyle="-", linewidth=0.8)
-    for sp in ax_slip.spines.values():
-        sp.set_color("#000000")
-        sp.set_linewidth(1.0)
+    format_spines_and_grid(ax_slip)
 
     extra_ticks = [0, 1, 2, 3, 4, 6, 8]
     pfs = [1.56, 1.46, 1.37, 1.29, 1.21, 1.06, 0.93]
-    net_pnls = [14916, 12763, 10610, 8457, 6304, 1998, -2308]
 
     ax_slip.plot(extra_ticks, pfs, marker="o", color="#1f77b4", linewidth=1.8, label="Profit Factor")
     ax_slip.axhline(1.0, color="#d62728", linestyle="--", linewidth=1.2, label="Breakeven Cliff (PF=1.00)")
@@ -402,15 +679,10 @@ def render_screenshot_style_poster(
     ax_slip.set_xlabel("Extra Adverse Ticks per Leg (Entry + Exit)", fontsize=9, color="#000000")
     ax_slip.set_ylabel("Profit Factor", fontsize=9, color="#000000")
     ax_slip.legend(loc="upper right", frameon=True, facecolor="#FFFFFF", edgecolor="#000000", fontsize=8)
-    ax_slip.tick_params(colors="#000000", labelsize=8.5)
 
     # ── PANEL 5B: MARKOV VOLATILITY REGIME CONTRIBUTION ──────────────────────
     ax_mkv = fig.add_subplot(gs[4, 1])
-    ax_mkv.set_facecolor("#FFFFFF")
-    ax_mkv.grid(True, color="#E5E5E5", linestyle="-", linewidth=0.8)
-    for sp in ax_mkv.spines.values():
-        sp.set_color("#000000")
-        sp.set_linewidth(1.0)
+    format_spines_and_grid(ax_mkv)
 
     reg_pnl = df.groupby("markov_state_label")["pnl"].sum().reindex(["low_vol", "mid_vol", "high_vol"])
     reg_wr = df.groupby("markov_state_label")["pnl"].agg(lambda x: (x > 0).mean() * 100).reindex(["low_vol", "mid_vol", "high_vol"])
@@ -424,7 +696,6 @@ def render_screenshot_style_poster(
     ax_mkv.set_ylabel("Net Profit ($)", fontsize=9, color="#000000")
     ax_mkv.yaxis.set_major_formatter(ticker.StrMethodFormatter("${x:,.0f}"))
     ax_mkv.set_ylim(0, max(reg_pnl) * 1.25)
-    ax_mkv.tick_params(colors="#000000", labelsize=8.5)
 
     out_poster = OUT_DIR / "strategy_performance_quant_report.png"
     plt.savefig(out_poster, dpi=200, facecolor=fig.get_facecolor(), bbox_inches="tight")
@@ -479,8 +750,8 @@ def generate_screenshot_style_html_dashboard(
             "regime": r["markov_state_label"],
             "mult": f"{r['markov_sizing_mult']:.2f}x",
             "pnl": round(float(r["pnl"]), 2),
-            "portfolio_val": round(cum_comp[idx], 2),
-            "hold": f"{r['hold_minutes']:.0f}m",
+            "cum_balance": round(25_000.0 + float(df_sorted.iloc[:idx+1]["pnl"].sum()), 2),
+            "hold_mins": round(float(r["hold_minutes"]), 1)
         })
 
     payload = {
@@ -489,10 +760,13 @@ def generate_screenshot_style_html_dashboard(
         "peak_comp": peak_comp,
         "dd_comp": dd_comp,
         "cum_s1": cum_s1,
+        "peak_s1": peak_s1,
         "dd_s1": dd_s1,
         "cum_s2": cum_s2,
+        "peak_s2": peak_s2,
         "dd_s2": dd_s2,
         "cum_s3": cum_s3,
+        "peak_s3": peak_s3,
         "dd_s3": dd_s3,
         "metrics": {
             "comp": m_comp,
@@ -551,6 +825,30 @@ def generate_screenshot_style_html_dashboard(
             margin-left: 16px;
         }}
         .nav-links a:hover {{ text-decoration: underline; }}
+
+        /* PNG Sheets Download Bar */
+        .sheets-bar {{
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-bottom: 16px;
+            padding: 10px;
+            background: #F8F9FA;
+            border: 1px solid #000000;
+        }}
+        .sheet-btn {{
+            padding: 6px 12px;
+            background: #FFFFFF;
+            border: 1px solid #000000;
+            color: #000000;
+            text-decoration: none;
+            font-size: 11.5px;
+            font-weight: bold;
+        }}
+        .sheet-btn:hover {{
+            background: #F0F7FF;
+            color: #1f77b4;
+        }}
         
         /* Tab Switcher in classic clean Python style */
         .tabs-bar {{
@@ -651,6 +949,16 @@ def generate_screenshot_style_html_dashboard(
             <a href="../prop_firm_dashboard/dashboard.html">LucidFlex 25K Prop Mode &rarr;</a>
             <a href="../forward_test/demo_parity_dashboard.html">Live Demo Parity Journal &rarr;</a>
         </div>
+    </div>
+
+    <!-- PNG Sheets Quick Access Bar -->
+    <div class="sheets-bar">
+        <span style="font-size: 11px; font-weight: bold; align-self: center; margin-right: 8px;">PUBLICATION PNG SUITE:</span>
+        <a class="sheet-btn" href="01_strategy_equity_curves_and_drawdown.png" target="_blank">01. Equity & Drawdown PNG</a>
+        <a class="sheet-btn" href="02_strategy_trade_distributions_and_monthly.png" target="_blank">02. Distributions & Monthly PNG</a>
+        <a class="sheet-btn" href="03_strategy_performance_and_risk_scorecard.png" target="_blank">03. Full Metrics Scorecard PNG</a>
+        <a class="sheet-btn" href="04_strategy_stress_tests_and_markov_regimes.png" target="_blank">04. Stress Tests & Markov PNG</a>
+        <a class="sheet-btn" href="strategy_performance_quant_report.png" target="_blank">Master Overview Poster (PNG)</a>
     </div>
 
     <!-- Strategy Tabs Switcher -->
@@ -1050,8 +1358,8 @@ def generate_screenshot_style_html_dashboard(
                            '<td>' + t.regime + '</td>' +
                            '<td>' + t.mult + '</td>' +
                            '<td class="' + pnlCls + '">' + pnlTxt + '</td>' +
-                           '<td>$' + t.portfolio_val.toLocaleString() + '</td>' +
-                           '<td>' + t.hold + '</td>';
+                           '<td>$' + t.cum_balance.toLocaleString(undefined, {{minimumFractionDigits: 2, maximumFractionDigits: 2}}) + '</td>' +
+                           '<td>' + t.hold_mins + 'm</td>';
             tbody.appendChild(tr);
         }});
     }}
@@ -1059,7 +1367,11 @@ def generate_screenshot_style_html_dashboard(
     function filterTrades() {{
         const q = document.getElementById('blotterFilter').value.toLowerCase();
         const filtered = appData.blotter.filter(t => {{
-            return t.date.includes(q) || t.symbol.toLowerCase().includes(q) || t.strategy.toLowerCase().includes(q) || t.direction.toLowerCase().includes(q) || t.regime.toLowerCase().includes(q);
+            return t.date.includes(q) ||
+                   t.strategy.toLowerCase().includes(q) ||
+                   t.symbol.toLowerCase().includes(q) ||
+                   t.direction.toLowerCase().includes(q) ||
+                   t.regime.toLowerCase().includes(q);
         }});
         renderBlotter(filtered);
     }}
@@ -1097,9 +1409,17 @@ def main():
     print(f"  Strategy 3 (08:35):  {m_s3['trades']} trades | Net: ${m_s3['net_profit']:>9,.2f} | PF: {m_s3['profit_factor']:.2f} | WR: {m_s3['win_rate']:5.1f}% | Sharpe: {m_s3['sharpe']:.2f} | MaxDD: -${abs(m_s3['max_dd']):>7,.2f}")
     print("=" * 80 + "\n")
 
-    print("Rendering Screenshot-Style Backtest Results Poster (PNG)...")
-    poster_path = render_screenshot_style_poster(df, m_comp, m_s1, m_s2, m_s3)
-    print(f"  Saved Poster: {poster_path}")
+    print("Rendering Modular Strategy Performance Publication PNG Sheets...")
+    s1 = render_strategy_sheet_01_equity(df, m_comp, m_s1, m_s2, m_s3)
+    print(f"  Saved Sheet 01: {s1}")
+    s2 = render_strategy_sheet_02_distributions_monthly(df, m_comp)
+    print(f"  Saved Sheet 02: {s2}")
+    s3 = render_strategy_sheet_03_scorecard(m_comp, m_s1, m_s2, m_s3)
+    print(f"  Saved Sheet 03: {s3}")
+    s4 = render_strategy_sheet_04_stress_tests_markov(df)
+    print(f"  Saved Sheet 04: {s4}")
+    s_master = render_screenshot_style_poster(df, m_comp, m_s1, m_s2, m_s3)
+    print(f"  Saved Master Poster: {s_master}")
 
     print("Generating Screenshot-Style Interactive Dashboard (HTML)...")
     dashboard_path = generate_screenshot_style_html_dashboard(df, m_comp, m_s1, m_s2, m_s3)
