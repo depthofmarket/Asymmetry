@@ -70,21 +70,22 @@ Evaluated across all 319 Strategy 1 trades with full micro friction (\$1.24 roun
 | **4. Cand C (Dynamic Size)** | 316 | 57.0% | 1.72 | **+\$9,636.85** | **1.93** | 1.49 | +21.2% profit boost |
 
 > [!IMPORTANT]
-> **Candidate B achieves complete out-of-sample stability**: Dev PF of **1.90** and Holdout OOS PF of **1.91**. By removing low-conviction rotational churn near VWAP and toxic overextensions beyond 2.2 DP, the strategy generates more net dollars with 65 fewer trades.
+> **Production Decision: Candidate A Selected (Preserving Full Sampling Frequency)**:
+> While Candidate B achieved higher PF by cutting 65 trades near VWAP, Candidate A is chosen for production to preserve trade volume and statistical sample size. Candidate A drops **only the 3 catastrophic > 2.5 DP overextended entries** (33.3% WR, 0.09 PF), preserving **316 of 319 trades (99.1%)** in Strategy 1 and **543 of 546 trades (99.5%)** in the ensemble while delivering higher net profit (+$12,947.18).
 
 ---
 
-## 4. Full 3-Window Portfolio Ensemble Impact
+## 4. Full 3-Window Portfolio Ensemble Impact (Candidate A)
 
-Integrating Candidate B into the full 3-window multi-asset ensemble (Strategy 1 + Strategy 2 + Strategy 3):
+Integrating Candidate A into the full 3-window multi-asset ensemble (Strategy 1 + Strategy 2 + Strategy 3):
 
-| Metric | Baseline 3-Window Ensemble | Upgraded GARCH MVT Ensemble | Improvement |
+| Metric | Baseline 3-Window Ensemble | Upgraded GARCH MVT Ensemble (Cand A) | Improvement |
 | :--- | :---: | :---: | :---: |
-| **Total Trades** | 546 trades | **481 trades** | Cleaner trade selection |
-| **Trade Frequency** | ~7.8 trades/month | ~6.9 trades/month | ~1.6 trades/week |
-| **Portfolio Win Rate** | 54.9% | **56.3%** | **+1.4%** |
-| **Portfolio Profit Factor**| **1.47** | **1.55** | **+0.08 (+5.4%)** |
-| **Cumulative Net P&L** | +\$12,771.88 | **+\$12,940.28** | **+\$168.40 (with 65 fewer trades)** |
+| **Total Trades** | 546 trades | **543 trades** | **Preserves 99.5% of trade volume** |
+| **Trade Frequency** | ~7.8 trades/month | **~7.8 trades/month (~1.8 trades/week)** | Stable sample size |
+| **Portfolio Win Rate** | 54.95% | **55.06%** | **+0.11%** |
+| **Portfolio Profit Factor**| **1.47** | **1.48** | **+0.01** |
+| **Cumulative Net P&L** | +\$12,771.88 | **+\$12,947.18** | **+\$175.30 (Drops toxic losses)** |
 | **Max Drawdown** | \$1,768.47 | **\$1,768.47** | Preserved floor |
 | **Profit-to-MaxDD Ratio**| 7.22x | **7.32x** | Enhanced capital efficiency |
 
