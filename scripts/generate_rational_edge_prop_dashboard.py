@@ -168,10 +168,17 @@ def run_comprehensive_prop_simulation(
             if terminal:
                 break
 
-        if i < 100:
+        if eval_status == "pass" and len([t for t in eval_trajectories_100 if t["status"] == "pass"]) < 70:
             eval_trajectories_100.append({
                 "path": eval_path,
-                "status": "pass" if eval_status == "pass" else "fail",
+                "status": "pass",
+                "days": days_count,
+                "trades": trades_count,
+            })
+        elif eval_status != "pass" and len([t for t in eval_trajectories_100 if t["status"] in ["fail", "fail_max_loss"]]) < 30:
+            eval_trajectories_100.append({
+                "path": eval_path,
+                "status": "fail_max_loss",
                 "days": days_count,
                 "trades": trades_count,
             })
@@ -404,17 +411,21 @@ def render_prop_sheet_01_trajectories(mc: dict) -> Path:
     ax.tick_params(colors="#000000", labelsize=9.5)
 
     passing_trajs = [t for t in mc["eval_trajectories_100"] if t["status"] == "pass"]
-    failing_trajs = [t for t in mc["eval_trajectories_100"] if t["status"] == "fail_max_loss"]
+    failing_trajs = [t for t in mc["eval_trajectories_100"] if t["status"] in ["fail", "fail_max_loss"]]
 
-    # 1. Breached paths (background)
+    # 1. Breached paths (background: red lines + red terminal dots)
     for trj in failing_trajs[:30]:
         p = trj["path"]
-        ax.plot(range(len(p)), p, color="#d62728", alpha=0.30, linewidth=0.85)
+        ax.plot(range(len(p)), p, color="#d62728", alpha=0.35, linewidth=0.9, zorder=2)
+        ax.plot(len(p) - 1, p[-1], marker="o", markersize=4.5, color="#d62728",
+                markeredgecolor="#8b1819", markeredgewidth=0.5, zorder=4)
 
-    # 2. Passing paths (foreground)
+    # 2. Passing paths (foreground: green lines + green terminal dots)
     for trj in passing_trajs[:70]:
         p = trj["path"]
-        ax.plot(range(len(p)), p, color="#2ca02c", alpha=0.30, linewidth=0.85)
+        ax.plot(range(len(p)), p, color="#2ca02c", alpha=0.30, linewidth=0.85, zorder=3)
+        ax.plot(len(p) - 1, p[-1], marker="o", markersize=4.5, color="#2ca02c",
+                markeredgecolor="#1b6e22", markeredgewidth=0.5, zorder=4)
 
     # 3. Median and Fastest highlighted paths
     med_days = mc["med_days"]
@@ -422,22 +433,30 @@ def render_prop_sheet_01_trajectories(mc: dict) -> Path:
     fastest_traj = min(passing_trajs, key=lambda t: len(t["path"])) if passing_trajs else None
 
     if closest_med:
-        ax.plot(range(len(closest_med["path"])), closest_med["path"],
-                color="#1f77b4", linewidth=2.5, label=f"Median Path ({len(closest_med['path'])}d to Target)")
+        p_med = closest_med["path"]
+        ax.plot(range(len(p_med)), p_med, color="#1f77b4", linewidth=2.5, zorder=5,
+                label=f"Median Path ({len(p_med)}d to Target)")
+        ax.plot(len(p_med) - 1, p_med[-1], marker="o", markersize=7.0, color="#1f77b4",
+                markeredgecolor="#0d3b66", markeredgewidth=0.8, zorder=6)
 
     if fastest_traj:
-        ax.plot(range(len(fastest_traj["path"])), fastest_traj["path"],
-                color="#ff7f0e", linewidth=1.8, linestyle="--", label=f"Fastest Path ({len(fastest_traj['path'])}d to Target)")
+        p_fast = fastest_traj["path"]
+        ax.plot(range(len(p_fast)), p_fast, color="#ff7f0e", linewidth=1.8, linestyle="--", zorder=5,
+                label=f"Fastest Path ({len(p_fast)}d to Target)")
+        ax.plot(len(p_fast) - 1, p_fast[-1], marker="o", markersize=6.0, color="#ff7f0e",
+                markeredgecolor="#b35400", markeredgewidth=0.8, zorder=6)
 
-    # Dummy lines for legend entry
-    ax.plot([], [], color="#2ca02c", linewidth=1.5, alpha=0.7, label=f"Passing Paths ({mc['pass_rate']:.1f}%)")
-    ax.plot([], [], color="#d62728", linewidth=1.5, alpha=0.7, label=f"Breached Paths ({mc['fail_rate']:.1f}%)")
+    # Legend entries for terminal pass / breach runs
+    ax.plot([], [], marker="o", color="#2ca02c", linewidth=1.5, alpha=0.85, markersize=5.0,
+            markeredgecolor="#1b6e22", label=f"Passed Runs ({mc['pass_rate']:.1f}% • Green Dot)")
+    ax.plot([], [], marker="o", color="#d62728", linewidth=1.5, alpha=0.85, markersize=5.0,
+            markeredgecolor="#8b1819", label=f"Breached Runs ({mc['fail_rate']:.1f}% • Red Dot)")
 
     # Boundary reference lines
-    ax.axhline(26_250.0, color="#2ca02c", linestyle="--", linewidth=1.8, label="Profit Target ($26,250 • +$1,250)")
-    ax.axhline(25_100.0, color="#9467bd", linestyle=":", linewidth=1.6, label="Floor Lock ($25,100 at Peak >= $26.1k)")
-    ax.axhline(25_000.0, color="#777777", linestyle="-", linewidth=0.9, alpha=0.7, label="Initial Capital ($25,000)")
-    ax.axhline(24_000.0, color="#d62728", linestyle="--", linewidth=1.8, label="Max Trailing Floor ($24,000 • -$1,000)")
+    ax.axhline(26_250.0, color="#2ca02c", linestyle="--", linewidth=1.8, label=r"Profit Target (\$26,250 • +\$1,250)")
+    ax.axhline(25_100.0, color="#9467bd", linestyle=":", linewidth=1.6, label=r"Floor Lock (\$25,100 once Peak >= \$26,100)")
+    ax.axhline(25_000.0, color="#777777", linestyle="-", linewidth=0.9, alpha=0.7, label=r"Initial Capital (\$25,000)")
+    ax.axhline(24_000.0, color="#d62728", linestyle="--", linewidth=1.8, label=r"Max Trailing Floor (\$24,000 • -\$1,000)")
 
     # Subtle boundary zone shading
     ax.axhspan(26_250.0, 26_600.0, color="#2ca02c", alpha=0.04)
@@ -453,7 +472,10 @@ def render_prop_sheet_01_trajectories(mc: dict) -> Path:
     ax.yaxis.set_major_formatter(ticker.StrMethodFormatter("${x:,.0f}"))
     ax.yaxis.set_major_locator(ticker.MultipleLocator(500))
     ax.set_ylim(23_700, 26_600)
-    ax.set_xlim(0, 75)
+
+    all_sample_trajs = passing_trajs[:70] + failing_trajs[:30]
+    max_days = max((len(t["path"]) for t in all_sample_trajs), default=70)
+    ax.set_xlim(0, max(75, max_days + 3))
 
     # Standard Matplotlib Legend outside on the right (matching CoinGecko reference style)
     leg = ax.legend(
@@ -809,14 +831,40 @@ def render_prop_poster_master(mc: dict) -> Path:
     ax_trj = fig.add_subplot(gs[0, :])
     format_spines_and_grid(ax_trj)
 
-    for trj in mc["eval_trajectories_100"][:80]:
-        p = trj["path"]
-        c = "#2ca02c" if trj["status"] == "pass" else "#d62728"
-        ax_trj.plot(range(len(p)), p, color=c, alpha=0.35, linewidth=0.9)
+    passing_post = [t for t in mc["eval_trajectories_100"] if t["status"] == "pass"]
+    failing_post = [t for t in mc["eval_trajectories_100"] if t["status"] in ["fail", "fail_max_loss"]]
 
-    ax_trj.axhline(26_250.0, color="#2ca02c", linestyle="--", linewidth=1.8, label="Profit Target ($26,250 • +$1,250)")
-    ax_trj.axhline(24_000.0, color="#d62728", linestyle="--", linewidth=1.8, label="Max Trailing Floor ($24,000 • -$1,000)")
-    ax_trj.axhline(25_100.0, color="#9467bd", linestyle=":", linewidth=1.5, label="Trailing Floor Lock ($25,100 at Peak >= $26,100)")
+    # 1. Breached paths (red lines + red terminal dots)
+    for trj in failing_post[:25]:
+        p = trj["path"]
+        ax_trj.plot(range(len(p)), p, color="#d62728", alpha=0.35, linewidth=0.9, zorder=2)
+        ax_trj.plot(len(p) - 1, p[-1], marker="o", markersize=4.0, color="#d62728",
+                    markeredgecolor="#8b1819", markeredgewidth=0.5, zorder=4)
+
+    # 2. Passing paths (green lines + green terminal dots)
+    for trj in passing_post[:55]:
+        p = trj["path"]
+        ax_trj.plot(range(len(p)), p, color="#2ca02c", alpha=0.30, linewidth=0.85, zorder=3)
+        ax_trj.plot(len(p) - 1, p[-1], marker="o", markersize=4.0, color="#2ca02c",
+                    markeredgecolor="#1b6e22", markeredgewidth=0.5, zorder=4)
+
+    # Median and fastest paths
+    if passing_post:
+        med_days = mc["med_days"]
+        closest_med = min(passing_post, key=lambda t: abs(len(t["path"]) - med_days))
+        fastest_traj = min(passing_post, key=lambda t: len(t["path"]))
+        ax_trj.plot(range(len(closest_med["path"])), closest_med["path"], color="#1f77b4", linewidth=2.2, zorder=5, label=f"Median Path ({len(closest_med['path'])}d to Target)")
+        ax_trj.plot(len(closest_med["path"]) - 1, closest_med["path"][-1], marker="o", markersize=6.0, color="#1f77b4", markeredgecolor="#0d3b66", zorder=6)
+        ax_trj.plot(range(len(fastest_traj["path"])), fastest_traj["path"], color="#ff7f0e", linewidth=1.6, linestyle="--", zorder=5, label=f"Fastest Path ({len(fastest_traj['path'])}d to Target)")
+        ax_trj.plot(len(fastest_traj["path"]) - 1, fastest_traj["path"][-1], marker="o", markersize=5.0, color="#ff7f0e", markeredgecolor="#b35400", zorder=6)
+
+    # Legend entries for terminal pass / breach runs
+    ax_trj.plot([], [], marker="o", color="#2ca02c", linewidth=1.5, alpha=0.85, markersize=4.5, markeredgecolor="#1b6e22", label=f"Passed Runs ({mc['pass_rate']:.1f}% • Green Dot)")
+    ax_trj.plot([], [], marker="o", color="#d62728", linewidth=1.5, alpha=0.85, markersize=4.5, markeredgecolor="#8b1819", label=f"Breached Runs ({mc['fail_rate']:.1f}% • Red Dot)")
+
+    ax_trj.axhline(26_250.0, color="#2ca02c", linestyle="--", linewidth=1.8, label=r"Profit Target (\$26,250 • +\$1,250)")
+    ax_trj.axhline(24_000.0, color="#d62728", linestyle="--", linewidth=1.8, label=r"Max Trailing Floor (\$24,000 • -\$1,000)")
+    ax_trj.axhline(25_100.0, color="#9467bd", linestyle=":", linewidth=1.5, label=r"Floor Lock (\$25,100 once Peak >= \$26,100)")
 
     ax_trj.set_title("Backtest Results - Prop Evaluation Mode (LucidFlex 25K)", fontsize=16, color="#000000", pad=12)
     ax_trj.set_xlabel("Trading Days Elapsed", fontsize=11, color="#000000")
