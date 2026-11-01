@@ -13,6 +13,15 @@ import numpy as np
 import pandas as pd
 from backtest.markov_regime import add_markov_regime_features
 
+from backtest.demo_parity_engine import (
+    STARTING_CAPITAL,
+    PROFIT_TARGET_DOLLARS,
+    MAX_TRAILING_DRAWDOWN,
+    DAILY_SOFT_STOP_DOLLARS,
+    TRAILING_FLOOR_LOCK,
+    PEAK_FOR_FLOOR_LOCK,
+)
+
 # Load active 543-trade Candidate A ensemble
 trades_path = ROOT / "data/processed/unified_three_strategy_garch_portfolio_trades_2021_2026.parquet"
 df_trades = pd.read_parquet(trades_path)
@@ -45,58 +54,79 @@ mult = np.where(is_low, 1.25, mult)
 mult = np.where(is_high & is_s3, 0.50, mult)
 opt2_trades["net_dollars_micro"] = opt2_trades["net_dollars_micro"] * mult
 
-def run_mc(name: str, trades_df: pd.DataFrame, n_sims: int = 10_000, seed: int = 42):
-    # Group trades by date
-    daily_pnls = trades_df.groupby("date_str")["net_dollars_micro"].sum().values
+def run_mc(name: str, trades_df: pd.DataFrame, n_sims: int = 10_000, block_size: int = 5, seed: int = 42):
+    daily = trades_df.groupby("date_str").agg(
+        pnl=("net_dollars_micro", "sum"),
+        trades=("net_dollars_micro", "count")
+    ).reset_index()
+    
+    daily_pnls = daily["pnl"].to_numpy()
+    daily_trades = daily["trades"].to_numpy()
+    n_days = len(daily_pnls)
     
     rng = np.random.default_rng(seed)
     passes = 0
     fails = 0
-    timeouts = 0
-    days_to_pass = []
+    pass_days = []
+    fail_days = []
+    pass_trades = []
+    fail_trades = []
     
     for _ in range(n_sims):
-        bal = 25000.0
-        peak = 25000.0
-        flr = 24000.0
+        bal = STARTING_CAPITAL
+        peak = STARTING_CAPITAL
+        flr = STARTING_CAPITAL - MAX_TRAILING_DRAWDOWN
         
-        sim_days = rng.choice(daily_pnls, size=45, replace=True)
-        outcome = "timeout"
+        days_count = 0
+        trades_count = 0
         
-        for d, dp in enumerate(sim_days, 1):
-            actual_dp = max(dp, -600.0)
-            bal += actual_dp
+        while True:
+            start_idx = rng.integers(0, n_days - block_size + 1)
+            b_pnls = daily_pnls[start_idx : start_idx + block_size]
+            b_trades = daily_trades[start_idx : start_idx + block_size]
             
-            if bal > peak:
-                peak = bal
-                flr = max(flr, peak - 1000.0)
+            terminal = False
+            for dp, dt in zip(b_pnls, b_trades):
+                days_count += 1
+                trades_count += dt
+                actual_dp = max(dp, DAILY_SOFT_STOP_DOLLARS)
+                bal += actual_dp
                 
-            if bal <= flr:
-                outcome = "fail"
-                fails += 1
+                if bal > peak:
+                    peak = bal
+                    if peak >= PEAK_FOR_FLOOR_LOCK:
+                        flr = max(flr, TRAILING_FLOOR_LOCK)
+                    else:
+                        flr = max(flr, peak - MAX_TRAILING_DRAWDOWN)
+                        
+                if bal <= flr:
+                    fails += 1
+                    fail_days.append(days_count)
+                    fail_trades.append(trades_count)
+                    terminal = True
+                    break
+                    
+                if (bal - STARTING_CAPITAL) >= PROFIT_TARGET_DOLLARS:
+                    passes += 1
+                    pass_days.append(days_count)
+                    pass_trades.append(trades_count)
+                    terminal = True
+                    break
+                    
+            if terminal:
                 break
                 
-            if bal >= 26500.0:
-                outcome = "pass"
-                passes += 1
-                days_to_pass.append(d)
-                break
-                
-        if outcome == "timeout":
-            timeouts += 1
-            
     p_rate = passes / n_sims * 100
     f_rate = fails / n_sims * 100
-    t_rate = timeouts / n_sims * 100
-    avg_d = np.mean(days_to_pass) if days_to_pass else 0.0
-    ev = (passes / n_sims) * 1500.0 - (fails / n_sims) * 150.0
+    ev = (passes / n_sims) * PROFIT_TARGET_DOLLARS - (fails / n_sims) * 150.0
     
     print(f"=== {name} ===")
-    print(f"  Pass Rate:    {p_rate:>5.1f}%")
-    print(f"  Fail Rate:    {f_rate:>5.1f}%")
-    print(f"  Timeout Rate: {t_rate:>5.1f}%")
-    print(f"  Avg Days:     {avg_d:>5.1f} days")
-    print(f"  Est EV/Eval:  ${ev:>7.2f}\n")
+    print(f"  Pass Rate:         {p_rate:>5.2f}%")
+    print(f"  Fail Rate:         {f_rate:>5.2f}%")
+    print(f"  Median Pass Time:  {np.median(pass_days):>4.1f} days ({np.median(pass_trades):>4.1f} trades)")
+    print(f"  Mean Pass Time:    {np.mean(pass_days):>4.1f} days ({np.mean(pass_trades):>4.1f} trades)")
+    print(f"  Median Fail Time:  {np.median(fail_days):>4.1f} days ({np.median(fail_trades):>4.1f} trades)")
+    print(f"  Est EV / Attempt:  ${ev:>7.2f}\n")
 
 print("=" * 65)
 print("  MONTE CARLO (10,000 PATHS): LUCIDFLEX 25K PROP EVALUATION")

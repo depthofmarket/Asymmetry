@@ -112,74 +112,109 @@ def stress_daily_clustering(df: pd.DataFrame):
     print()
 
 # ==============================================================================
-# 3. Block Bootstrap: Prop Firm Sequence & Trailing Drawdown Survival
+# 3. Block Bootstrap: Prop Firm Sequence & Trailing Drawdown Survival (NO TIME LIMIT)
 # ==============================================================================
 def stress_block_bootstrap(df: pd.DataFrame, n_simulations: int = 10000, block_size: int = 5):
     print("=" * 80)
-    print(f"  STRESS TEST 3: BLOCK BOOTSTRAP PROP EVALUATION (10,000 PATHS, BLOCK={block_size})")
+    print(f"  STRESS TEST 3: UNLIMITED PROP EVALUATION SIMULATION (10,000 PATHS, BLOCK={block_size})")
     print("=" * 80)
-    print(f"  Canonical LucidFlex 25K Specs: Capital ${STARTING_CAPITAL:,.0f} | Target ${PROFIT_TARGET_DOLLARS:,.0f} | Max Trailing DD ${MAX_TRAILING_DRAWDOWN:,.0f} | Limit 45 Days\n")
+    print(f"  Canonical LucidFlex 25K Specs: Capital ${STARTING_CAPITAL:,.0f} | Target ${PROFIT_TARGET_DOLLARS:,.0f} | Max Trailing DD ${MAX_TRAILING_DRAWDOWN:,.0f} | NO TIME LIMIT\n")
     
-    daily_pnls = df.groupby("date_str")["pnl"].sum().to_numpy()
+    daily = df.groupby("date_str").agg(
+        pnl=("pnl", "sum"),
+        trades=("pnl", "count")
+    ).reset_index()
+    
+    daily_pnls = daily["pnl"].to_numpy()
+    daily_trades = daily["trades"].to_numpy()
     n_days = len(daily_pnls)
-    n_blocks = int(np.ceil(45 / block_size))
     
     passes = 0
     fails = 0
-    timeouts = 0
-    days_to_pass = []
+    pass_days = []
+    fail_days = []
+    pass_trades = []
+    fail_trades = []
     
     rng = np.random.default_rng(42)
     
     for _ in range(n_simulations):
-        # Draw random blocks of consecutive days to preserve autocorrelation
-        start_indices = rng.integers(0, n_days - block_size + 1, size=n_blocks)
-        sampled_days = np.concatenate([daily_pnls[idx:idx + block_size] for idx in start_indices])[:45]
-        
         balance = STARTING_CAPITAL
         peak = STARTING_CAPITAL
         trailing_floor = STARTING_CAPITAL - MAX_TRAILING_DRAWDOWN
-        passed = False
-        failed = False
         
-        for day_idx, d_pnl in enumerate(sampled_days, 1):
-            actual_dp = max(d_pnl, DAILY_SOFT_STOP_DOLLARS)
-            balance += actual_dp
+        days_count = 0
+        trades_count = 0
+        
+        while True:
+            # Draw random block of consecutive days to preserve autocorrelation
+            start_idx = rng.integers(0, n_days - block_size + 1)
+            b_pnls = daily_pnls[start_idx : start_idx + block_size]
+            b_trades = daily_trades[start_idx : start_idx + block_size]
             
-            if balance > peak:
-                peak = balance
-                if peak >= PEAK_FOR_FLOOR_LOCK:
-                    trailing_floor = max(trailing_floor, TRAILING_FLOOR_LOCK)
-                else:
-                    trailing_floor = max(trailing_floor, peak - MAX_TRAILING_DRAWDOWN)
+            terminal = False
+            for dp, dt in zip(b_pnls, b_trades):
+                days_count += 1
+                trades_count += dt
+                actual_dp = max(dp, DAILY_SOFT_STOP_DOLLARS)
+                balance += actual_dp
                 
-            if balance <= trailing_floor:
-                failed = True
+                if balance > peak:
+                    peak = balance
+                    if peak >= PEAK_FOR_FLOOR_LOCK:
+                        trailing_floor = max(trailing_floor, TRAILING_FLOOR_LOCK)
+                    else:
+                        trailing_floor = max(trailing_floor, peak - MAX_TRAILING_DRAWDOWN)
+                
+                if balance <= trailing_floor:
+                    fails += 1
+                    fail_days.append(days_count)
+                    fail_trades.append(trades_count)
+                    terminal = True
+                    break
+                    
+                if (balance - STARTING_CAPITAL) >= PROFIT_TARGET_DOLLARS:
+                    passes += 1
+                    pass_days.append(days_count)
+                    pass_trades.append(trades_count)
+                    terminal = True
+                    break
+                    
+            if terminal:
                 break
                 
-            if (balance - STARTING_CAPITAL) >= PROFIT_TARGET_DOLLARS:
-                passed = True
-                days_to_pass.append(day_idx)
-                break
-                
-        if passed:
-            passes += 1
-        elif failed:
-            fails += 1
-        else:
-            timeouts += 1
-            
     pass_pct = passes / n_simulations * 100
     fail_pct = fails / n_simulations * 100
-    time_pct = timeouts / n_simulations * 100
-    avg_days = np.mean(days_to_pass) if days_to_pass else 0
     ev_eval = (pass_pct / 100) * PROFIT_TARGET_DOLLARS - (fail_pct / 100) * 150.0
     
-    print(f"  Pass Rate:              {pass_pct:5.1f}%")
-    print(f"  Drawdown Breach Rate:   {fail_pct:5.1f}%")
-    print(f"  Timeout Rate (>45 days):{time_pct:5.1f}%")
-    print(f"  Avg Trading Days to Pass: {avg_days:4.1f} days")
-    print(f"  Estimated EV / Attempt: ${ev_eval:>6.2f}\n")
+    print(f"  Total Simulated Paths:             {n_simulations:,}")
+    print(f"  Pass Rate (Target +$1,250):        {pass_pct:5.2f}%")
+    print(f"  Drawdown Breach Rate (-$1,000 DD): {fail_pct:5.2f}%")
+    print(f"  Terminal Resolution:               100.00% (No artificial time limits or timeouts)")
+    print(f"  Estimated EV / Attempt:            ${ev_eval:>6.2f}\n")
+    
+    percentiles = [0, 10, 25, 50, 75, 90, 95, 99, 100]
+    p_labels = ["Min", "P10", "P25", "P50 (Median)", "P75", "P90", "P95", "P99", "Max"]
+    
+    print("  PASS DURATION DISTRIBUTION (Trading Days & Trade Count):")
+    print(f"    {'Percentile':<15s} | {'Trading Days':<14s} | {'Trade Count':<14s} | {'Approx Calendar Time'}")
+    print("    " + "-" * 70)
+    for p_val, label in zip(percentiles, p_labels):
+        d_val = np.percentile(pass_days, p_val)
+        t_val = np.percentile(pass_trades, p_val)
+        cal_weeks = d_val / 5.0
+        print(f"    {label:<15s} | {d_val:>6.1f} days     | {t_val:>6.1f} trades    | ~{cal_weeks:.1f} weeks")
+    print(f"    {'Mean':<15s} | {np.mean(pass_days):>6.1f} days     | {np.mean(pass_trades):>6.1f} trades    | ~{np.mean(pass_days)/5.0:.1f} weeks\n")
+    
+    print("  FAIL DURATION DISTRIBUTION (Trading Days & Trade Count):")
+    print(f"    {'Percentile':<15s} | {'Trading Days':<14s} | {'Trade Count':<14s} | {'Approx Calendar Time'}")
+    print("    " + "-" * 70)
+    for p_val, label in zip(percentiles, p_labels):
+        d_val = np.percentile(fail_days, p_val)
+        t_val = np.percentile(fail_trades, p_val)
+        cal_weeks = d_val / 5.0
+        print(f"    {label:<15s} | {d_val:>6.1f} days     | {t_val:>6.1f} trades    | ~{cal_weeks:.1f} weeks")
+    print(f"    {'Mean':<15s} | {np.mean(fail_days):>6.1f} days     | {np.mean(fail_trades):>6.1f} trades    | ~{np.mean(fail_days)/5.0:.1f} weeks\n")
 
 # ==============================================================================
 # 4. Stop Loss Gap / Tail Dislocation Stress Test
