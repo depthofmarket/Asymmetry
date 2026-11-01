@@ -128,6 +128,43 @@ def compute_prior_va_for_latest_session(
     return float(row["prior_poc"]), float(row["prior_vah"]), float(row["prior_val"]), p_close
 
 
+def get_daily_markov_regime(symbol: str, date_str: str) -> dict | None:
+    """Return point-in-time daily Markov regime features for session date_str."""
+    mkv_path = REPO_ROOT / f"data/processed/{symbol.lower()}_daily_markov_regimes_2020_2026.parquet"
+    if not mkv_path.exists():
+        # Fallback to NQ if ES or GC not found
+        mkv_path = REPO_ROOT / "data/processed/nq_daily_markov_regimes_2020_2026.parquet"
+        if not mkv_path.exists():
+            return None
+    try:
+        df_m = pd.read_parquet(mkv_path)
+        match = df_m[df_m["date_str"] == date_str]
+        if not match.empty:
+            r = match.iloc[0]
+            return {
+                "state": int(r["markov_state"]),
+                "label": str(r["markov_state_label"]),
+                "conf": float(r["markov_state_confidence"]),
+                "p_low": float(r["markov_prob_low_vol"]),
+                "p_mid": float(r["markov_prob_mid_vol"]),
+                "p_high": float(r["markov_prob_high_vol"]),
+            }
+        past = df_m[df_m["date_str"] < date_str]
+        if not past.empty:
+            r = past.iloc[-1]
+            return {
+                "state": int(r["markov_state"]),
+                "label": str(r["markov_state_label"]),
+                "conf": float(r["markov_state_confidence"]),
+                "p_low": float(r["markov_prob_low_vol"]),
+                "p_mid": float(r["markov_prob_mid_vol"]),
+                "p_high": float(r["markov_prob_high_vol"]),
+            }
+    except Exception:
+        pass
+    return None
+
+
 def get_or15_direction(bars: pd.DataFrame) -> int:
     if bars.empty:
         return 0
@@ -257,6 +294,10 @@ def evaluate_signal_for_asset(
         contract_symbol = "MES"
         point_value = 5.00
 
+    markov_info = get_daily_markov_regime(symbol, str(latest_date))
+    if markov_info:
+        macro_reason.append(f"Markov Regime: {markov_info['label'].upper()} ({markov_info['conf']:.0%})")
+
     stop_pts = min(max_stop, max(min_stop, range_pts))
     entry_price = close_944
     stop_price = entry_price - d_int * stop_pts
@@ -280,6 +321,7 @@ def evaluate_signal_for_asset(
         "ret_pct": ret_pct,
         "close_loc": close_loc,
         "mvt_info": mvt_info,
+        "markov_info": markov_info,
     }
 
 
@@ -329,6 +371,11 @@ def evaluate_gold_h14_signal(bars_gc: pd.DataFrame) -> dict | None:
     stop_price = entry_price - stop_pts
     target_price = entry_price + stop_pts * 1.50
 
+    markov_info = get_daily_markov_regime("NQ", str(latest_date))
+    macro_reason = f"Above IB60 ({ib60_high:.1f}), London High ({lon_high:.1f}) & Prior VAH ({p_vah:.1f})"
+    if markov_info:
+        macro_reason += f" | Markov: {markov_info['label'].upper()} ({markov_info['conf']:.0%})"
+
     return {
         "date_str": str(latest_date),
         "window_label": "10:15:00 ET (Strategy 2 / H14 — Gold Post-LBMA Fix Breakout)",
@@ -343,10 +390,11 @@ def evaluate_gold_h14_signal(bars_gc: pd.DataFrame) -> dict | None:
         "stop_points": stop_pts,
         "point_value": 10.00,
         "macro_pass": True,
-        "macro_reason": f"Above IB60 ({ib60_high:.1f}), London High ({lon_high:.1f}) & Prior VAH ({p_vah:.1f})",
+        "macro_reason": macro_reason,
         "ret_pct": ret_pct,
         "close_loc": close_loc,
         "mvt_info": mvt_info,
+        "markov_info": markov_info,
     }
 
 
@@ -398,6 +446,15 @@ def evaluate_macro_momentum_signal(bars_nq: pd.DataFrame) -> dict | None:
     stop_price = entry_price - direction * stop_pts
     target_price = entry_price + direction * (stop_pts * 1.50)
 
+    markov_info = get_daily_markov_regime("NQ", str(latest_date))
+    macro_pass = True
+    macro_reasons = [f"High-Impact Macro Release Spike ({spike_vol:.0f} vs {pre_vol_5m:.0f} vol) breaking {'Overnight High' if direction==1 else 'Overnight Low'}"]
+    if markov_info:
+        macro_reasons.append(f"Markov Regime: {markov_info['label'].upper()} ({markov_info['conf']:.0%})")
+        if markov_info["label"] == "high_vol":
+            macro_pass = False
+            macro_reasons.append("BLOCKED BY MARKOV HIGH-VOL REGIME (AntiAchismo H19: S3 Whipsaw Protection / 38% WR)")
+
     return {
         "date_str": str(latest_date),
         "window_label": "08:35:00 ET (Strategy 3 / H17 — Pre-Market Macro Momentum)",
@@ -411,10 +468,11 @@ def evaluate_macro_momentum_signal(bars_nq: pd.DataFrame) -> dict | None:
         "target_price": target_price,
         "stop_points": stop_pts,
         "point_value": 2.00,
-        "macro_pass": True,
-        "macro_reason": f"High-Impact Macro Release Spike ({spike_vol:.0f} vs {pre_vol_5m:.0f} vol) breaking {'Overnight High' if direction==1 else 'Overnight Low'}",
+        "macro_pass": macro_pass,
+        "macro_reason": " | ".join(macro_reasons),
         "ret_pct": (spike_close - spike_open) / spike_open,
         "close_loc": cl_loc,
+        "markov_info": markov_info,
     }
 
 
@@ -443,6 +501,9 @@ def print_execution_card(sig: dict, eval_state: AccountEvalState, contracts: int
         m = sig["mvt_info"]
         print(f"  GARCH MVT ANCHOR:  {m['mvt_0']:.2f}  (15m Sigma: ±{m['sigma_pts']:.1f} pts | 2.0 DP Target: {m['dp_target']:.2f})")
         print(f"  GARCH EXTENSION:   {m['z_score']:+.2f} DP  [{m['status']}]")
+    if sig.get("markov_info"):
+        mkv = sig["markov_info"]
+        print(f"  MARKOV REGIME:     {mkv['label'].upper()}  (Confidence: {mkv['conf']:.0%} | P[low]={mkv['p_low']:.2f}, P[mid]={mkv['p_mid']:.2f}, P[high]={mkv['p_high']:.2f})")
     print("-" * 72)
     gate_status = "PASSED" if sig["macro_pass"] else "BLOCKED (FILTER GATE ACTIVE)"
     print(f"  STRUCTURAL GATE:   {gate_status}")

@@ -59,6 +59,8 @@ public class LucidMacroMomentumStudy extends Study {
     private static final String ENABLE_SOUND_ALERT = "enableSoundAlert";
     private static final String SHOW_LEVEL_LINES = "showLevelLines";
     private static final String SHOW_NO_SETUP_MARKER = "showNoSetupMarker";
+    private static final String ENABLE_HIGH_VOL_GATE = "enableHighVolGate";
+    private static final String MAX_OVN_RANGE_GATE_PTS = "maxOvnRangeGatePts";
 
     private static final ZoneId NY_ZONE = ZoneId.of("America/New_York");
 
@@ -142,6 +144,8 @@ public class LucidMacroMomentumStudy extends Study {
         group.addRow(new BooleanDescriptor(ENABLE_SOUND_ALERT, "Enable Sound Alert & Notification", true));
         group.addRow(new BooleanDescriptor(SHOW_LEVEL_LINES, "Show SL / TP / Entry / 09:25 Exit Lines", true));
         group.addRow(new BooleanDescriptor(SHOW_NO_SETUP_MARKER, "Show 'No Setup' Reason Marker at 08:35", true));
+        group.addRow(new BooleanDescriptor(ENABLE_HIGH_VOL_GATE, "Enable High-Vol Regime Whipsaw Gate (H19 AntiAchismo)", true));
+        group.addRow(new DoubleDescriptor(MAX_OVN_RANGE_GATE_PTS, "Max Overnight Range Cutoff Points (0=Off, NQ 180.0)", 180.0, 0.0, 400.0, 10.0));
 
         setSettingsDescriptor(sd);
 
@@ -219,6 +223,8 @@ public class LucidMacroMomentumStudy extends Study {
                 boolean allowShort = getSettings().getBoolean(ALLOW_SHORT, true);
                 boolean soundAlert = getSettings().getBoolean(ENABLE_SOUND_ALERT, true);
                 boolean showLines = getSettings().getBoolean(SHOW_LEVEL_LINES, true);
+                boolean enableHighVolGate = getSettings().getBoolean(ENABLE_HIGH_VOL_GATE, true);
+                double maxOvnRangePts = getSettings().getDouble(MAX_OVN_RANGE_GATE_PTS, 180.0);
 
                 String sym = (series.getInstrument() != null) ? series.getInstrument().getSymbol().toUpperCase() : "NQ";
                 boolean isES = sym.contains("ES") || sym.contains("MES");
@@ -232,7 +238,18 @@ public class LucidMacroMomentumStudy extends Study {
                     boolean isLong = allowLong && isMacroSpike && (spike.close > ovn.high) && (spikeCloseLoc >= minLongLoc);
                     boolean isShort = allowShort && isMacroSpike && (spike.close < ovn.low) && (spikeCloseLoc <= maxShortLoc);
 
-                    if (isLong || isShort) {
+                    double ovnRange = ovn.high - ovn.low;
+                    boolean isHighVolExhaustion = enableHighVolGate && (maxOvnRangePts > 0.0) && (ovnRange > maxOvnRangePts);
+
+                    if ((isLong || isShort) && isHighVolExhaustion) {
+                        if (getSettings().getBoolean(SHOW_NO_SETUP_MARKER, true)) {
+                            Coordinate coord = new Coordinate(barStartTime, high + (tickSize * 4));
+                            MarkerInfo info = new MarkerInfo(Enums$MarkerType.CIRCLE, Enums$Size.MEDIUM, new Color(220, 20, 60), Color.WHITE, Color.PINK, true);
+                            Marker marker = new Marker(coord, Enums$Position.TOP, info);
+                            marker.setTextValue(String.format("NO TRADE: High-Vol Regime Whipsaw Filter Active (Ovn Range %.1f > %.1f pts)", ovnRange, maxOvnRangePts));
+                            addFigure(marker);
+                        }
+                    } else if (isLong || isShort) {
                         double stopPts = Math.min(maxStopPts, Math.max(minStopPts, spikeRange * 0.50));
 
                         int contracts;
