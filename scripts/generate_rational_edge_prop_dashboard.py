@@ -394,59 +394,82 @@ def run_comprehensive_prop_simulation(
 # ── SHEET 01: TRAJECTORIES & CORRIDOR ─────────────────────────────────────────
 def render_prop_sheet_01_trajectories(mc: dict) -> Path:
     plt.style.use("default")
-    fig = plt.figure(figsize=(16, 11), dpi=200)
+    fig, ax_trj = plt.subplots(figsize=(16, 9.5), dpi=200)
     fig.patch.set_facecolor("#FFFFFF")
-
-    gs = fig.add_gridspec(2, 1, height_ratios=[2.4, 1.4], hspace=0.30)
-
-    ax_trj = fig.add_subplot(gs[0])
     format_spines_and_grid(ax_trj)
 
-    for trj in mc["eval_trajectories_100"][:80]:
+    # Separate passing and failing trajectories
+    passing_trajs = [t for t in mc["eval_trajectories_100"] if t["status"] == "pass"]
+    failing_trajs = [t for t in mc["eval_trajectories_100"] if t["status"] == "fail_max_loss"]
+
+    # Breached paths first (background)
+    for trj in failing_trajs[:30]:
         p = trj["path"]
-        c = "#2ca02c" if trj["status"] == "pass" else "#d62728"
-        ax_trj.plot(range(len(p)), p, color=c, alpha=0.35, linewidth=0.9)
+        ax_trj.plot(range(len(p)), p, color="#d62728", alpha=0.30, linewidth=0.85)
 
-    ax_trj.axhline(26_250.0, color="#2ca02c", linestyle="--", linewidth=1.8, label="Profit Target ($26,250 • +$1,250)")
-    ax_trj.axhline(24_000.0, color="#d62728", linestyle="--", linewidth=1.8, label="Max Trailing Floor ($24,000 • -$1,000)")
-    ax_trj.axhline(25_100.0, color="#9467bd", linestyle=":", linewidth=1.5, label="Trailing Floor Lock ($25,100 once Peak >= $26,100)")
+    # Passing paths (foreground)
+    for trj in passing_trajs[:70]:
+        p = trj["path"]
+        ax_trj.plot(range(len(p)), p, color="#2ca02c", alpha=0.30, linewidth=0.85)
 
-    ax_trj.set_title("Backtest Results - Prop Evaluation Trajectories & Corridor (LucidFlex 25K)", fontsize=14, color="#000000", pad=10)
-    ax_trj.set_xlabel("Trading Days Elapsed", fontsize=10, color="#000000")
-    ax_trj.set_ylabel("Account Balance ($)", fontsize=10, color="#000000")
+    # Find and highlight representative Median and Fastest trajectories
+    med_days = mc["med_days"]
+    closest_med = min(passing_trajs, key=lambda t: abs(len(t["path"]) - med_days)) if passing_trajs else None
+    fastest_traj = min(passing_trajs, key=lambda t: len(t["path"])) if passing_trajs else None
+
+    if closest_med:
+        ax_trj.plot(range(len(closest_med["path"])), closest_med["path"],
+                    color="#1f77b4", linewidth=2.4, alpha=0.95,
+                    label=f"Median Path ({len(closest_med['path'])} trading days to target)")
+
+    if fastest_traj:
+        ax_trj.plot(range(len(fastest_traj["path"])), fastest_traj["path"],
+                    color="#ff7f0e", linewidth=1.8, linestyle="--", alpha=0.95,
+                    label=f"Fastest Path ({len(fastest_traj['path'])} trading days to target)")
+
+    # Canonical rulebook boundary lines
+    ax_trj.axhline(26_250.0, color="#2ca02c", linestyle="--", linewidth=2.0, label="Profit Target ($26,250 • +$1,250 / +5.0%)")
+    ax_trj.axhline(25_100.0, color="#9467bd", linestyle=":", linewidth=1.8, label="Trailing Floor Lock ($25,100 once Peak >= $26,100)")
+    ax_trj.axhline(25_000.0, color="#777777", linestyle="-", linewidth=1.0, alpha=0.7, label="Initial Capital Baseline ($25,000)")
+    ax_trj.axhline(24_000.0, color="#d62728", linestyle="--", linewidth=2.0, label="Max Trailing Drawdown Floor ($24,000 • -$1,000 / -4.0%)")
+
+    # Shaded boundary bands
+    ax_trj.axhspan(26_250.0, 26_650.0, color="#2ca02c", alpha=0.06)
+    ax_trj.axhspan(23_700.0, 24_000.0, color="#d62728", alpha=0.06)
+
+    # Titles and axes formatting
+    ax_trj.set_title("Backtest Results - Prop Evaluation Trajectories & Risk Corridor (LucidFlex 25K)", fontsize=15, color="#000000", pad=12)
+    ax_trj.set_xlabel("Trading Days Elapsed", fontsize=11, color="#000000")
+    ax_trj.set_ylabel("Account Balance ($)", fontsize=11, color="#000000")
     ax_trj.yaxis.set_major_formatter(ticker.StrMethodFormatter("${x:,.0f}"))
-    ax_trj.set_ylim(23_700, 26_600)
+    ax_trj.yaxis.set_major_locator(ticker.MultipleLocator(500))
+    ax_trj.set_ylim(23_700, 26_650)
+    ax_trj.set_xlim(0, 75)
 
-    leg = ax_trj.legend(title="Prop Firm Boundary", loc="upper left", frameon=True, facecolor="#FFFFFF", edgecolor="#000000", fontsize=9)
-    leg.get_title().set_fontsize(9.5)
+    # Institutional Legend on the upper left
+    leg = ax_trj.legend(title="Risk Corridor & Trajectory Specification", loc="upper left",
+                        frameon=True, facecolor="#FFFFFF", edgecolor="#000000", fontsize=9.5)
+    leg.get_title().set_fontsize(10)
     leg.get_title().set_fontweight("bold")
 
-    ax_tab = fig.add_subplot(gs[1])
-    ax_tab.set_facecolor("#FFFFFF")
-    ax_tab.axis("off")
+    # Clean, non-compromising scorecard box in the upper right
+    scorecard_text = (
+        "EVALUATION SCORECARD (NO TIME LIMIT)\n"
+        "───────────────────────────────────────\n"
+        f"• Terminal Pass Rate:        {mc['pass_rate']:.2f}%\n"
+        f"• Terminal Breach Rate:      {mc['fail_rate']:.2f}%\n"
+        "• Timeout Rate:               0.00%\n"
+        f"• Pass-to-Breach Odds:       {mc['pass_rate']/mc['fail_rate']:.2f} to 1\n"
+        f"• Median Days to Target:     {mc['med_days']:.0f} days (~4.6 wks)\n"
+        f"• 90% Pass Completion:       {mc['p90_days']:.0f} days (~9.8 wks)\n"
+        f"• Expected Value / Ticket:  +${mc['ev_per_ticket']:,.2f}\n"
+        f"• Average Attempts / Pass:   {mc['evals_per_pass']:.2f} tickets\n"
+        f"• Expected Cost / Pass:      ${39*mc['evals_per_pass']:,.2f}"
+    )
 
-    ax_tab.text(0.02, 0.96, "Canonical Rulebook Specifications & Terminal Absorbing Scorecard", fontsize=11, fontweight="bold", color="#000000")
-
-    specs = [
-        ("Starting Capital", "$25,000.00", "Terminal Pass Rate", f"{mc['pass_rate']:.2f}%"),
-        ("Profit Target (+5.0%)", "+$1,250.00 ($26,250)", "Terminal Breach Rate", f"{mc['fail_rate']:.2f}%"),
-        ("Max Trailing Drawdown", "-$1,000.00 ($24,000 floor)", "Timeout Rate", "0.00% (No artificial time limit)"),
-        ("Trailing Floor Lock", "$25,100 (locks once peak >= $26.1k)", "Pass-to-Breach Odds Ratio", f"{mc['pass_rate']/mc['fail_rate']:.2f} to 1"),
-        ("Daily Soft Stop", "-$600.00 (halts session, preserves account)", "Average Evaluations per Pass", f"{mc['evals_per_pass']:.2f} attempts"),
-        ("Evaluation Time Limit", "None (Permanent Unlimited)", "Expected Cost per Passed Account", f"${39*mc['evals_per_pass']:.2f} ($39 ticket)"),
-        ("Allowed Instruments", "Micro E-mini NQ, ES, Gold (MNQ, MES, MGC)", "Max Permitted Position Size", "5 Minis / 50 Micros (We use 1-2 micros)"),
-    ]
-
-    t_x = [0.02, 0.28, 0.54, 0.82]
-    y_pos = 0.82
-    for r in specs:
-        ax_tab.axhline(y_pos + 0.015, color="#E5E5E5", linewidth=0.5, xmin=0.02, xmax=0.98)
-        ax_tab.text(t_x[0], y_pos, r[0], fontsize=8.2, color="#444444")
-        ax_tab.text(t_x[1], y_pos, r[1], fontsize=8.5, fontweight="bold", color="#000000")
-        ax_tab.text(t_x[2], y_pos, r[2], fontsize=8.2, color="#444444")
-        c_val = "#2ca02c" if "Pass" in r[2] else ("#d62728" if "Breach" in r[2] else "#000000")
-        ax_tab.text(t_x[3], y_pos, r[3], fontsize=8.5, fontweight="bold", color=c_val)
-        y_pos -= 0.11
+    ax_trj.text(0.985, 0.965, scorecard_text, transform=ax_trj.transAxes,
+                fontsize=9.0, fontfamily="monospace", verticalalignment="top", horizontalalignment="right",
+                bbox=dict(boxstyle="square,pad=0.6", facecolor="#FFFFFF", edgecolor="#000000", linewidth=1.0))
 
     out_path = OUT_DIR / "01_prop_evaluation_trajectories_and_corridor.png"
     plt.savefig(out_path, dpi=200, facecolor=fig.get_facecolor(), bbox_inches="tight")
