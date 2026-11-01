@@ -394,134 +394,80 @@ def run_comprehensive_prop_simulation(
 # ── SHEET 01: TRAJECTORIES & CORRIDOR ─────────────────────────────────────────
 def render_prop_sheet_01_trajectories(mc: dict) -> Path:
     plt.style.use("default")
-    fig = plt.figure(figsize=(17, 9.5), dpi=200)
+    fig, ax = plt.subplots(figsize=(14, 8), dpi=200)
     fig.patch.set_facecolor("#FFFFFF")
-    gs = fig.add_gridspec(1, 2, width_ratios=[3.6, 1.25], wspace=0.12)
-
-    # ── PANEL 1: TRAJECTORY PLOT (100% PRISTINE, ZERO OVERLAPPING BOXES) ──────
-    ax_trj = fig.add_subplot(gs[0])
-    ax_trj.set_facecolor("#FFFFFF")
-    ax_trj.grid(True, color="#E5E5E5", linestyle="-", linewidth=0.8)
-    for sp in ax_trj.spines.values():
+    ax.set_facecolor("#FFFFFF")
+    ax.grid(True, color="#E5E5E5", linestyle="-", linewidth=0.8)
+    for sp in ax.spines.values():
         sp.set_color("#000000")
         sp.set_linewidth(1.0)
-    ax_trj.tick_params(colors="#000000", labelsize=9.5)
+    ax.tick_params(colors="#000000", labelsize=9.5)
 
     passing_trajs = [t for t in mc["eval_trajectories_100"] if t["status"] == "pass"]
     failing_trajs = [t for t in mc["eval_trajectories_100"] if t["status"] == "fail_max_loss"]
 
-    # Breached paths (background)
-    for trj in failing_trajs[:35]:
+    # 1. Breached paths (background)
+    for trj in failing_trajs[:30]:
         p = trj["path"]
-        ax_trj.plot(range(len(p)), p, color="#d62728", alpha=0.30, linewidth=0.85)
+        ax.plot(range(len(p)), p, color="#d62728", alpha=0.30, linewidth=0.85)
 
-    # Passing paths (foreground)
-    for trj in passing_trajs[:75]:
+    # 2. Passing paths (foreground)
+    for trj in passing_trajs[:70]:
         p = trj["path"]
-        ax_trj.plot(range(len(p)), p, color="#2ca02c", alpha=0.30, linewidth=0.85)
+        ax.plot(range(len(p)), p, color="#2ca02c", alpha=0.30, linewidth=0.85)
 
-    # Highlight representative Median and Fastest trajectories
+    # 3. Median and Fastest highlighted paths
     med_days = mc["med_days"]
     closest_med = min(passing_trajs, key=lambda t: abs(len(t["path"]) - med_days)) if passing_trajs else None
     fastest_traj = min(passing_trajs, key=lambda t: len(t["path"])) if passing_trajs else None
 
     if closest_med:
-        ax_trj.plot(range(len(closest_med["path"])), closest_med["path"],
-                    color="#1f77b4", linewidth=2.5, alpha=0.95)
+        ax.plot(range(len(closest_med["path"])), closest_med["path"],
+                color="#1f77b4", linewidth=2.5, label=f"Median Path ({len(closest_med['path'])}d to Target)")
 
     if fastest_traj:
-        ax_trj.plot(range(len(fastest_traj["path"])), fastest_traj["path"],
-                    color="#ff7f0e", linewidth=2.0, linestyle="--", alpha=0.95)
+        ax.plot(range(len(fastest_traj["path"])), fastest_traj["path"],
+                color="#ff7f0e", linewidth=1.8, linestyle="--", label=f"Fastest Path ({len(fastest_traj['path'])}d to Target)")
 
-    # Boundary reference lines across full width
-    ax_trj.axhline(26_250.0, color="#2ca02c", linestyle="--", linewidth=2.0)
-    ax_trj.axhline(25_100.0, color="#9467bd", linestyle=":", linewidth=1.8)
-    ax_trj.axhline(25_000.0, color="#777777", linestyle="-", linewidth=1.0, alpha=0.7)
-    ax_trj.axhline(24_000.0, color="#d62728", linestyle="--", linewidth=2.0)
+    # Dummy lines for legend entry
+    ax.plot([], [], color="#2ca02c", linewidth=1.5, alpha=0.7, label=f"Passing Paths ({mc['pass_rate']:.1f}%)")
+    ax.plot([], [], color="#d62728", linewidth=1.5, alpha=0.7, label=f"Breached Paths ({mc['fail_rate']:.1f}%)")
 
-    # Direct boundary labels on right edge of chart
-    ax_trj.text(75.5, 26_250.0, "Target (+$1,250)", va="center", ha="left", fontsize=8.5, color="#2ca02c", fontweight="bold")
-    ax_trj.text(75.5, 25_100.0, "Floor Lock ($25.1k)", va="center", ha="left", fontsize=8.5, color="#9467bd", fontweight="bold")
-    ax_trj.text(75.5, 25_000.0, "Base ($25.0k)", va="center", ha="left", fontsize=8.5, color="#777777")
-    ax_trj.text(75.5, 24_000.0, "Floor (-$1,000)", va="center", ha="left", fontsize=8.5, color="#d62728", fontweight="bold")
+    # Boundary reference lines
+    ax.axhline(26_250.0, color="#2ca02c", linestyle="--", linewidth=1.8, label="Profit Target ($26,250 • +$1,250)")
+    ax.axhline(25_100.0, color="#9467bd", linestyle=":", linewidth=1.6, label="Floor Lock ($25,100 at Peak >= $26.1k)")
+    ax.axhline(25_000.0, color="#777777", linestyle="-", linewidth=0.9, alpha=0.7, label="Initial Capital ($25,000)")
+    ax.axhline(24_000.0, color="#d62728", linestyle="--", linewidth=1.8, label="Max Trailing Floor ($24,000 • -$1,000)")
 
-    # Subtle shading in risk and profit target buffer zones
-    ax_trj.axhspan(26_250.0, 26_650.0, color="#2ca02c", alpha=0.05)
-    ax_trj.axhspan(23_700.0, 24_000.0, color="#d62728", alpha=0.05)
+    # Subtle boundary zone shading
+    ax.axhspan(26_250.0, 26_600.0, color="#2ca02c", alpha=0.04)
+    ax.axhspan(23_700.0, 24_000.0, color="#d62728", alpha=0.04)
 
-    ax_trj.set_title("Backtest Results - Prop Evaluation Trajectories & Risk Corridor (LucidFlex 25K)", fontsize=14, color="#000000", pad=12)
-    ax_trj.set_xlabel("Trading Days Elapsed", fontsize=10.5, color="#000000")
-    ax_trj.set_ylabel("Account Balance ($)", fontsize=10.5, color="#000000")
-    ax_trj.yaxis.set_major_formatter(ticker.StrMethodFormatter("${x:,.0f}"))
-    ax_trj.yaxis.set_major_locator(ticker.MultipleLocator(500))
-    ax_trj.set_ylim(23_700, 26_650)
-    ax_trj.set_xlim(0, 75)
+    # Titles and Subtitle (Scorecard summary in title)
+    ax.set_title("Backtest Results - Prop Evaluation Trajectories (LucidFlex 25K)", fontsize=14, color="#000000", pad=20)
+    subtitle_text = f"Terminal Pass Rate: {mc['pass_rate']:.2f}%  •  Breach Rate: {mc['fail_rate']:.2f}%  •  Timeout: 0.00% (No Limit)  •  Median Pass: {mc['med_days']:.0f} Days  •  EV: +${mc['ev_per_ticket']:,.2f} / ticket"
+    ax.text(0.5, 1.015, subtitle_text, transform=ax.transAxes, ha="center", va="bottom", fontsize=9.5, color="#555555")
 
-    # ── PANEL 2: DEDICATED RIGHT SIDEBAR (ALL KEYS & METRICS OUTSIDE PLOT) ───────
-    ax_side = fig.add_subplot(gs[1])
-    ax_side.set_facecolor("#FFFFFF")
-    for sp in ax_side.spines.values():
-        sp.set_color("#000000")
-        sp.set_linewidth(1.0)
-    ax_side.set_xticks([])
-    ax_side.set_yticks([])
+    ax.set_xlabel("Trading Days Elapsed", fontsize=10.5, color="#000000")
+    ax.set_ylabel("Account Balance ($)", fontsize=10.5, color="#000000")
+    ax.yaxis.set_major_formatter(ticker.StrMethodFormatter("${x:,.0f}"))
+    ax.yaxis.set_major_locator(ticker.MultipleLocator(500))
+    ax.set_ylim(23_700, 26_600)
+    ax.set_xlim(0, 75)
 
-    # Section 1: Trajectory Key
-    ax_side.text(0.08, 0.96, "Trajectory Key", fontsize=11, fontweight="bold", color="#000000")
-    ax_side.plot([0.08, 0.22], [0.91, 0.91], color="#1f77b4", linewidth=2.5)
-    ax_side.text(0.26, 0.91, f"Median Path ({mc['med_days']:.0f}d)", va="center", fontsize=8.5, color="#000000")
-
-    ax_side.plot([0.08, 0.22], [0.86, 0.86], color="#ff7f0e", linewidth=2.0, linestyle="--")
-    fastest_d = min(mc['pass_days']) if mc.get('pass_days') else 4
-    ax_side.text(0.26, 0.86, f"Fastest Path ({fastest_d:.0f}d)", va="center", fontsize=8.5, color="#000000")
-
-    ax_side.plot([0.08, 0.22], [0.81, 0.81], color="#2ca02c", linewidth=1.5, alpha=0.7)
-    ax_side.text(0.26, 0.81, f"Passing Paths ({mc['pass_rate']:.1f}%)", va="center", fontsize=8.5, color="#000000")
-
-    ax_side.plot([0.08, 0.22], [0.76, 0.76], color="#d62728", linewidth=1.5, alpha=0.7)
-    ax_side.text(0.26, 0.76, f"Breached Paths ({mc['fail_rate']:.1f}%)", va="center", fontsize=8.5, color="#000000")
-
-    # Divider
-    ax_side.axhline(0.71, color="#E5E5E5", linewidth=1.0, xmin=0.08, xmax=0.92)
-
-    # Section 2: Rulebook Boundaries
-    ax_side.text(0.08, 0.67, "Rulebook Boundaries", fontsize=11, fontweight="bold", color="#000000")
-    ax_side.plot([0.08, 0.22], [0.62, 0.62], color="#2ca02c", linewidth=2.0, linestyle="--")
-    ax_side.text(0.26, 0.62, "Target: +$1,250 ($26,250)", va="center", fontsize=8.5, color="#000000")
-
-    ax_side.plot([0.08, 0.22], [0.57, 0.57], color="#9467bd", linewidth=1.8, linestyle=":")
-    ax_side.text(0.26, 0.57, "Floor Lock: $25,100", va="center", fontsize=8.5, color="#000000")
-
-    ax_side.plot([0.08, 0.22], [0.52, 0.52], color="#777777", linewidth=1.0)
-    ax_side.text(0.26, 0.52, "Base: $25,000", va="center", fontsize=8.5, color="#000000")
-
-    ax_side.plot([0.08, 0.22], [0.47, 0.47], color="#d62728", linewidth=2.0, linestyle="--")
-    ax_side.text(0.26, 0.47, "Floor: -$1,000 ($24,000)", va="center", fontsize=8.5, color="#000000")
-
-    # Divider
-    ax_side.axhline(0.42, color="#E5E5E5", linewidth=1.0, xmin=0.08, xmax=0.92)
-
-    # Section 3: Evaluation Scorecard
-    ax_side.text(0.08, 0.38, "Evaluation Scorecard", fontsize=11, fontweight="bold", color="#000000")
-    sc_items = [
-        ("Terminal Pass Rate", f"{mc['pass_rate']:.2f}%"),
-        ("Terminal Breach Rate", f"{mc['fail_rate']:.2f}%"),
-        ("Timeout Rate", "0.00% (No limit)"),
-        ("Pass-to-Breach Odds", f"{mc['pass_rate']/mc['fail_rate']:.2f} : 1"),
-        ("Median Days to Pass", f"{mc['med_days']:.0f} days (~4.6 wks)"),
-        ("90% Pass Horizon", f"{mc['p90_days']:.0f} days (~9.8 wks)"),
-        ("Expected Value / Attempt", f"+${mc['ev_per_ticket']:,.2f}"),
-        ("Expected Cost / Pass", f"${39*mc['evals_per_pass']:.2f}"),
-    ]
-
-    y_sc = 0.33
-    for label, val in sc_items:
-        ax_side.text(0.08, y_sc, label, fontsize=8.0, color="#555555")
-        c_v = "#2ca02c" if "Pass" in label and "%" in val else ("#d62728" if "Breach" in label and "%" in val else "#000000")
-        if "+" in val:
-            c_v = "#1f77b4"
-        ax_side.text(0.92, y_sc, val, fontsize=8.2, fontweight="bold", color=c_v, ha="right")
-        y_sc -= 0.040
+    # Standard Matplotlib Legend outside on the right (matching CoinGecko reference style)
+    leg = ax.legend(
+        title="Corridor & Trajectories",
+        loc="upper left",
+        bbox_to_anchor=(1.02, 1.0),
+        frameon=True,
+        facecolor="#FFFFFF",
+        edgecolor="#000000",
+        fontsize=9.5,
+        borderaxespad=0.0
+    )
+    leg.get_title().set_fontsize(10)
+    leg.get_title().set_fontweight("bold")
 
     out_path = OUT_DIR / "01_prop_evaluation_trajectories_and_corridor.png"
     plt.savefig(out_path, dpi=200, facecolor=fig.get_facecolor(), bbox_inches="tight")
