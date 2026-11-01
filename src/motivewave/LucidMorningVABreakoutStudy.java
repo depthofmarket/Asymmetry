@@ -56,6 +56,10 @@ public class LucidMorningVABreakoutStudy extends Study {
     private static final String ENABLE_SOUND_ALERT = "enableSoundAlert";
     private static final String SHOW_LEVEL_LINES = "showLevelLines";
     private static final String SHOW_NO_SETUP_MARKER = "showNoSetupMarker";
+    private static final String SHOW_MVT_DP_LINES = "showMvtDpLines";
+    private static final String ENABLE_GARCH_EXHAUSTION_GATE = "enableGarchExhaustionGate";
+    private static final String GARCH_DAILY_VOL_PCT = "garchDailyVolPct";
+    private static final String GARCH_EXHAUSTION_DP = "garchExhaustionDp";
 
     private static final ZoneId NY_ZONE = ZoneId.of("America/New_York");
 
@@ -165,7 +169,14 @@ public class LucidMorningVABreakoutStudy extends Study {
         double high15 = Double.NEGATIVE_INFINITY;
         double low15 = Double.POSITIVE_INFINITY;
         double close944 = Double.NaN;
+        double cumVolume = 0.0;
+        double cumPriceVolume = 0.0;
+        long startTime = 0;
         boolean complete = false;
+
+        double getVwap() {
+            return (cumVolume > 0.0) ? (cumPriceVolume / cumVolume) : close944;
+        }
     }
 
     private static boolean is10amNewsDay(LocalDate date) {
@@ -195,6 +206,12 @@ public class LucidMorningVABreakoutStudy extends Study {
         group.addRow(new BooleanDescriptor(ENABLE_SOUND_ALERT, "Enable Sound Alert & Notification", true));
         group.addRow(new BooleanDescriptor(SHOW_LEVEL_LINES, "Show SL / TP / Entry / Time Exit Lines", true));
         group.addRow(new BooleanDescriptor(SHOW_NO_SETUP_MARKER, "Show 'No Setup' Reason Marker at 09:45", true));
+
+        SettingGroup garchGroup = tab.addGroup("AntiAchismo GARCH MVT & Desvio Padrao Envelopes");
+        garchGroup.addRow(new BooleanDescriptor(SHOW_MVT_DP_LINES, "Show MVT 0 (VWAP) & DP +/- 1, 2, 2.5 Bands", true));
+        garchGroup.addRow(new BooleanDescriptor(ENABLE_GARCH_EXHAUSTION_GATE, "Enable GARCH Exhaustion Gate (> 2.50 DP)", true));
+        garchGroup.addRow(new DoubleDescriptor(GARCH_DAILY_VOL_PCT, "GARCH Daily Conditional Volatility % (1.25)", 1.25, 0.20, 5.00, 0.05));
+        garchGroup.addRow(new DoubleDescriptor(GARCH_EXHAUSTION_DP, "Exhaustion Cutoff in Desvio Padrao (2.50 DP)", 2.50, 1.50, 4.00, 0.10));
 
         setSettingsDescriptor(sd);
 
@@ -255,15 +272,21 @@ public class LucidMorningVABreakoutStudy extends Study {
             or.high15 = high;
             or.low15 = low;
             or.close944 = close;
+            or.startTime = barStartTime;
+            or.cumVolume = (double) volume;
+            or.cumPriceVolume = ((high + low + close) / 3.0) * (double) volume;
             or.complete = true;
         } else if (hour == 9 && min > 30 && min < 45) {
             OpeningRange15 or = orByDate.computeIfAbsent(today, d -> new OpeningRange15());
             if (Double.isNaN(or.open930)) {
                 or.open930 = open;
+                or.startTime = barStartTime;
             }
             or.high15 = Double.isInfinite(or.high15) ? high : Math.max(or.high15, high);
             or.low15 = Double.isInfinite(or.low15) ? low : Math.min(or.low15, low);
             or.close944 = close;
+            or.cumVolume += (double) volume;
+            or.cumPriceVolume += ((high + low + close) / 3.0) * (double) volume;
             or.complete = true;
         }
 
@@ -336,6 +359,75 @@ public class LucidMorningVABreakoutStudy extends Study {
 
                     boolean isLong = (retPct >= minRet) && (closeLoc >= minLongLoc) && (or.close944 > priorVah);
                     boolean isShort = (retPct <= -minRet) && (closeLoc <= maxShortLoc) && (or.close944 < priorVal);
+
+                    // AntiAchismo GARCH MVT & Desvio Padrao Calculations
+                    double dailyVolPct = getSettings().getDouble(GARCH_DAILY_VOL_PCT, 1.25);
+                    double sigmaOpen = or.close944 * (dailyVolPct / 100.0) * Math.sqrt(15.0 / 390.0);
+                    double mvt0 = or.getVwap();
+                    double dp1Pos = mvt0 + (1.0 * sigmaOpen);
+                    double dp2Pos = mvt0 + (2.0 * sigmaOpen);
+                    double dp25Pos = mvt0 + (2.5 * sigmaOpen);
+                    double dp1Neg = mvt0 - (1.0 * sigmaOpen);
+                    double dp2Neg = mvt0 - (2.0 * sigmaOpen);
+                    double dp25Neg = mvt0 - (2.5 * sigmaOpen);
+                    double zScore = (or.close944 - mvt0) / Math.max(sigmaOpen, 1e-4);
+
+                    boolean showMvtLines = getSettings().getBoolean(SHOW_MVT_DP_LINES, true);
+                    if (showMvtLines) {
+                        long lineStart = (or.startTime > 0) ? or.startTime : (barStartTime - (15 * 60 * 1000L));
+                        long lineEnd = barStartTime + (45 * 60 * 1000L); // Spans 09:30 to 10:30 ET
+
+                        // MVT 0 (VWAP) - Golden Yellow
+                        Line mvtLine = new Line(lineStart, mvt0, lineEnd, mvt0);
+                        mvtLine.setColor(new Color(255, 215, 0));
+                        mvtLine.setText(String.format("MVT 0 (VWAP): %.2f", mvt0), LINE_FONT);
+                        addFigure(mvtLine);
+
+                        // DP +1.0 - Light Green
+                        Line dp1PosLine = new Line(lineStart, dp1Pos, lineEnd, dp1Pos);
+                        dp1PosLine.setColor(new Color(144, 238, 144));
+                        dp1PosLine.setText(String.format("DP +1.0: %.2f", dp1Pos), LINE_FONT);
+                        addFigure(dp1PosLine);
+
+                        // DP +2.0 (Target) - Bright Green
+                        Line dp2PosLine = new Line(lineStart, dp2Pos, lineEnd, dp2Pos);
+                        dp2PosLine.setColor(new Color(0, 204, 0));
+                        dp2PosLine.setText(String.format("DP +2.0 TARGET: %.2f", dp2Pos), LINE_FONT);
+                        addFigure(dp2PosLine);
+
+                        // DP +2.5 (Exhaustion) - Hot Pink / Magenta
+                        Line dp25PosLine = new Line(lineStart, dp25Pos, lineEnd, dp25Pos);
+                        dp25PosLine.setColor(new Color(255, 105, 180));
+                        dp25PosLine.setText(String.format("DP +2.5 EXHAUSTION: %.2f", dp25Pos), LINE_FONT);
+                        addFigure(dp25PosLine);
+
+                        // DP -1.0 - Light Coral
+                        Line dp1NegLine = new Line(lineStart, dp1Neg, lineEnd, dp1Neg);
+                        dp1NegLine.setColor(new Color(240, 128, 128));
+                        dp1NegLine.setText(String.format("DP -1.0: %.2f", dp1Neg), LINE_FONT);
+                        addFigure(dp1NegLine);
+
+                        // DP -2.0 (Target) - Crimson
+                        Line dp2NegLine = new Line(lineStart, dp2Neg, lineEnd, dp2Neg);
+                        dp2NegLine.setColor(new Color(220, 20, 60));
+                        dp2NegLine.setText(String.format("DP -2.0 TARGET: %.2f", dp2Neg), LINE_FONT);
+                        addFigure(dp2NegLine);
+
+                        // DP -2.5 (Exhaustion) - Hot Pink / Magenta
+                        Line dp25NegLine = new Line(lineStart, dp25Neg, lineEnd, dp25Neg);
+                        dp25NegLine.setColor(new Color(255, 105, 180));
+                        dp25NegLine.setText(String.format("DP -2.5 EXHAUSTION: %.2f", dp25Neg), LINE_FONT);
+                        addFigure(dp25NegLine);
+                    }
+
+                    boolean enableGarchGate = getSettings().getBoolean(ENABLE_GARCH_EXHAUSTION_GATE, true);
+                    double garchExhaustionDp = getSettings().getDouble(GARCH_EXHAUSTION_DP, 2.50);
+                    boolean isExhausted = (isLong && zScore > garchExhaustionDp) || (isShort && zScore < -garchExhaustionDp);
+
+                    if (isExhausted && enableGarchGate) {
+                        isLong = false;
+                        isShort = false;
+                    }
 
                     if (isLong || isShort) {
                         double entryPrice = open;
@@ -453,7 +545,9 @@ public class LucidMorningVABreakoutStudy extends Study {
                         }
                     } else if (getSettings().getBoolean(SHOW_NO_SETUP_MARKER, true)) {
                         StringBuilder reason = new StringBuilder("NO TRADE: ");
-                        if (or.close944 <= priorVah && or.close944 >= priorVal) {
+                        if (isExhausted) {
+                            reason.append(String.format("GARCH MVT Exhaustion (Z = %+.2f DP exceeds +/-%.2f DP cutoff)", zScore, garchExhaustionDp));
+                        } else if (or.close944 <= priorVah && or.close944 >= priorVal) {
                             reason.append(String.format("Inside Prior VA [VAL: %.2f | VAH: %.2f | Close: %.2f]", priorVal, priorVah, or.close944));
                         } else if (Math.abs(retPct) < minRet) {
                             reason.append(String.format("Weak Momentum (Return: %+.2f%% vs req +/-%.2f%%)", retPct * 100.0, minRet * 100.0));
