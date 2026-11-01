@@ -165,6 +165,29 @@ def get_daily_markov_regime(symbol: str, date_str: str) -> dict | None:
     return None
 
 
+def get_daily_830_macro_metrics(date_str: str) -> dict | None:
+    """Return point-in-time 08:30 AM macro release metrics for session date_str."""
+    macro_p = REPO_ROOT / "data/processed/nq_daily_830_macro_metrics_2020_2026.parquet"
+    if not macro_p.exists():
+        return None
+    try:
+        df_m = pd.read_parquet(macro_p)
+        match = df_m[df_m["date_str"] == date_str]
+        if not match.empty:
+            r = match.iloc[0]
+            return {
+                "is_macro_release": bool(r["is_macro_release"]),
+                "vol_ratio": float(r["spike_vol_ratio"]),
+                "spike_rng": float(r["spike_rng"]),
+                "spike_ret_pct": float(r["spike_ret_pct"]),
+                "spike_dir": int(r["spike_dir"]),
+                "pre_cash_drift": float(r["pre_cash_drift"]),
+            }
+    except Exception:
+        pass
+    return None
+
+
 def get_or15_direction(bars: pd.DataFrame) -> int:
     if bars.empty:
         return 0
@@ -305,6 +328,14 @@ def evaluate_signal_for_asset(
         else:
             sizing_label = f"1.00x Baseline ({markov_info['label'].upper()})"
 
+    macro_830 = get_daily_830_macro_metrics(str(latest_date))
+    macro_align_tag = "Quiet Pre-Market (No Macro Shock)"
+    if macro_830 and macro_830["is_macro_release"]:
+        dir_label = "BULLISH" if macro_830["spike_dir"] == 1 else ("BEARISH" if macro_830["spike_dir"] == -1 else "NEUTRAL")
+        is_aligned = (d_int == macro_830["spike_dir"]) if macro_830["spike_dir"] != 0 else True
+        macro_align_tag = "ALIGNED WITH 08:30 MACRO" if is_aligned else "OPPOSING 08:30 MACRO"
+        macro_reason.append(f"08:30 Macro: {dir_label} ({macro_830['spike_ret_pct']:+.2f}%, {macro_830['vol_ratio']:.1f}x Vol | {macro_align_tag})")
+
     stop_pts = min(max_stop, max(min_stop, range_pts))
     entry_price = close_944
     stop_price = entry_price - d_int * stop_pts
@@ -331,6 +362,8 @@ def evaluate_signal_for_asset(
         "markov_info": markov_info,
         "markov_mult": markov_mult,
         "sizing_label": sizing_label,
+        "macro_830_info": macro_830,
+        "macro_align_tag": macro_align_tag,
     }
 
 
@@ -392,6 +425,12 @@ def evaluate_gold_h14_signal(bars_gc: pd.DataFrame) -> dict | None:
         else:
             sizing_label = f"1.00x Baseline ({markov_info['label'].upper()})"
 
+    macro_830 = get_daily_830_macro_metrics(str(latest_date))
+    if macro_830 and macro_830["is_macro_release"]:
+        macro_reason += f" | 08:30 Macro: Release Detected ({macro_830['spike_ret_pct']:+.2f}%, {macro_830['vol_ratio']:.1f}x Vol)"
+    elif macro_830:
+        macro_reason += " | 08:30 Macro: Quiet Pre-Market"
+
     return {
         "date_str": str(latest_date),
         "window_label": "10:15:00 ET (Strategy 2 / H14 — Gold Post-LBMA Fix Breakout)",
@@ -413,6 +452,7 @@ def evaluate_gold_h14_signal(bars_gc: pd.DataFrame) -> dict | None:
         "markov_info": markov_info,
         "markov_mult": markov_mult,
         "sizing_label": sizing_label,
+        "macro_830_info": macro_830,
     }
 
 
@@ -536,6 +576,13 @@ def print_execution_card(sig: dict, eval_state: AccountEvalState, contracts: int
         print(f"  MARKOV REGIME:     {mkv['label'].upper()}  (Confidence: {mkv['conf']:.0%} | P[low]={mkv['p_low']:.2f}, P[mid]={mkv['p_mid']:.2f}, P[high]={mkv['p_high']:.2f})")
     if sig.get("markov_mult"):
         print(f"  MARKOV SIZING:     {sig['markov_mult']:.2f}x  [{sig.get('sizing_label', '')}]")
+    if sig.get("macro_830_info"):
+        m830 = sig["macro_830_info"]
+        if m830.get("is_macro_release"):
+            tag = f"  [{sig['macro_align_tag']}]" if sig.get("macro_align_tag") else ""
+            print(f"  08:30 MACRO DRIVER: RELEASE DETECTED ({m830['spike_ret_pct']:+.2f}% Spike | {m830['vol_ratio']:.1f}x Vol){tag}")
+        else:
+            print("  08:30 MACRO DRIVER: QUIET PRE-MARKET (No major shock)")
     print("-" * 72)
     gate_status = "PASSED" if sig["macro_pass"] else "BLOCKED (FILTER GATE ACTIVE)"
     print(f"  STRUCTURAL GATE:   {gate_status}")
