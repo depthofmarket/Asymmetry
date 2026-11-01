@@ -10,11 +10,23 @@ Evaluates 5 Critical Fragility Dimensions across 543 Trades (2021-2026):
 """
 
 from __future__ import annotations
+import sys
 from pathlib import Path
 import numpy as np
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from backtest.demo_parity_engine import (
+    STARTING_CAPITAL,
+    PROFIT_TARGET_DOLLARS,
+    MAX_TRAILING_DRAWDOWN,
+    DAILY_SOFT_STOP_DOLLARS,
+    TRAILING_FLOOR_LOCK,
+    PEAK_FOR_FLOOR_LOCK,
+)
 
 def load_standardized_ensemble() -> pd.DataFrame:
     p = ROOT / "data/processed/unified_three_strategy_markov_portfolio_trades_2021_2026.parquet"
@@ -106,7 +118,7 @@ def stress_block_bootstrap(df: pd.DataFrame, n_simulations: int = 10000, block_s
     print("=" * 80)
     print(f"  STRESS TEST 3: BLOCK BOOTSTRAP PROP EVALUATION (10,000 PATHS, BLOCK={block_size})")
     print("=" * 80)
-    print("  LucidFlex 25K Parameters: Starting Capital $25,000 | Target $1,500 | Max Trailing DD $1,500 | Limit 45 Days\n")
+    print(f"  Canonical LucidFlex 25K Specs: Capital ${STARTING_CAPITAL:,.0f} | Target ${PROFIT_TARGET_DOLLARS:,.0f} | Max Trailing DD ${MAX_TRAILING_DRAWDOWN:,.0f} | Limit 45 Days\n")
     
     daily_pnls = df.groupby("date_str")["pnl"].sum().to_numpy()
     n_days = len(daily_pnls)
@@ -117,30 +129,35 @@ def stress_block_bootstrap(df: pd.DataFrame, n_simulations: int = 10000, block_s
     timeouts = 0
     days_to_pass = []
     
-    np.random.seed(42)
+    rng = np.random.default_rng(42)
     
     for _ in range(n_simulations):
         # Draw random blocks of consecutive days to preserve autocorrelation
-        start_indices = np.random.randint(0, n_days - block_size + 1, size=n_blocks)
+        start_indices = rng.integers(0, n_days - block_size + 1, size=n_blocks)
         sampled_days = np.concatenate([daily_pnls[idx:idx + block_size] for idx in start_indices])[:45]
         
-        balance = 25000.0
-        peak = 25000.0
-        trailing_floor = 23500.0
+        balance = STARTING_CAPITAL
+        peak = STARTING_CAPITAL
+        trailing_floor = STARTING_CAPITAL - MAX_TRAILING_DRAWDOWN
         passed = False
         failed = False
         
         for day_idx, d_pnl in enumerate(sampled_days, 1):
-            balance += d_pnl
+            actual_dp = max(d_pnl, DAILY_SOFT_STOP_DOLLARS)
+            balance += actual_dp
+            
             if balance > peak:
                 peak = balance
-                trailing_floor = min(25000.0, peak - 1500.0)
+                if peak >= PEAK_FOR_FLOOR_LOCK:
+                    trailing_floor = max(trailing_floor, TRAILING_FLOOR_LOCK)
+                else:
+                    trailing_floor = max(trailing_floor, peak - MAX_TRAILING_DRAWDOWN)
                 
             if balance <= trailing_floor:
                 failed = True
                 break
                 
-            if (balance - 25000.0) >= 1500.0:
+            if (balance - STARTING_CAPITAL) >= PROFIT_TARGET_DOLLARS:
                 passed = True
                 days_to_pass.append(day_idx)
                 break
@@ -156,7 +173,7 @@ def stress_block_bootstrap(df: pd.DataFrame, n_simulations: int = 10000, block_s
     fail_pct = fails / n_simulations * 100
     time_pct = timeouts / n_simulations * 100
     avg_days = np.mean(days_to_pass) if days_to_pass else 0
-    ev_eval = (pass_pct / 100) * 1500.0 - (fail_pct / 100) * 150.0  # Assumes $150 reset fee
+    ev_eval = (pass_pct / 100) * PROFIT_TARGET_DOLLARS - (fail_pct / 100) * 150.0
     
     print(f"  Pass Rate:              {pass_pct:5.1f}%")
     print(f"  Drawdown Breach Rate:   {fail_pct:5.1f}%")
