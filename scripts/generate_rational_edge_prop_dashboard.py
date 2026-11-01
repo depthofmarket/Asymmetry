@@ -413,6 +413,10 @@ def render_prop_sheet_01_trajectories(mc: dict) -> Path:
     passing_trajs = [t for t in mc["eval_trajectories_100"] if t["status"] == "pass"]
     failing_trajs = [t for t in mc["eval_trajectories_100"] if t["status"] in ["fail", "fail_max_loss"]]
 
+    n_pass_shown = len(passing_trajs[:70])
+    n_fail_shown = len(failing_trajs[:30])
+    total_shown = n_pass_shown + n_fail_shown
+
     # 1. Breached paths (background: red lines + red terminal dots)
     for trj in failing_trajs[:30]:
         p = trj["path"]
@@ -446,11 +450,11 @@ def render_prop_sheet_01_trajectories(mc: dict) -> Path:
         ax.plot(len(p_fast) - 1, p_fast[-1], marker="o", markersize=6.0, color="#ff7f0e",
                 markeredgecolor="#b35400", markeredgewidth=0.8, zorder=6)
 
-    # Legend entries for terminal pass / breach runs
+    # Legend entries for terminal pass / breach runs with explicit counts
     ax.plot([], [], marker="o", color="#2ca02c", linewidth=1.5, alpha=0.85, markersize=5.0,
-            markeredgecolor="#1b6e22", label=f"Passed Runs ({mc['pass_rate']:.1f}% • Green Dot)")
+            markeredgecolor="#1b6e22", label=f"Passed Runs ({n_pass_shown} shown • {mc['pass_rate']:.1f}% • Green Dot)")
     ax.plot([], [], marker="o", color="#d62728", linewidth=1.5, alpha=0.85, markersize=5.0,
-            markeredgecolor="#8b1819", label=f"Breached Runs ({mc['fail_rate']:.1f}% • Red Dot)")
+            markeredgecolor="#8b1819", label=f"Breached Runs ({n_fail_shown} shown • {mc['fail_rate']:.1f}% • Red Dot)")
 
     # Boundary reference lines
     ax.axhline(26_250.0, color="#2ca02c", linestyle="--", linewidth=1.8, label=r"Profit Target (\$26,250 • +\$1,250)")
@@ -462,9 +466,9 @@ def render_prop_sheet_01_trajectories(mc: dict) -> Path:
     ax.axhspan(26_250.0, 26_600.0, color="#2ca02c", alpha=0.04)
     ax.axhspan(23_700.0, 24_000.0, color="#d62728", alpha=0.04)
 
-    # Titles and Subtitle (Scorecard summary in title)
-    ax.set_title("Backtest Results - Prop Evaluation Trajectories (LucidFlex 25K)", fontsize=14, color="#000000", pad=20)
-    subtitle_text = f"Terminal Pass Rate: {mc['pass_rate']:.2f}%  •  Breach Rate: {mc['fail_rate']:.2f}%  •  Timeout: 0.00% (No Limit)  •  Median Pass: {mc['med_days']:.0f} Days  •  EV: +${mc['ev_per_ticket']:,.2f} / ticket"
+    # Titles and Subtitle (Scorecard summary in title with total shown)
+    ax.set_title(f"Backtest Results - Prop Evaluation Trajectories ({total_shown} Total Paths Shown)", fontsize=14, color="#000000", pad=20)
+    subtitle_text = f"Total Shown: {total_shown} Paths ({n_pass_shown} Pass / {n_fail_shown} Breach)  •  Terminal Pass Rate: {mc['pass_rate']:.2f}%  •  Breach Rate: {mc['fail_rate']:.2f}%  •  Timeout: 0.00%  •  Median: {mc['med_days']:.0f}d  •  EV: +${mc['ev_per_ticket']:,.2f}"
     ax.text(0.5, 1.015, subtitle_text, transform=ax.transAxes, ha="center", va="bottom", fontsize=9.5, color="#555555")
 
     ax.set_xlabel("Trading Days Elapsed", fontsize=10.5, color="#000000")
@@ -479,7 +483,7 @@ def render_prop_sheet_01_trajectories(mc: dict) -> Path:
 
     # Standard Matplotlib Legend outside on the right (matching CoinGecko reference style)
     leg = ax.legend(
-        title="Corridor & Trajectories",
+        title=f"Corridor & Trajectories ({total_shown} Shown)",
         loc="upper left",
         bbox_to_anchor=(1.02, 1.0),
         frameon=True,
@@ -858,21 +862,25 @@ def render_prop_poster_master(mc: dict) -> Path:
         ax_trj.plot(range(len(fastest_traj["path"])), fastest_traj["path"], color="#ff7f0e", linewidth=1.6, linestyle="--", zorder=5, label=f"Fastest Path ({len(fastest_traj['path'])}d to Target)")
         ax_trj.plot(len(fastest_traj["path"]) - 1, fastest_traj["path"][-1], marker="o", markersize=5.0, color="#ff7f0e", markeredgecolor="#b35400", zorder=6)
 
+    n_pass_post = len(passing_post[:55])
+    n_fail_post = len(failing_post[:25])
+    total_post_shown = n_pass_post + n_fail_post
+
     # Legend entries for terminal pass / breach runs
-    ax_trj.plot([], [], marker="o", color="#2ca02c", linewidth=1.5, alpha=0.85, markersize=4.5, markeredgecolor="#1b6e22", label=f"Passed Runs ({mc['pass_rate']:.1f}% • Green Dot)")
-    ax_trj.plot([], [], marker="o", color="#d62728", linewidth=1.5, alpha=0.85, markersize=4.5, markeredgecolor="#8b1819", label=f"Breached Runs ({mc['fail_rate']:.1f}% • Red Dot)")
+    ax_trj.plot([], [], marker="o", color="#2ca02c", linewidth=1.5, alpha=0.85, markersize=4.5, markeredgecolor="#1b6e22", label=f"Passed Runs ({n_pass_post} shown • {mc['pass_rate']:.1f}% • Green Dot)")
+    ax_trj.plot([], [], marker="o", color="#d62728", linewidth=1.5, alpha=0.85, markersize=4.5, markeredgecolor="#8b1819", label=f"Breached Runs ({n_fail_post} shown • {mc['fail_rate']:.1f}% • Red Dot)")
 
     ax_trj.axhline(26_250.0, color="#2ca02c", linestyle="--", linewidth=1.8, label=r"Profit Target (\$26,250 • +\$1,250)")
     ax_trj.axhline(24_000.0, color="#d62728", linestyle="--", linewidth=1.8, label=r"Max Trailing Floor (\$24,000 • -\$1,000)")
     ax_trj.axhline(25_100.0, color="#9467bd", linestyle=":", linewidth=1.5, label=r"Floor Lock (\$25,100 once Peak >= \$26,100)")
 
-    ax_trj.set_title("Backtest Results - Prop Evaluation Mode (LucidFlex 25K)", fontsize=16, color="#000000", pad=12)
+    ax_trj.set_title(f"Backtest Results - Prop Evaluation Mode ({total_post_shown} Trajectories Shown • LucidFlex 25K)", fontsize=16, color="#000000", pad=12)
     ax_trj.set_xlabel("Trading Days Elapsed", fontsize=11, color="#000000")
     ax_trj.set_ylabel("Account Balance ($)", fontsize=11, color="#000000")
     ax_trj.yaxis.set_major_formatter(ticker.StrMethodFormatter("${x:,.0f}"))
     ax_trj.set_ylim(23_700, 26_600)
 
-    leg = ax_trj.legend(title="Prop Firm Boundary", loc="upper left", frameon=True, facecolor="#FFFFFF", edgecolor="#000000", fontsize=9.5)
+    leg = ax_trj.legend(title=f"Prop Boundaries ({total_post_shown} Shown)", loc="upper left", frameon=True, facecolor="#FFFFFF", edgecolor="#000000", fontsize=9.5)
     leg.get_title().set_fontsize(10)
     leg.get_title().set_fontweight("bold")
 
