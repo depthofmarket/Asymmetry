@@ -214,6 +214,40 @@ def evaluate_signal_for_asset(
             macro_pass = False
             macro_reason.append(f"TICK oversold ({tick_val:.0f} < -100)")
 
+    # GARCH MVT Statistical Gate (AntiAchismo)
+    mvt_info = None
+    try:
+        from backtest.garch_volatility import compute_mvt_envelope_at_bar, evaluate_garch_mvt_filter
+        cond_vol = 1.25
+        garch_p = REPO_ROOT / f"data/processed/{symbol.lower()}_daily_garch_forecasts_2020_2026.parquet"
+        if garch_p.exists():
+            df_g = pd.read_parquet(garch_p)
+            match = df_g[df_g["date_str"] == str(latest_date)]
+            if not match.empty:
+                cond_vol = float(match.iloc[0]["garch_cond_vol_pct"])
+            else:
+                cond_vol = float(df_g.iloc[-1]["garch_cond_vol_pct"])
+
+        mvt = compute_mvt_envelope_at_bar(m15, cond_daily_vol_pct=cond_vol, intraday_window_minutes=15.0)
+        mvt_eval = evaluate_garch_mvt_filter(close_944, mvt, direction=d_int)
+        mvt_info = {
+            "mvt_0": mvt["mvt_0"],
+            "sigma_pts": mvt["sigma_intraday_pts"],
+            "z_score": mvt_eval["z_score"],
+            "status": mvt_eval["status"],
+            "reason": mvt_eval["reason"],
+            "dp_target": mvt["dp_pos_2"] if d_int == 1 else mvt["dp_neg_2"],
+        }
+        if mvt_eval["is_exhausted"]:
+            macro_pass = False
+            macro_reason.append(f"GARCH Exhaustion: {mvt_eval['reason']}")
+        elif not mvt_eval["is_sweet_spot"]:
+            macro_reason.append(f"GARCH Gate: {mvt_eval['status']} ({mvt_eval['z_score']:.2f} DP)")
+        else:
+            macro_reason.append(f"GARCH Sweet-Spot ({mvt_eval['z_score']:.2f} DP)")
+    except Exception as e:
+        macro_reason.append(f"GARCH check skipped: {e}")
+
     if symbol == "NQ":
         min_stop, max_stop = 15.0, 60.0
         contract_symbol = "MNQ"
@@ -245,6 +279,7 @@ def evaluate_signal_for_asset(
         "macro_reason": " | ".join(macro_reason),
         "ret_pct": ret_pct,
         "close_loc": close_loc,
+        "mvt_info": mvt_info,
     }
 
 
@@ -311,6 +346,7 @@ def evaluate_gold_h14_signal(bars_gc: pd.DataFrame) -> dict | None:
         "macro_reason": f"Above IB60 ({ib60_high:.1f}), London High ({lon_high:.1f}) & Prior VAH ({p_vah:.1f})",
         "ret_pct": ret_pct,
         "close_loc": close_loc,
+        "mvt_info": mvt_info,
     }
 
 
@@ -403,6 +439,10 @@ def print_execution_card(sig: dict, eval_state: AccountEvalState, contracts: int
     print(f"  HARD STOP LOSS:    {sig['stop_price']:.2f}  ({sig['stop_points']:.2f} pts | -${risk_dollars:,.2f} max risk)")
     print(f"  PROFIT TARGET:     {sig['target_price']:.2f}  ({sig['stop_points']*1.5:.2f} pts | +${reward_dollars:,.2f})")
     print(f"  TIME-EXIT RULE:    {sig['exit_time_rule']}")
+    if sig.get("mvt_info"):
+        m = sig["mvt_info"]
+        print(f"  GARCH MVT ANCHOR:  {m['mvt_0']:.2f}  (15m Sigma: ±{m['sigma_pts']:.1f} pts | 2.0 DP Target: {m['dp_target']:.2f})")
+        print(f"  GARCH EXTENSION:   {m['z_score']:+.2f} DP  [{m['status']}]")
     print("-" * 72)
     gate_status = "PASSED" if sig["macro_pass"] else "BLOCKED (FILTER GATE ACTIVE)"
     print(f"  STRUCTURAL GATE:   {gate_status}")
