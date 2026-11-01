@@ -295,8 +295,15 @@ def evaluate_signal_for_asset(
         point_value = 5.00
 
     markov_info = get_daily_markov_regime(symbol, str(latest_date))
+    markov_mult = 1.00
+    sizing_label = "1.00x Baseline"
     if markov_info:
         macro_reason.append(f"Markov Regime: {markov_info['label'].upper()} ({markov_info['conf']:.0%})")
+        if markov_info["label"] == "low_vol":
+            markov_mult = 1.25
+            sizing_label = "1.25x Edge Expansion (Low-Vol)"
+        else:
+            sizing_label = f"1.00x Baseline ({markov_info['label'].upper()})"
 
     stop_pts = min(max_stop, max(min_stop, range_pts))
     entry_price = close_944
@@ -322,6 +329,8 @@ def evaluate_signal_for_asset(
         "close_loc": close_loc,
         "mvt_info": mvt_info,
         "markov_info": markov_info,
+        "markov_mult": markov_mult,
+        "sizing_label": sizing_label,
     }
 
 
@@ -372,9 +381,16 @@ def evaluate_gold_h14_signal(bars_gc: pd.DataFrame) -> dict | None:
     target_price = entry_price + stop_pts * 1.50
 
     markov_info = get_daily_markov_regime("NQ", str(latest_date))
+    markov_mult = 1.00
+    sizing_label = "1.00x Baseline"
     macro_reason = f"Above IB60 ({ib60_high:.1f}), London High ({lon_high:.1f}) & Prior VAH ({p_vah:.1f})"
     if markov_info:
         macro_reason += f" | Markov: {markov_info['label'].upper()} ({markov_info['conf']:.0%})"
+        if markov_info["label"] == "low_vol":
+            markov_mult = 1.25
+            sizing_label = "1.25x Edge Expansion (Low-Vol)"
+        else:
+            sizing_label = f"1.00x Baseline ({markov_info['label'].upper()})"
 
     return {
         "date_str": str(latest_date),
@@ -395,6 +411,8 @@ def evaluate_gold_h14_signal(bars_gc: pd.DataFrame) -> dict | None:
         "close_loc": close_loc,
         "mvt_info": mvt_info,
         "markov_info": markov_info,
+        "markov_mult": markov_mult,
+        "sizing_label": sizing_label,
     }
 
 
@@ -449,11 +467,21 @@ def evaluate_macro_momentum_signal(bars_nq: pd.DataFrame) -> dict | None:
     markov_info = get_daily_markov_regime("NQ", str(latest_date))
     macro_pass = True
     macro_reasons = [f"High-Impact Macro Release Spike ({spike_vol:.0f} vs {pre_vol_5m:.0f} vol) breaking {'Overnight High' if direction==1 else 'Overnight Low'}"]
+    markov_mult = 1.00
+    sizing_label = "1.00x Baseline"
     if markov_info:
         macro_reasons.append(f"Markov Regime: {markov_info['label'].upper()} ({markov_info['conf']:.0%})")
         if markov_info["label"] == "high_vol":
-            macro_pass = False
-            macro_reasons.append("BLOCKED BY MARKOV HIGH-VOL REGIME (AntiAchismo H19: S3 Whipsaw Protection / 38% WR)")
+            markov_mult = 0.50
+            sizing_label = "0.50x Defensive Halving (High-Vol Whipsaw Defense)"
+            macro_reasons.append("Option 2 Adaptive Sizing: 0.50x Contracts")
+        elif markov_info["label"] == "low_vol":
+            markov_mult = 1.25
+            sizing_label = "1.25x Edge Expansion (Low-Vol Smooth Trend)"
+            macro_reasons.append("Option 2 Adaptive Sizing: 1.25x Contracts")
+        else:
+            sizing_label = "1.00x Baseline (Mid-Vol Balanced)"
+            macro_reasons.append("Option 2 Adaptive Sizing: 1.00x Contracts")
 
     return {
         "date_str": str(latest_date),
@@ -473,6 +501,8 @@ def evaluate_macro_momentum_signal(bars_nq: pd.DataFrame) -> dict | None:
         "ret_pct": (spike_close - spike_open) / spike_open,
         "close_loc": cl_loc,
         "markov_info": markov_info,
+        "markov_mult": markov_mult,
+        "sizing_label": sizing_label,
     }
 
 
@@ -504,6 +534,8 @@ def print_execution_card(sig: dict, eval_state: AccountEvalState, contracts: int
     if sig.get("markov_info"):
         mkv = sig["markov_info"]
         print(f"  MARKOV REGIME:     {mkv['label'].upper()}  (Confidence: {mkv['conf']:.0%} | P[low]={mkv['p_low']:.2f}, P[mid]={mkv['p_mid']:.2f}, P[high]={mkv['p_high']:.2f})")
+    if sig.get("markov_mult"):
+        print(f"  MARKOV SIZING:     {sig['markov_mult']:.2f}x  [{sig.get('sizing_label', '')}]")
     print("-" * 72)
     gate_status = "PASSED" if sig["macro_pass"] else "BLOCKED (FILTER GATE ACTIVE)"
     print(f"  STRUCTURAL GATE:   {gate_status}")
@@ -649,21 +681,35 @@ def main() -> int:
         return 0
 
     if sig_macro is not None:
-        print_execution_card(sig_macro, eval_state, base_contracts, f"{tier_label} (08:35 ET Macro Release)")
+        mult = sig_macro.get("markov_mult", 1.0)
+        macro_contracts = max(1, int(round(base_contracts * mult)))
+        macro_label = f"{tier_label} (08:35 ET Macro Release)"
+        if mult != 1.0:
+            macro_label += f" [Markov {mult:.2f}x]"
+        print_execution_card(sig_macro, eval_state, macro_contracts, macro_label)
         if args.interactive and sig_macro["macro_pass"]:
-            record_trade_prompt(sig_macro, base_contracts, journal)
+            record_trade_prompt(sig_macro, macro_contracts, journal)
 
     for sig in eq_signals:
-        leg_contracts = max(1, base_contracts // 2) if both_eq_passed else base_contracts
+        mult = sig.get("markov_mult", 1.0)
+        eq_base = max(1, base_contracts // 2) if both_eq_passed else base_contracts
+        leg_contracts = max(1, int(round(eq_base * mult)))
         leg_label = f"{tier_label} (50/50 Dual-Equity Split)" if both_eq_passed else tier_label
+        if mult != 1.0:
+            leg_label += f" [Markov {mult:.2f}x]"
         print_execution_card(sig, eval_state, leg_contracts, leg_label)
         if args.interactive and sig["macro_pass"]:
             record_trade_prompt(sig, leg_contracts, journal)
 
     if sig_gc is not None:
-        print_execution_card(sig_gc, eval_state, base_contracts, f"{tier_label} (10:15 ET Non-Overlapping Window)")
+        mult = sig_gc.get("markov_mult", 1.0)
+        gc_contracts = max(1, int(round(base_contracts * mult)))
+        gc_label = f"{tier_label} (10:15 ET Non-Overlapping Window)"
+        if mult != 1.0:
+            gc_label += f" [Markov {mult:.2f}x]"
+        print_execution_card(sig_gc, eval_state, gc_contracts, gc_label)
         if args.interactive and sig_gc["macro_pass"]:
-            record_trade_prompt(sig_gc, base_contracts, journal)
+            record_trade_prompt(sig_gc, gc_contracts, journal)
 
     return 0
 
