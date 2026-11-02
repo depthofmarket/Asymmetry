@@ -31,6 +31,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 FORWARD_TEST_DIR = REPO_ROOT / "results" / "forward_test"
 TRADES_LEDGER_PATH = FORWARD_TEST_DIR / "demo_trades_ledger.csv"
 SESSIONS_LEDGER_PATH = FORWARD_TEST_DIR / "demo_sessions_ledger.csv"
+WINDOWS_LEDGER_PATH = FORWARD_TEST_DIR / "demo_window_evaluations_ledger.csv"
 STATE_JSON_PATH = FORWARD_TEST_DIR / "demo_parity_state.json"
 DASHBOARD_HTML_PATH = FORWARD_TEST_DIR / "demo_parity_dashboard.html"
 
@@ -195,6 +196,23 @@ class DailySessionRecord:
 
 
 @dataclass
+class WindowEvaluationRecord:
+    date: str                          # YYYY-MM-DD
+    window_time: str                   # 08:35:00, 09:45:00, 10:15:00 ET
+    strategy: str                      # Macro Momentum (08:35), VA Breakout (v2.0), Gold London Fix (H14)
+    symbol: str                        # MNQ, MES, MGC
+    status: Literal["TRADE_FIRED", "FILTERED_NO_BREAKOUT", "FILTERED_GATE", "FLAT_NO_SETUP"]
+    action: str                        # BUY, SELL, or NONE
+    contracts: int                     # contracts recommended/taken (0 if flat)
+    diagnostic_reason: str             # Quantitative reason / gate details
+    entry_price: float | None = None
+    stop_price: float | None = None
+    target_price: float | None = None
+    account_balance: float = STARTING_CAPITAL
+    trailing_cushion: float = MAX_TRAILING_DRAWDOWN
+
+
+@dataclass
 class AccountEvalState:
     starting_capital: float = STARTING_CAPITAL
     balance: float = STARTING_CAPITAL
@@ -230,6 +248,7 @@ class DemoParityJournal:
         self.forward_test_dir = forward_test_dir or FORWARD_TEST_DIR
         self.trades_ledger_path = self.forward_test_dir / "demo_trades_ledger.csv"
         self.sessions_ledger_path = self.forward_test_dir / "demo_sessions_ledger.csv"
+        self.windows_ledger_path = self.forward_test_dir / "demo_window_evaluations_ledger.csv"
         self.state_json_path = self.forward_test_dir / "demo_parity_state.json"
         self.dashboard_html_path = self.forward_test_dir / "demo_parity_dashboard.html"
         self.forward_test_dir.mkdir(parents=True, exist_ok=True)
@@ -249,6 +268,39 @@ class DemoParityJournal:
             return pd.read_csv(self.sessions_ledger_path)
         except Exception:
             return pd.DataFrame()
+
+    def load_windows_df(self) -> pd.DataFrame:
+        if not self.windows_ledger_path.exists():
+            return pd.DataFrame()
+        try:
+            return pd.read_csv(self.windows_ledger_path)
+        except Exception:
+            return pd.DataFrame()
+
+    def record_window_evaluation(self, rec: WindowEvaluationRecord) -> None:
+        """Record or update a granular strategy window evaluation (both trades and filtered setups)."""
+        df_existing = self.load_windows_df()
+        row_dict = asdict(rec)
+
+        if df_existing.empty:
+            df_new = pd.DataFrame([row_dict])
+            df_new.to_csv(self.windows_ledger_path, index=False)
+            return
+
+        # If date + window_time + symbol already exists, update it in place
+        mask = (
+            (df_existing["date"].astype(str) == rec.date)
+            & (df_existing["window_time"].astype(str) == rec.window_time)
+            & (df_existing["symbol"].astype(str) == rec.symbol)
+        )
+        if mask.any():
+            idx = df_existing[mask].index[0]
+            for k, v in row_dict.items():
+                df_existing.at[idx, k] = v
+            df_existing.to_csv(self.windows_ledger_path, index=False)
+        else:
+            df_row = pd.DataFrame([row_dict])
+            df_row.to_csv(self.windows_ledger_path, mode="a", header=False, index=False)
 
     def get_eval_state(self) -> AccountEvalState:
         """Compute the up-to-date LucidFlex 25K account state and execution analytics."""

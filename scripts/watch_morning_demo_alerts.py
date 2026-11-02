@@ -39,6 +39,7 @@ from backtest.demo_parity_engine import (
     DailySessionRecord,
     DemoParityJournal,
     TradeFillRecord,
+    WindowEvaluationRecord,
     resolve_instrument,
 )
 from scripts.run_demo_forward_test import (
@@ -372,6 +373,91 @@ def run_evaluation_and_notify(*, speak: bool = True, auto_log: bool = True) -> d
     # Auto-log if enabled
     if auto_log:
         auto_log_session_and_trades(journal, session_date, fired_tuples, eval_state)
+
+        # Granular window-by-window evaluation ledger (every opportunity, trade, and filter tracked)
+        # Window 0: 08:35 ET MNQ Macro
+        w0_status = "TRADE_FIRED" if sig_macro else "FILTERED_NO_BREAKOUT"
+        w0_action = sig_macro["action"] if sig_macro else "NONE"
+        w0_contracts = tier_contracts if sig_macro else 0
+        w0_reason = f"TRADE FIRED: {w0_action} @ {sig_macro['entry_price']:.2f}" if sig_macro else "Spike trapped inside overnight range or volume < 2.5x threshold"
+        journal.record_window_evaluation(WindowEvaluationRecord(
+            date=session_date,
+            window_time="08:35:00",
+            strategy="Macro Momentum (08:35)",
+            symbol="MNQ",
+            status=w0_status,
+            action=w0_action,
+            contracts=w0_contracts,
+            diagnostic_reason=w0_reason,
+            entry_price=sig_macro["entry_price"] if sig_macro else None,
+            stop_price=sig_macro["stop_price"] if sig_macro else None,
+            target_price=sig_macro["target_price"] if sig_macro else None,
+            account_balance=eval_state.balance,
+            trailing_cushion=eval_state.trailing_cushion,
+        ))
+
+        # Window 1: 09:45 ET MNQ
+        w1_nq_status = "TRADE_FIRED" if (nq_ok and sig_nq) else "FILTERED_NO_BREAKOUT"
+        w1_nq_action = sig_nq["action"] if (nq_ok and sig_nq) else "NONE"
+        w1_nq_contracts = c_nq if (nq_ok and sig_nq) else 0
+        w1_nq_reason = f"TRADE FIRED: {w1_nq_action} @ {sig_nq['entry_price']:.2f}" if (nq_ok and sig_nq) else "Inside Prior Value Area / Intermarket Divergence / Gated"
+        journal.record_window_evaluation(WindowEvaluationRecord(
+            date=session_date,
+            window_time="09:45:00",
+            strategy="VA Breakout (v2.0)",
+            symbol="MNQ",
+            status=w1_nq_status,
+            action=w1_nq_action,
+            contracts=w1_nq_contracts,
+            diagnostic_reason=w1_nq_reason,
+            entry_price=sig_nq["entry_price"] if (nq_ok and sig_nq) else None,
+            stop_price=sig_nq["stop_price"] if (nq_ok and sig_nq) else None,
+            target_price=sig_nq["target_price"] if (nq_ok and sig_nq) else None,
+            account_balance=eval_state.balance,
+            trailing_cushion=eval_state.trailing_cushion,
+        ))
+
+        # Window 1: 09:45 ET MES
+        w1_es_status = "TRADE_FIRED" if (es_ok and sig_es) else "FILTERED_NO_BREAKOUT"
+        w1_es_action = sig_es["action"] if (es_ok and sig_es) else "NONE"
+        w1_es_contracts = c_es if (es_ok and sig_es) else 0
+        w1_es_reason = f"TRADE FIRED: {w1_es_action} @ {sig_es['entry_price']:.2f}" if (es_ok and sig_es) else "Inside Prior Value Area / Intermarket Divergence / Gated"
+        journal.record_window_evaluation(WindowEvaluationRecord(
+            date=session_date,
+            window_time="09:45:00",
+            strategy="VA Breakout (v2.0)",
+            symbol="MES",
+            status=w1_es_status,
+            action=w1_es_action,
+            contracts=w1_es_contracts,
+            diagnostic_reason=w1_es_reason,
+            entry_price=sig_es["entry_price"] if (es_ok and sig_es) else None,
+            stop_price=sig_es["stop_price"] if (es_ok and sig_es) else None,
+            target_price=sig_es["target_price"] if (es_ok and sig_es) else None,
+            account_balance=eval_state.balance,
+            trailing_cushion=eval_state.trailing_cushion,
+        ))
+
+        # Window 2: 10:15 ET MGC
+        w2_status = "TRADE_FIRED" if sig_gc else "FILTERED_NO_BREAKOUT"
+        w2_action = "BUY" if sig_gc else "NONE"
+        w2_contracts = tier_contracts if sig_gc else 0
+        w2_reason = f"TRADE FIRED: BUY @ {sig_gc['entry_price']:.2f}" if sig_gc else "Below COMEX IB60 or London High barriers / Gated"
+        journal.record_window_evaluation(WindowEvaluationRecord(
+            date=session_date,
+            window_time="10:15:00",
+            strategy="Gold London Fix (H14)",
+            symbol="MGC",
+            status=w2_status,
+            action=w2_action,
+            contracts=w2_contracts,
+            diagnostic_reason=w2_reason,
+            entry_price=sig_gc["entry_price"] if sig_gc else None,
+            stop_price=sig_gc["stop_price"] if sig_gc else None,
+            target_price=sig_gc["target_price"] if sig_gc else None,
+            account_balance=eval_state.balance,
+            trailing_cushion=eval_state.trailing_cushion,
+        ))
 
     if w_macro_fire or w1_fires or w2_fire:
         msg_parts = []
