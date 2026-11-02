@@ -27,6 +27,7 @@ import numpy as np
 import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
+matplotlib.rcParams["text.parse_math"] = False
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 

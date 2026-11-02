@@ -28,9 +28,21 @@ import numpy as np
 import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
+matplotlib.rcParams["text.parse_math"] = False
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import matplotlib.dates as mdates
+
+def fmt_currency(val: float | None, decimals: int = 2, force_sign: bool = False) -> str:
+    """Format currency values cleanly, preventing sign errors (+$-X.XX) and TeX math parsing."""
+    if val is None or pd.isna(val):
+        return "-"
+    if val < 0:
+        return f"-${abs(val):,.{decimals}f}"
+    elif val > 0 and force_sign:
+        return f"+${val:,.{decimals}f}"
+    else:
+        return f"${val:,.{decimals}f}"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -696,39 +708,47 @@ def render_strategy_sheet_06_scorecard_master(
         ("Execution Window & Time", "All 3 Windows", "09:45 - 10:15 ET", "10:15 - 10:45 ET", "08:35 - 09:15 ET"),
         ("Traded Instruments", "MNQ, MES, MGC", "MNQ, MES", "MGC", "MNQ"),
         ("Total Executions / Trades", f"{m_comp['trades']}", f"{m_s1['trades']}", f"{m_s2['trades']}", f"{m_s3['trades']}"),
-        ("Net Profit (USD)", f"${m_comp['net_profit']:,.2f}", f"${m_s1['net_profit']:,.2f}", f"${m_s2['net_profit']:,.2f}", f"${m_s3['net_profit']:,.2f}"),
-        ("Gross Profit / Gross Loss", f"${m_comp['gross_profit']:,.0f} / -${m_comp['gross_loss']:,.0f}", f"${m_s1['gross_profit']:,.0f} / -${m_s1['gross_loss']:,.0f}", f"${m_s2['gross_profit']:,.0f} / -${m_s2['gross_loss']:,.0f}", f"${m_s3['gross_profit']:,.0f} / -${m_s3['gross_loss']:,.0f}"),
+        ("Net Profit (USD)", fmt_currency(m_comp['net_profit'], 2), fmt_currency(m_s1['net_profit'], 2), fmt_currency(m_s2['net_profit'], 2), fmt_currency(m_s3['net_profit'], 2)),
+        ("Gross Profit / Gross Loss",
+         f"{fmt_currency(m_comp['gross_profit'], 0)} / -{fmt_currency(m_comp['gross_loss'], 0)}",
+         f"{fmt_currency(m_s1['gross_profit'], 0)} / -{fmt_currency(m_s1['gross_loss'], 0)}",
+         f"{fmt_currency(m_s2['gross_profit'], 0)} / -{fmt_currency(m_s2['gross_loss'], 0)}",
+         f"{fmt_currency(m_s3['gross_profit'], 0)} / -{fmt_currency(m_s3['gross_loss'], 0)}"),
         ("Profit Factor", f"{m_comp['profit_factor']:.2f}", f"{m_s1['profit_factor']:.2f}", f"{m_s2['profit_factor']:.2f}", f"{m_s3['profit_factor']:.2f}"),
         ("Win Rate / Loss Rate", f"{m_comp['win_rate']:.1f}% / {m_comp['loss_rate']:.1f}%", f"{m_s1['win_rate']:.1f}% / {m_s1['loss_rate']:.1f}%", f"{m_s2['win_rate']:.1f}% / {m_s2['loss_rate']:.1f}%", f"{m_s3['win_rate']:.1f}% / {m_s3['loss_rate']:.1f}%"),
-        ("Average Win / Average Loss", f"+${m_comp['avg_win']:.2f} / -${m_comp['avg_loss']:.2f}", f"+${m_s1['avg_win']:.2f} / -${m_s1['avg_loss']:.2f}", f"+${m_s2['avg_win']:.2f} / -${m_s2['avg_loss']:.2f}", f"+${m_s3['avg_win']:.2f} / -${m_s3['avg_loss']:.2f}"),
+        ("Average Win / Average Loss",
+         f"{fmt_currency(m_comp['avg_win'], 2, force_sign=True)} / -{fmt_currency(m_comp['avg_loss'], 2)}",
+         f"{fmt_currency(m_s1['avg_win'], 2, force_sign=True)} / -{fmt_currency(m_s1['avg_loss'], 2)}",
+         f"{fmt_currency(m_s2['avg_win'], 2, force_sign=True)} / -{fmt_currency(m_s2['avg_loss'], 2)}",
+         f"{fmt_currency(m_s3['avg_win'], 2, force_sign=True)} / -{fmt_currency(m_s3['avg_loss'], 2)}"),
         ("Win / Loss Payoff Ratio", f"{m_comp['payoff_ratio']:.2f}x", f"{m_s1['payoff_ratio']:.2f}x", f"{m_s2['payoff_ratio']:.2f}x", f"{m_s3['payoff_ratio']:.2f}x"),
-        ("Expectancy per Trade", f"+${m_comp['avg_trade']:.2f}", f"+${m_s1['avg_trade']:.2f}", f"+${m_s2['avg_trade']:.2f}", f"+${m_s3['avg_trade']:.2f}"),
-        ("Median Trade P&L", f"+${m_comp['median_trade']:.2f}", f"+${m_s1['median_trade']:.2f}", f"+${m_s2['median_trade']:.2f}", f"+${m_s3['median_trade']:.2f}"),
-        ("Maximum Drawdown ($)", f"-${abs(m_comp['max_dd']):,.2f}", f"-${abs(m_s1['max_dd']):,.2f}", f"-${abs(m_s2['max_dd']):,.2f}", f"-${abs(m_s3['max_dd']):,.2f}"),
+        ("Expectancy per Trade", fmt_currency(m_comp['avg_trade'], 2, force_sign=True), fmt_currency(m_s1['avg_trade'], 2, force_sign=True), fmt_currency(m_s2['avg_trade'], 2, force_sign=True), fmt_currency(m_s3['avg_trade'], 2, force_sign=True)),
+        ("Median Trade P&L", fmt_currency(m_comp['median_trade'], 2, force_sign=True), fmt_currency(m_s1['median_trade'], 2, force_sign=True), fmt_currency(m_s2['median_trade'], 2, force_sign=True), fmt_currency(m_s3['median_trade'], 2, force_sign=True)),
+        ("Maximum Drawdown ($)", fmt_currency(m_comp['max_dd'], 2), fmt_currency(m_s1['max_dd'], 2), fmt_currency(m_s2['max_dd'], 2), fmt_currency(m_s3['max_dd'], 2)),
         ("Maximum Drawdown (% on $25k)", f"{m_comp['max_dd_pct']:.2f}%", f"{m_s1['max_dd_pct']:.2f}%", f"{m_s2['max_dd_pct']:.2f}%", f"{m_s3['max_dd_pct']:.2f}%"),
         ("Max Drawdown Duration (Trades)", f"{m_comp['max_dd_dur_trades']} trades", f"{m_s1['max_dd_dur_trades']} trades", f"{m_s2['max_dd_dur_trades']} trades", f"{m_s3['max_dd_dur_trades']} trades"),
         ("Recovery Factor (Net / Max DD)", f"{m_comp['recovery_factor']:.2f}x", f"{m_s1['recovery_factor']:.2f}x", f"{m_s2['recovery_factor']:.2f}x", f"{m_s3['recovery_factor']:.2f}x"),
         ("Daily Sharpe Ratio (Ann. sqrt 252)", f"{m_comp['sharpe']:.2f}", f"{m_s1['sharpe']:.2f}", f"{m_s2['sharpe']:.2f}", f"{m_s3['sharpe']:.2f}"),
         ("Daily Sortino Ratio (Ann. sqrt 252)", f"{m_comp['sortino']:.2f}", f"{m_s1['sortino']:.2f}", f"{m_s2['sortino']:.2f}", f"{m_s3['sortino']:.2f}"),
         ("Calmar Ratio (Ann. Return / Max DD)", f"{m_comp['calmar']:.2f}", f"{m_s1['calmar']:.2f}", f"{m_s2['calmar']:.2f}", f"{m_s3['calmar']:.2f}"),
-        ("Annual Net Profit ($/year)", f"${m_comp['annual_profit']:,.2f}", f"${m_s1['annual_profit']:,.2f}", f"${m_s2['annual_profit']:,.2f}", f"${m_s3['annual_profit']:,.2f}"),
+        ("Annual Net Profit ($/year)", fmt_currency(m_comp['annual_profit'], 2), fmt_currency(m_s1['annual_profit'], 2), fmt_currency(m_s2['annual_profit'], 2), fmt_currency(m_s3['annual_profit'], 2)),
         ("Annualized Return (CAGR on $25k)", f"{m_comp['cagr_pct']:.2f}%", f"{m_s1['cagr_pct']:.2f}%", f"{m_s2['cagr_pct']:.2f}%", f"{m_s3['cagr_pct']:.2f}%"),
         ("Daily Session Win Rate (%)", f"{m_comp['daily_wr']:.1f}% ({m_comp['profit_days']}/{m_comp['total_days']})", f"{m_s1['daily_wr']:.1f}%", f"{m_s2['daily_wr']:.1f}%", f"{m_s3['daily_wr']:.1f}%"),
-        ("Worst Single Day P&L", f"-${abs(m_comp['worst_day']):,.2f}", f"-${abs(m_s1['worst_day']):,.2f}", f"-${abs(m_s2['worst_day']):,.2f}", f"-${abs(m_s3['worst_day']):,.2f}"),
-        ("Daily Value at Risk (VaR 95%)", f"-${abs(m_comp['var_95_daily']):.2f}", f"-${abs(m_s1['var_95_daily']):.2f}", f"-${abs(m_s2['var_95_daily']):.2f}", f"-${abs(m_s3['var_95_daily']):.2f}"),
-        ("Daily Expected Shortfall (CVaR 95%)", f"-${abs(m_comp['cvar_95_daily']):.2f}", f"-${abs(m_s1['cvar_95_daily']):.2f}", f"-${abs(m_s2['cvar_95_daily']):.2f}", f"-${abs(m_s3['cvar_95_daily']):.2f}"),
-        ("Largest Single Win", f"+${m_comp['largest_win']:.2f}", f"+${m_s1['largest_win']:.2f}", f"+${m_s2['largest_win']:.2f}", f"+${m_s3['largest_win']:.2f}"),
-        ("Largest Single Loss", f"-${abs(m_comp['largest_loss']):.2f}", f"-${abs(m_s1['largest_loss']):.2f}", f"-${abs(m_s2['largest_loss']):.2f}", f"-${abs(m_s3['largest_loss']):.2f}"),
+        ("Worst Single Day P&L", fmt_currency(m_comp['worst_day'], 2), fmt_currency(m_s1['worst_day'], 2), fmt_currency(m_s2['worst_day'], 2), fmt_currency(m_s3['worst_day'], 2)),
+        ("Daily Value at Risk (VaR 95%)", fmt_currency(m_comp['var_95_daily'], 2), fmt_currency(m_s1['var_95_daily'], 2), fmt_currency(m_s2['var_95_daily'], 2), fmt_currency(m_s3['var_95_daily'], 2)),
+        ("Daily Expected Shortfall (CVaR 95%)", fmt_currency(m_comp['cvar_95_daily'], 2), fmt_currency(m_s1['cvar_95_daily'], 2), fmt_currency(m_s2['cvar_95_daily'], 2), fmt_currency(m_s3['cvar_95_daily'], 2)),
+        ("Largest Single Win", fmt_currency(m_comp['largest_win'], 2, force_sign=True), fmt_currency(m_s1['largest_win'], 2, force_sign=True), fmt_currency(m_s2['largest_win'], 2, force_sign=True), fmt_currency(m_s3['largest_win'], 2, force_sign=True)),
+        ("Largest Single Loss", fmt_currency(m_comp['largest_loss'], 2), fmt_currency(m_s1['largest_loss'], 2), fmt_currency(m_s2['largest_loss'], 2), fmt_currency(m_s3['largest_loss'], 2)),
         ("Consecutive Wins / Losses (Max)", f"{m_comp['max_consec_wins']} W / {m_comp['max_consec_losses']} L", f"{m_s1['max_consec_wins']} W / {m_s1['max_consec_losses']} L", f"{m_s2['max_consec_wins']} W / {m_s2['max_consec_losses']} L", f"{m_s3['max_consec_wins']} W / {m_s3['max_consec_losses']} L"),
         ("Average Holding Time", f"{m_comp['avg_hold_min']:.1f} mins", f"{m_s1['avg_hold_min']:.1f} mins", f"{m_s2['avg_hold_min']:.1f} mins", f"{m_s3['avg_hold_min']:.1f} mins"),
-        ("Long Performance", f"{m_comp['long_trades']}t · ${m_comp['long_net']:,.0f} ({m_comp['long_wr']:.1f}%)", f"{m_s1['long_trades']}t · ${m_s1['long_net']:,.0f}", f"{m_s2['long_trades']}t · ${m_s2['long_net']:,.0f}", f"{m_s3['long_trades']}t · ${m_s3['long_net']:,.0f}"),
-        ("Short Performance", f"{m_comp['short_trades']}t · ${m_comp['short_net']:,.0f} ({m_comp['short_wr']:.1f}%)", f"{m_s1['short_trades']}t · ${m_s1['short_net']:,.0f}", f"{m_s2['short_trades']}t · ${m_s2['short_net']:,.0f}", f"{m_s3['short_trades']}t · ${m_s3['short_net']:,.0f}"),
+        ("Long Performance", f"{m_comp['long_trades']}t · {fmt_currency(m_comp['long_net'], 0)} ({m_comp['long_wr']:.1f}%)", f"{m_s1['long_trades']}t · {fmt_currency(m_s1['long_net'], 0)}", f"{m_s2['long_trades']}t · {fmt_currency(m_s2['long_net'], 0)}", f"{m_s3['long_trades']}t · {fmt_currency(m_s3['long_net'], 0)}"),
+        ("Short Performance", f"{m_comp['short_trades']}t · {fmt_currency(m_comp['short_net'], 0)} ({m_comp['short_wr']:.1f}%)", f"{m_s1['short_trades']}t · {fmt_currency(m_s1['short_net'], 0)}", f"{m_s2['short_trades']}t · {fmt_currency(m_s2['short_net'], 0)}", f"{m_s3['short_trades']}t · {fmt_currency(m_s3['short_net'], 0)}"),
     ]
 
     th_headers = ["Metric Specification", "Unified Composite", "Strategy 1 (09:45 VA)", "Strategy 2 (10:15 Gold)", "Strategy 3 (08:35 Macro)"]
     t_x = [0.02, 0.40, 0.58, 0.73, 0.88]
     for i, h in enumerate(th_headers):
-        ax.text(t_x[i], 0.92, h, fontsize=8.5, fontweight="bold", color="#000000", ha="left" if i == 0 else "right")
+        ax.text(t_x[i], 0.92, h, fontsize=8.5, fontweight="bold", color="#000000", ha="left" if i == 0 else "right", parse_math=False)
 
     y_t = 0.88
     for row_idx, r in enumerate(table_data):
@@ -737,7 +757,7 @@ def render_strategy_sheet_06_scorecard_master(
         for c_idx, val in enumerate(r):
             f_w = "bold" if is_bold else "normal"
             c_txt = "#1f77b4" if (c_idx == 1 and is_bold) else "#000000"
-            ax.text(t_x[c_idx], y_t - 0.005, val, fontsize=8.0, fontweight=f_w, color=c_txt, ha="left" if c_idx == 0 else "right")
+            ax.text(t_x[c_idx], y_t - 0.005, val, fontsize=8.0, fontweight=f_w, color=c_txt, ha="left" if c_idx == 0 else "right", parse_math=False)
         y_t -= 0.029
 
     out_path = OUT_DIR / "06_strategy_comprehensive_scorecard_master.png"
@@ -858,39 +878,47 @@ def render_screenshot_style_poster(
         ("Execution Window & Time", "All 3 Windows", "09:45 - 10:15 ET", "10:15 - 10:45 ET", "08:35 - 09:15 ET"),
         ("Traded Instruments", "MNQ, MES, MGC", "MNQ, MES", "MGC", "MNQ"),
         ("Total Executions / Trades", f"{m_comp['trades']}", f"{m_s1['trades']}", f"{m_s2['trades']}", f"{m_s3['trades']}"),
-        ("Net Profit (USD)", f"${m_comp['net_profit']:,.2f}", f"${m_s1['net_profit']:,.2f}", f"${m_s2['net_profit']:,.2f}", f"${m_s3['net_profit']:,.2f}"),
-        ("Gross Profit / Gross Loss", f"${m_comp['gross_profit']:,.0f} / -${m_comp['gross_loss']:,.0f}", f"${m_s1['gross_profit']:,.0f} / -${m_s1['gross_loss']:,.0f}", f"${m_s2['gross_profit']:,.0f} / -${m_s2['gross_loss']:,.0f}", f"${m_s3['gross_profit']:,.0f} / -${m_s3['gross_loss']:,.0f}"),
+        ("Net Profit (USD)", fmt_currency(m_comp['net_profit'], 2), fmt_currency(m_s1['net_profit'], 2), fmt_currency(m_s2['net_profit'], 2), fmt_currency(m_s3['net_profit'], 2)),
+        ("Gross Profit / Gross Loss",
+         f"{fmt_currency(m_comp['gross_profit'], 0)} / -{fmt_currency(m_comp['gross_loss'], 0)}",
+         f"{fmt_currency(m_s1['gross_profit'], 0)} / -{fmt_currency(m_s1['gross_loss'], 0)}",
+         f"{fmt_currency(m_s2['gross_profit'], 0)} / -{fmt_currency(m_s2['gross_loss'], 0)}",
+         f"{fmt_currency(m_s3['gross_profit'], 0)} / -{fmt_currency(m_s3['gross_loss'], 0)}"),
         ("Profit Factor", f"{m_comp['profit_factor']:.2f}", f"{m_s1['profit_factor']:.2f}", f"{m_s2['profit_factor']:.2f}", f"{m_s3['profit_factor']:.2f}"),
         ("Win Rate / Loss Rate", f"{m_comp['win_rate']:.1f}% / {m_comp['loss_rate']:.1f}%", f"{m_s1['win_rate']:.1f}% / {m_s1['loss_rate']:.1f}%", f"{m_s2['win_rate']:.1f}% / {m_s2['loss_rate']:.1f}%", f"{m_s3['win_rate']:.1f}% / {m_s3['loss_rate']:.1f}%"),
-        ("Average Win / Average Loss", f"+${m_comp['avg_win']:.2f} / -${m_comp['avg_loss']:.2f}", f"+${m_s1['avg_win']:.2f} / -${m_s1['avg_loss']:.2f}", f"+${m_s2['avg_win']:.2f} / -${m_s2['avg_loss']:.2f}", f"+${m_s3['avg_win']:.2f} / -${m_s3['avg_loss']:.2f}"),
+        ("Average Win / Average Loss",
+         f"{fmt_currency(m_comp['avg_win'], 2, force_sign=True)} / -{fmt_currency(m_comp['avg_loss'], 2)}",
+         f"{fmt_currency(m_s1['avg_win'], 2, force_sign=True)} / -{fmt_currency(m_s1['avg_loss'], 2)}",
+         f"{fmt_currency(m_s2['avg_win'], 2, force_sign=True)} / -{fmt_currency(m_s2['avg_loss'], 2)}",
+         f"{fmt_currency(m_s3['avg_win'], 2, force_sign=True)} / -{fmt_currency(m_s3['avg_loss'], 2)}"),
         ("Win / Loss Payoff Ratio", f"{m_comp['payoff_ratio']:.2f}x", f"{m_s1['payoff_ratio']:.2f}x", f"{m_s2['payoff_ratio']:.2f}x", f"{m_s3['payoff_ratio']:.2f}x"),
-        ("Expectancy per Trade", f"+${m_comp['avg_trade']:.2f}", f"+${m_s1['avg_trade']:.2f}", f"+${m_s2['avg_trade']:.2f}", f"+${m_s3['avg_trade']:.2f}"),
-        ("Median Trade P&L", f"+${m_comp['median_trade']:.2f}", f"+${m_s1['median_trade']:.2f}", f"+${m_s2['median_trade']:.2f}", f"+${m_s3['median_trade']:.2f}"),
-        ("Maximum Drawdown ($)", f"-${abs(m_comp['max_dd']):,.2f}", f"-${abs(m_s1['max_dd']):,.2f}", f"-${abs(m_s2['max_dd']):,.2f}", f"-${abs(m_s3['max_dd']):,.2f}"),
+        ("Expectancy per Trade", fmt_currency(m_comp['avg_trade'], 2, force_sign=True), fmt_currency(m_s1['avg_trade'], 2, force_sign=True), fmt_currency(m_s2['avg_trade'], 2, force_sign=True), fmt_currency(m_s3['avg_trade'], 2, force_sign=True)),
+        ("Median Trade P&L", fmt_currency(m_comp['median_trade'], 2, force_sign=True), fmt_currency(m_s1['median_trade'], 2, force_sign=True), fmt_currency(m_s2['median_trade'], 2, force_sign=True), fmt_currency(m_s3['median_trade'], 2, force_sign=True)),
+        ("Maximum Drawdown ($)", fmt_currency(m_comp['max_dd'], 2), fmt_currency(m_s1['max_dd'], 2), fmt_currency(m_s2['max_dd'], 2), fmt_currency(m_s3['max_dd'], 2)),
         ("Maximum Drawdown (% on $25k)", f"{m_comp['max_dd_pct']:.2f}%", f"{m_s1['max_dd_pct']:.2f}%", f"{m_s2['max_dd_pct']:.2f}%", f"{m_s3['max_dd_pct']:.2f}%"),
         ("Max Drawdown Duration (Trades)", f"{m_comp['max_dd_dur_trades']} trades", f"{m_s1['max_dd_dur_trades']} trades", f"{m_s2['max_dd_dur_trades']} trades", f"{m_s3['max_dd_dur_trades']} trades"),
         ("Recovery Factor (Net / Max DD)", f"{m_comp['recovery_factor']:.2f}x", f"{m_s1['recovery_factor']:.2f}x", f"{m_s2['recovery_factor']:.2f}x", f"{m_s3['recovery_factor']:.2f}x"),
         ("Daily Sharpe Ratio (Ann. sqrt 252)", f"{m_comp['sharpe']:.2f}", f"{m_s1['sharpe']:.2f}", f"{m_s2['sharpe']:.2f}", f"{m_s3['sharpe']:.2f}"),
         ("Daily Sortino Ratio (Ann. sqrt 252)", f"{m_comp['sortino']:.2f}", f"{m_s1['sortino']:.2f}", f"{m_s2['sortino']:.2f}", f"{m_s3['sortino']:.2f}"),
         ("Calmar Ratio (Ann. Return / Max DD)", f"{m_comp['calmar']:.2f}", f"{m_s1['calmar']:.2f}", f"{m_s2['calmar']:.2f}", f"{m_s3['calmar']:.2f}"),
-        ("Annual Net Profit ($/year)", f"${m_comp['annual_profit']:,.2f}", f"${m_s1['annual_profit']:,.2f}", f"${m_s2['annual_profit']:,.2f}", f"${m_s3['annual_profit']:,.2f}"),
+        ("Annual Net Profit ($/year)", fmt_currency(m_comp['annual_profit'], 2), fmt_currency(m_s1['annual_profit'], 2), fmt_currency(m_s2['annual_profit'], 2), fmt_currency(m_s3['annual_profit'], 2)),
         ("Annualized Return (CAGR on $25k)", f"{m_comp['cagr_pct']:.2f}%", f"{m_s1['cagr_pct']:.2f}%", f"{m_s2['cagr_pct']:.2f}%", f"{m_s3['cagr_pct']:.2f}%"),
         ("Daily Session Win Rate (%)", f"{m_comp['daily_wr']:.1f}% ({m_comp['profit_days']}/{m_comp['total_days']})", f"{m_s1['daily_wr']:.1f}%", f"{m_s2['daily_wr']:.1f}%", f"{m_s3['daily_wr']:.1f}%"),
-        ("Worst Single Day P&L", f"-${abs(m_comp['worst_day']):,.2f}", f"-${abs(m_s1['worst_day']):,.2f}", f"-${abs(m_s2['worst_day']):,.2f}", f"-${abs(m_s3['worst_day']):,.2f}"),
-        ("Daily Value at Risk (VaR 95%)", f"-${abs(m_comp['var_95_daily']):.2f}", f"-${abs(m_s1['var_95_daily']):.2f}", f"-${abs(m_s2['var_95_daily']):.2f}", f"-${abs(m_s3['var_95_daily']):.2f}"),
-        ("Daily Expected Shortfall (CVaR 95%)", f"-${abs(m_comp['cvar_95_daily']):.2f}", f"-${abs(m_s1['cvar_95_daily']):.2f}", f"-${abs(m_s2['cvar_95_daily']):.2f}", f"-${abs(m_s3['cvar_95_daily']):.2f}"),
-        ("Largest Single Win", f"+${m_comp['largest_win']:.2f}", f"+${m_s1['largest_win']:.2f}", f"+${m_s2['largest_win']:.2f}", f"+${m_s3['largest_win']:.2f}"),
-        ("Largest Single Loss", f"-${abs(m_comp['largest_loss']):.2f}", f"-${abs(m_s1['largest_loss']):.2f}", f"-${abs(m_s2['largest_loss']):.2f}", f"-${abs(m_s3['largest_loss']):.2f}"),
+        ("Worst Single Day P&L", fmt_currency(m_comp['worst_day'], 2), fmt_currency(m_s1['worst_day'], 2), fmt_currency(m_s2['worst_day'], 2), fmt_currency(m_s3['worst_day'], 2)),
+        ("Daily Value at Risk (VaR 95%)", fmt_currency(m_comp['var_95_daily'], 2), fmt_currency(m_s1['var_95_daily'], 2), fmt_currency(m_s2['var_95_daily'], 2), fmt_currency(m_s3['var_95_daily'], 2)),
+        ("Daily Expected Shortfall (CVaR 95%)", fmt_currency(m_comp['cvar_95_daily'], 2), fmt_currency(m_s1['cvar_95_daily'], 2), fmt_currency(m_s2['cvar_95_daily'], 2), fmt_currency(m_s3['cvar_95_daily'], 2)),
+        ("Largest Single Win", fmt_currency(m_comp['largest_win'], 2, force_sign=True), fmt_currency(m_s1['largest_win'], 2, force_sign=True), fmt_currency(m_s2['largest_win'], 2, force_sign=True), fmt_currency(m_s3['largest_win'], 2, force_sign=True)),
+        ("Largest Single Loss", fmt_currency(m_comp['largest_loss'], 2), fmt_currency(m_s1['largest_loss'], 2), fmt_currency(m_s2['largest_loss'], 2), fmt_currency(m_s3['largest_loss'], 2)),
         ("Consecutive Wins / Losses (Max)", f"{m_comp['max_consec_wins']} W / {m_comp['max_consec_losses']} L", f"{m_s1['max_consec_wins']} W / {m_s1['max_consec_losses']} L", f"{m_s2['max_consec_wins']} W / {m_s2['max_consec_losses']} L", f"{m_s3['max_consec_wins']} W / {m_s3['max_consec_losses']} L"),
         ("Average Holding Time", f"{m_comp['avg_hold_min']:.1f} mins", f"{m_s1['avg_hold_min']:.1f} mins", f"{m_s2['avg_hold_min']:.1f} mins", f"{m_s3['avg_hold_min']:.1f} mins"),
-        ("Long Performance", f"{m_comp['long_trades']}t · ${m_comp['long_net']:,.0f} ({m_comp['long_wr']:.1f}%)", f"{m_s1['long_trades']}t · ${m_s1['long_net']:,.0f}", f"{m_s2['long_trades']}t · ${m_s2['long_net']:,.0f}", f"{m_s3['long_trades']}t · ${m_s3['long_net']:,.0f}"),
-        ("Short Performance", f"{m_comp['short_trades']}t · ${m_comp['short_net']:,.0f} ({m_comp['short_wr']:.1f}%)", f"{m_s1['short_trades']}t · ${m_s1['short_net']:,.0f}", f"{m_s2['short_trades']}t · ${m_s2['short_net']:,.0f}", f"{m_s3['short_trades']}t · ${m_s3['short_net']:,.0f}"),
+        ("Long Performance", f"{m_comp['long_trades']}t · {fmt_currency(m_comp['long_net'], 0)} ({m_comp['long_wr']:.1f}%)", f"{m_s1['long_trades']}t · {fmt_currency(m_s1['long_net'], 0)}", f"{m_s2['long_trades']}t · {fmt_currency(m_s2['long_net'], 0)}", f"{m_s3['long_trades']}t · {fmt_currency(m_s3['long_net'], 0)}"),
+        ("Short Performance", f"{m_comp['short_trades']}t · {fmt_currency(m_comp['short_net'], 0)} ({m_comp['short_wr']:.1f}%)", f"{m_s1['short_trades']}t · {fmt_currency(m_s1['short_net'], 0)}", f"{m_s2['short_trades']}t · {fmt_currency(m_s2['short_net'], 0)}", f"{m_s3['short_trades']}t · {fmt_currency(m_s3['short_net'], 0)}"),
     ]
 
     th_headers = ["Metric Specification", "Unified Composite", "Strategy 1 (09:45 VA)", "Strategy 2 (10:15 Gold)", "Strategy 3 (08:35 Macro)"]
     t_x = [0.02, 0.40, 0.58, 0.73, 0.88]
     for i, h in enumerate(th_headers):
-        ax_tab.text(t_x[i], 0.91, h, fontsize=8.5, fontweight="bold", color="#000000", ha="left" if i == 0 else "right")
+        ax_tab.text(t_x[i], 0.91, h, fontsize=8.5, fontweight="bold", color="#000000", ha="left" if i == 0 else "right", parse_math=False)
 
     y_t = 0.87
     for row_idx, r in enumerate(table_data):
@@ -899,7 +927,7 @@ def render_screenshot_style_poster(
         for c_idx, val in enumerate(r):
             f_w = "bold" if is_bold else "normal"
             c_txt = "#1f77b4" if (c_idx == 1 and is_bold) else "#000000"
-            ax_tab.text(t_x[c_idx], y_t - 0.005, val, fontsize=7.8, fontweight=f_w, color=c_txt, ha="left" if c_idx == 0 else "right")
+            ax_tab.text(t_x[c_idx], y_t - 0.005, val, fontsize=7.8, fontweight=f_w, color=c_txt, ha="left" if c_idx == 0 else "right", parse_math=False)
         y_t -= 0.0275
 
     # ── PANEL 5A: SLIPPAGE SENSITIVITY BREAKEVEN CLIFF ───────────────────────
@@ -1233,23 +1261,23 @@ def generate_screenshot_style_html_dashboard(
             <tr><td><strong>Win Rate / Loss Rate</strong></td><td class="color-pos"><strong>{m_comp['win_rate']:.1f}%</strong> / {m_comp['loss_rate']:.1f}%</td><td class="color-pos"><strong>{m_s1['win_rate']:.1f}%</strong></td><td class="color-pos"><strong>{m_s2['win_rate']:.1f}%</strong></td><td><strong>{m_s3['win_rate']:.1f}%</strong></td></tr>
             <tr><td>Average Win / Average Loss</td><td>+${m_comp['avg_win']:.2f} / -${m_comp['avg_loss']:.2f}</td><td>+${m_s1['avg_win']:.2f} / -${m_s1['avg_loss']:.2f}</td><td>+${m_s2['avg_win']:.2f} / -${m_s2['avg_loss']:.2f}</td><td>+${m_s3['avg_win']:.2f} / -${m_s3['avg_loss']:.2f}</td></tr>
             <tr><td>Win / Loss Payoff Ratio</td><td><strong>{m_comp['payoff_ratio']:.2f}x</strong></td><td>{m_s1['payoff_ratio']:.2f}x</td><td>{m_s2['payoff_ratio']:.2f}x</td><td class="color-pos"><strong>{m_s3['payoff_ratio']:.2f}x</strong></td></tr>
-            <tr><td>Expectancy per Trade</td><td class="color-pos">+${m_comp['avg_trade']:.2f}</td><td>+${m_s1['avg_trade']:.2f}</td><td>+${m_s2['avg_trade']:.2f}</td><td>+${m_s3['avg_trade']:.2f}</td></tr>
-            <tr><td>Median Trade P&L</td><td>+${m_comp['median_trade']:.2f}</td><td>+${m_s1['median_trade']:.2f}</td><td>+${m_s2['median_trade']:.2f}</td><td>+${m_s3['median_trade']:.2f}</td></tr>
-            <tr><td><strong>Maximum Drawdown ($)</strong></td><td class="color-neg"><strong>-${abs(m_comp['max_dd']):,.2f}</strong></td><td class="color-neg">-${abs(m_s1['max_dd']):,.2f}</td><td class="color-pos">-${abs(m_s2['max_dd']):,.2f}</td><td class="color-neg">-${abs(m_s3['max_dd']):,.2f}</td></tr>
+            <tr><td>Expectancy per Trade</td><td class="color-pos">{fmt_currency(m_comp['avg_trade'], 2, force_sign=True)}</td><td>{fmt_currency(m_s1['avg_trade'], 2, force_sign=True)}</td><td>{fmt_currency(m_s2['avg_trade'], 2, force_sign=True)}</td><td>{fmt_currency(m_s3['avg_trade'], 2, force_sign=True)}</td></tr>
+            <tr><td>Median Trade P&L</td><td>{fmt_currency(m_comp['median_trade'], 2, force_sign=True)}</td><td>{fmt_currency(m_s1['median_trade'], 2, force_sign=True)}</td><td>{fmt_currency(m_s2['median_trade'], 2, force_sign=True)}</td><td>{fmt_currency(m_s3['median_trade'], 2, force_sign=True)}</td></tr>
+            <tr><td><strong>Maximum Drawdown ($)</strong></td><td class="color-neg"><strong>{fmt_currency(m_comp['max_dd'], 2)}</strong></td><td class="color-neg">{fmt_currency(m_s1['max_dd'], 2)}</td><td class="color-pos">{fmt_currency(m_s2['max_dd'], 2)}</td><td class="color-neg">{fmt_currency(m_s3['max_dd'], 2)}</td></tr>
             <tr><td>Maximum Drawdown (% on $25k base)</td><td class="color-neg">{m_comp['max_dd_pct']:.2f}%</td><td>{m_s1['max_dd_pct']:.2f}%</td><td>{m_s2['max_dd_pct']:.2f}%</td><td>{m_s3['max_dd_pct']:.2f}%</td></tr>
             <tr><td>Max Drawdown Duration (Trades)</td><td>{m_comp['max_dd_dur_trades']} trades</td><td>{m_s1['max_dd_dur_trades']} trades</td><td>{m_s2['max_dd_dur_trades']} trades</td><td>{m_s3['max_dd_dur_trades']} trades</td></tr>
             <tr><td>Recovery Factor (Net / Max DD)</td><td><strong>{m_comp['recovery_factor']:.2f}x</strong></td><td>{m_s1['recovery_factor']:.2f}x</td><td>{m_s2['recovery_factor']:.2f}x</td><td>{m_s3['recovery_factor']:.2f}x</td></tr>
             <tr><td><strong>Daily Sharpe Ratio (Annualized)</strong></td><td class="color-blue"><strong>{m_comp['sharpe']:.2f}</strong></td><td class="color-blue"><strong>{m_s1['sharpe']:.2f}</strong></td><td class="color-blue"><strong>{m_s2['sharpe']:.2f}</strong></td><td class="color-blue"><strong>{m_s3['sharpe']:.2f}</strong></td></tr>
             <tr><td>Daily Sortino Ratio (Annualized)</td><td class="color-blue"><strong>{m_comp['sortino']:.2f}</strong></td><td class="color-blue"><strong>{m_s1['sortino']:.2f}</strong></td><td class="color-blue"><strong>{m_s2['sortino']:.2f}</strong></td><td class="color-blue"><strong>{m_s3['sortino']:.2f}</strong></td></tr>
             <tr><td>Calmar Ratio (Ann. Return / Max DD)</td><td>{m_comp['calmar']:.2f}</td><td>{m_s1['calmar']:.2f}</td><td>{m_s2['calmar']:.2f}</td><td>{m_s3['calmar']:.2f}</td></tr>
-            <tr><td>Annual Net Profit ($/year)</td><td>${m_comp['annual_profit']:,.2f}</td><td>${m_s1['annual_profit']:,.2f}</td><td>${m_s2['annual_profit']:,.2f}</td><td>${m_s3['annual_profit']:,.2f}</td></tr>
+            <tr><td>Annual Net Profit ($/year)</td><td>{fmt_currency(m_comp['annual_profit'], 2)}</td><td>{fmt_currency(m_s1['annual_profit'], 2)}</td><td>{fmt_currency(m_s2['annual_profit'], 2)}</td><td>{fmt_currency(m_s3['annual_profit'], 2)}</td></tr>
             <tr><td>Annualized Return (CAGR on $25k)</td><td>{m_comp['cagr_pct']:.2f}%</td><td>{m_s1['cagr_pct']:.2f}%</td><td>{m_s2['cagr_pct']:.2f}%</td><td>{m_s3['cagr_pct']:.2f}%</td></tr>
             <tr><td>Daily Win Rate (% Sessions)</td><td>{m_comp['daily_wr']:.1f}% ({m_comp['profit_days']}/{m_comp['total_days']})</td><td>{m_s1['daily_wr']:.1f}%</td><td>{m_s2['daily_wr']:.1f}%</td><td>{m_s3['daily_wr']:.1f}%</td></tr>
-            <tr><td>Worst Single Day P&L</td><td class="color-neg">-${abs(m_comp['worst_day']):,.2f}</td><td>-${abs(m_s1['worst_day']):,.2f}</td><td>-${abs(m_s2['worst_day']):,.2f}</td><td>-${abs(m_s3['worst_day']):,.2f}</td></tr>
-            <tr><td>Daily Value at Risk (VaR 95%)</td><td class="color-neg">-${abs(m_comp['var_95_daily']):.2f}</td><td>-${abs(m_s1['var_95_daily']):.2f}</td><td>-${abs(m_s2['var_95_daily']):.2f}</td><td>-${abs(m_s3['var_95_daily']):.2f}</td></tr>
-            <tr><td>Daily Expected Shortfall (CVaR 95%)</td><td class="color-neg">-${abs(m_comp['cvar_95_daily']):.2f}</td><td>-${abs(m_s1['cvar_95_daily']):.2f}</td><td>-${abs(m_s2['cvar_95_daily']):.2f}</td><td>-${abs(m_s3['cvar_95_daily']):.2f}</td></tr>
-            <tr><td>Largest Single Win</td><td class="color-pos">+${m_comp['largest_win']:.2f}</td><td>+${m_s1['largest_win']:.2f}</td><td>+${m_s2['largest_win']:.2f}</td><td>+${m_s3['largest_win']:.2f}</td></tr>
-            <tr><td>Largest Single Loss</td><td class="color-neg">-${abs(m_comp['largest_loss']):.2f}</td><td>-${abs(m_s1['largest_loss']):.2f}</td><td>-${abs(m_s2['largest_loss']):.2f}</td><td>-${abs(m_s3['largest_loss']):.2f}</td></tr>
+            <tr><td>Worst Single Day P&L</td><td class="color-neg">{fmt_currency(m_comp['worst_day'], 2)}</td><td>{fmt_currency(m_s1['worst_day'], 2)}</td><td>{fmt_currency(m_s2['worst_day'], 2)}</td><td>{fmt_currency(m_s3['worst_day'], 2)}</td></tr>
+            <tr><td>Daily Value at Risk (VaR 95%)</td><td class="color-neg">{fmt_currency(m_comp['var_95_daily'], 2)}</td><td>{fmt_currency(m_s1['var_95_daily'], 2)}</td><td>{fmt_currency(m_s2['var_95_daily'], 2)}</td><td>{fmt_currency(m_s3['var_95_daily'], 2)}</td></tr>
+            <tr><td>Daily Expected Shortfall (CVaR 95%)</td><td class="color-neg">{fmt_currency(m_comp['cvar_95_daily'], 2)}</td><td>{fmt_currency(m_s1['cvar_95_daily'], 2)}</td><td>{fmt_currency(m_s2['cvar_95_daily'], 2)}</td><td>{fmt_currency(m_s3['cvar_95_daily'], 2)}</td></tr>
+            <tr><td>Largest Single Win</td><td class="color-pos">{fmt_currency(m_comp['largest_win'], 2, force_sign=True)}</td><td>{fmt_currency(m_s1['largest_win'], 2, force_sign=True)}</td><td>{fmt_currency(m_s2['largest_win'], 2, force_sign=True)}</td><td>{fmt_currency(m_s3['largest_win'], 2, force_sign=True)}</td></tr>
+            <tr><td>Largest Single Loss</td><td class="color-neg">{fmt_currency(m_comp['largest_loss'], 2)}</td><td>{fmt_currency(m_s1['largest_loss'], 2)}</td><td>{fmt_currency(m_s2['largest_loss'], 2)}</td><td>{fmt_currency(m_s3['largest_loss'], 2)}</td></tr>
             <tr><td>Consecutive Wins / Losses (Max)</td><td>{m_comp['max_consec_wins']} W / {m_comp['max_consec_losses']} L</td><td>{m_s1['max_consec_wins']} W / {m_s1['max_consec_losses']} L</td><td>{m_s2['max_consec_wins']} W / {m_s2['max_consec_losses']} L</td><td>{m_s3['max_consec_wins']} W / {m_s3['max_consec_losses']} L</td></tr>
             <tr><td>Average Holding Time</td><td>{m_comp['avg_hold_min']:.1f} mins</td><td>{m_s1['avg_hold_min']:.1f} mins</td><td>{m_s2['avg_hold_min']:.1f} mins</td><td>{m_s3['avg_hold_min']:.1f} mins</td></tr>
             <tr><td>Long Side Performance</td><td>{m_comp['long_trades']}t · ${m_comp['long_net']:,.2f} ({m_comp['long_wr']:.1f}% WR)</td><td>{m_s1['long_trades']}t · ${m_s1['long_net']:,.2f}</td><td>{m_s2['long_trades']}t · ${m_s2['long_net']:,.2f}</td><td>{m_s3['long_trades']}t · ${m_s3['long_net']:,.2f}</td></tr>
