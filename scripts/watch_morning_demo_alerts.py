@@ -53,14 +53,15 @@ from scripts.run_demo_forward_test import (
 ET_TZ = ZoneInfo("America/New_York")
 
 
-def send_macos_alert(title: str, subtitle: str, message: str, speak_text: str | None = None) -> None:
-    """Fires a native macOS Notification Center banner with Glass sound and optional TTS voice alert."""
+def send_macos_alert(title: str, subtitle: str, message: str, speak_text: str | None = None, sound: bool = True) -> None:
+    """Fires a native macOS Notification Center banner with optional Glass sound and TTS voice alert."""
     safe_title = title.replace('"', '\\"')
     safe_sub = subtitle.replace('"', '\\"')
     safe_msg = message.replace('"', '\\"')
+    sound_clause = ' sound name "Glass"' if sound else ""
     apple_script = (
         f'display notification "{safe_msg}" with title "{safe_title}" '
-        f'subtitle "{safe_sub}" sound name "Glass"'
+        f'subtitle "{safe_sub}"{sound_clause}'
     )
     try:
         subprocess.run(["osascript", "-e", apple_script], check=False, timeout=5)
@@ -475,11 +476,13 @@ def run_evaluation_and_notify(*, speak: bool = True, auto_log: bool = True) -> d
             speak_text="Prop trading signal fired. Check terminal execution card." if speak else None,
         )
     else:
+        # Completely silent notification on no trade — no chime, no audio
         send_macos_alert(
             title=f"Prop Check Complete ({session_date})",
             subtitle="No Trade Triggered",
             message="08:35 ET (Macro), 09:45 ET (MNQ/MES) and 10:15 ET (MGC) gates are flat.",
-            speak_text="Morning signal check complete. No trade triggered." if speak else None,
+            speak_text=None,
+            sound=False,
         )
 
     return {
@@ -553,9 +556,7 @@ def main() -> int:
                 last_mtime = cur_mtime
                 # Auto-resolves any open Window 1 trade before cash open
                 run_evaluation_and_notify(speak=not args.no_voice, auto_log=not args.no_auto_log)
-            elif ("09:45:02" <= hhmmss <= "09:46:30" and w1_key not in fired_windows) or (
-                last_mtime > 0 and cur_mtime > last_mtime
-            ):
+            elif "09:45:02" <= hhmmss <= "09:46:30" and w1_key not in fired_windows:
                 fired_windows.add(w1_key)
                 last_mtime = cur_mtime
                 run_evaluation_and_notify(speak=not args.no_voice, auto_log=not args.no_auto_log)
