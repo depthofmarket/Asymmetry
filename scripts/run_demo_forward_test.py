@@ -602,17 +602,38 @@ def record_trade_prompt(sig: dict, contracts: int, journal: DemoParityJournal) -
     fill_input = input("> ").strip()
     fill_price = float(fill_input) if fill_input else sig["entry_price"]
 
+    strat_name = (
+        "Macro Momentum (08:35)"
+        if "08:35" in sig.get("window_label", "")
+        else ("Gold London Fix (H14)" if "10:15" in sig.get("window_label", "") else "VA Breakout (v2.0)")
+    )
+    time_exit_code = (
+        "TIME_EXIT_0925"
+        if "08:35" in sig.get("window_label", "")
+        else ("TIME_EXIT_1100" if "10:15" in sig.get("window_label", "") else "TIME_EXIT_1015")
+    )
+    entry_time_str = (
+        "08:35:00"
+        if "08:35" in sig.get("window_label", "")
+        else ("10:15:00" if "10:15" in sig.get("window_label", "") else "09:45:00")
+    )
+    exit_time_str = (
+        "09:25:00"
+        if "08:35" in sig.get("window_label", "")
+        else ("11:00:00" if "10:15" in sig.get("window_label", "") else "10:15:00")
+    )
+
     print("Select Exit Rule:")
     print("  [1] PROFIT_TARGET_1_5R")
     print("  [2] STOP_LOSS")
-    print("  [3] TIME_EXIT_1015")
+    print(f"  [3] {time_exit_code} (Scheduled Window Close)")
     print("  [4] NEWS_GUARD_0959")
     print("  [5] MANUAL")
     ex_choice = input("Select [1]: ").strip() or "1"
     ex_map = {
         "1": "PROFIT_TARGET_1_5R",
         "2": "STOP_LOSS",
-        "3": "TIME_EXIT_1015",
+        "3": time_exit_code,
         "4": "NEWS_GUARD_0959",
         "5": "MANUAL",
     }
@@ -638,6 +659,11 @@ def record_trade_prompt(sig: dict, contracts: int, journal: DemoParityJournal) -
         theo_target_price=sig["target_price"],
         exit_type=exit_type,
         actual_exit_fill=exit_price,
+        strategy=strat_name,
+        theo_entry_time=entry_time_str,
+        actual_entry_time=f"{entry_time_str[:-1]}1",
+        theo_exit_time=exit_time_str,
+        actual_exit_time=exit_time_str,
     )
     new_state = journal.record_trade(rec)
     print(
@@ -757,6 +783,9 @@ def main() -> int:
         print_execution_card(sig_gc, eval_state, gc_contracts, gc_label)
         if args.interactive and sig_gc["macro_pass"]:
             record_trade_prompt(sig_gc, gc_contracts, journal)
+
+    # Always ensure dashboard HTML is up-to-date with current state and templates
+    journal.generate_html_dashboard()
 
     return 0
 

@@ -97,6 +97,7 @@ class TradeFillRecord:
     exit_type: Literal[
         "PROFIT_TARGET_1_5R",
         "STOP_LOSS",
+        "TIME_EXIT_0925",
         "TIME_EXIT_1015",
         "TIME_EXIT_1100",
         "NEWS_GUARD_0959",
@@ -511,17 +512,26 @@ class DemoParityJournal:
         demo_losses = int((df_trades["net_pnl"] < 0).sum()) if not df_trades.empty and "net_pnl" in df_trades else 0
         demo_win_rate = round((demo_wins / demo_trades_count * 100.0), 1) if demo_trades_count > 0 else 0.0
 
-        # Strategy 1 (MNQ/MES @ 09:45 ET) vs Strategy 2 (MGC @ 10:15 ET) live forward metrics
-        s1_trades = df_trades[df_trades["symbol"].isin(["MNQ", "MES"])] if not df_trades.empty and "symbol" in df_trades else pd.DataFrame()
-        s2_trades = df_trades[df_trades["symbol"] == "MGC"] if not df_trades.empty and "symbol" in df_trades else pd.DataFrame()
-        s1_count = len(s1_trades)
-        s2_count = len(s2_trades)
+        # Strategy 1 (MNQ/MES @ 09:45 ET), Strategy 2 (MGC @ 10:15 ET), Strategy 3 (MNQ @ 08:35 ET)
+        if not df_trades.empty and "strategy" in df_trades.columns:
+            s1_trades = df_trades[df_trades["strategy"].str.contains("VA Breakout", na=False)]
+            s2_trades = df_trades[df_trades["strategy"].str.contains("Gold", na=False)]
+            s3_trades = df_trades[df_trades["strategy"].str.contains("Macro", na=False)]
+        else:
+            s1_trades = df_trades[df_trades["symbol"].isin(["MNQ", "MES"])] if not df_trades.empty and "symbol" in df_trades else pd.DataFrame()
+            s2_trades = df_trades[df_trades["symbol"] == "MGC"] if not df_trades.empty and "symbol" in df_trades else pd.DataFrame()
+            s3_trades = pd.DataFrame()
+
+        s1_count, s2_count, s3_count = len(s1_trades), len(s2_trades), len(s3_trades)
         s1_net = float(s1_trades["net_pnl"].sum()) if not s1_trades.empty else 0.0
         s2_net = float(s2_trades["net_pnl"].sum()) if not s2_trades.empty else 0.0
+        s3_net = float(s3_trades["net_pnl"].sum()) if not s3_trades.empty else 0.0
         s1_wins = int((s1_trades["net_pnl"] > 0).sum()) if not s1_trades.empty else 0
         s2_wins = int((s2_trades["net_pnl"] > 0).sum()) if not s2_trades.empty else 0
+        s3_wins = int((s3_trades["net_pnl"] > 0).sum()) if not s3_trades.empty else 0
         s1_wr = round((s1_wins / s1_count * 100.0), 1) if s1_count > 0 else 0.0
         s2_wr = round((s2_wins / s2_count * 100.0), 1) if s2_count > 0 else 0.0
+        s3_wr = round((s3_wins / s3_count * 100.0), 1) if s3_count > 0 else 0.0
 
         gross_wins = float(df_trades[df_trades["net_pnl"] > 0]["net_pnl"].sum()) if not df_trades.empty and "net_pnl" in df_trades else 0.0
         gross_losses = abs(float(df_trades[df_trades["net_pnl"] < 0]["net_pnl"].sum())) if not df_trades.empty and "net_pnl" in df_trades else 0.0
@@ -758,7 +768,21 @@ class DemoParityJournal:
     </header>
 
     <!-- Strategy Comparison Ribbon -->
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-3 font-mono text-xs">
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 font-mono text-xs">
+        <div class="panel p-3 border-l-4 border-l-rose-500 bg-[#111622]">
+            <div class="flex justify-between items-center mb-1">
+                <span class="text-[10px] font-bold text-rose-400 uppercase tracking-wider">Strategy 3 &bull; 08:35:00 ET (Macro)</span>
+                <span class="px-1.5 py-0.2 rounded text-[10px] bg-rose-500/20 text-rose-300 border border-rose-500/30">MNQ (H17)</span>
+            </div>
+            <div class="text-sm font-bold text-white">Pre-Market Macro Release Momentum</div>
+            <div class="mt-2 grid grid-cols-2 gap-2 text-[11px]">
+                <div><span class="text-gray-500">Backtest WR:</span> <span class="text-emerald-400 font-bold">49.0%</span> <span class="text-gray-500">(PF 1.44)</span></div>
+                <div><span class="text-gray-500">2021-26 PnL:</span> <span class="text-emerald-400 font-bold">+$4,573.23</span></div>
+                <div><span class="text-gray-500">Holding Limit:</span> <span class="text-gray-300">50 min (Flat 09:25)</span></div>
+                <div><span class="text-gray-500">Live Forward:</span> <span class="text-gray-300 font-bold">{s3_count} Trade ({s3_net:+,.2f})</span></div>
+            </div>
+        </div>
+
         <div class="panel p-3 border-l-4 border-l-sky-500 bg-[#111622]">
             <div class="flex justify-between items-center mb-1">
                 <span class="text-[10px] font-bold text-sky-400 uppercase tracking-wider">Strategy 1 &bull; 09:45:00 ET (Equities)</span>
@@ -766,8 +790,8 @@ class DemoParityJournal:
             </div>
             <div class="text-sm font-bold text-white">Morning Value Area Breakout (v2.0)</div>
             <div class="mt-2 grid grid-cols-2 gap-2 text-[11px]">
-                <div><span class="text-gray-500">Backtest WR:</span> <span class="text-emerald-400 font-bold">56.7%</span> <span class="text-gray-500">(PF 1.61)</span></div>
-                <div><span class="text-gray-500">2021-26 PnL:</span> <span class="text-emerald-400 font-bold">+$7,952.79</span></div>
+                <div><span class="text-gray-500">Backtest WR:</span> <span class="text-emerald-400 font-bold">57.0%</span> <span class="text-gray-500">(PF 1.65)</span></div>
+                <div><span class="text-gray-500">2021-26 PnL:</span> <span class="text-emerald-400 font-bold">+$8,956.18</span></div>
                 <div><span class="text-gray-500">Holding Limit:</span> <span class="text-gray-300">30 min (Flat 10:15)</span></div>
                 <div><span class="text-gray-500">Live Forward:</span> <span class="text-emerald-400 font-bold">{s1_count} Trade ({s1_net:+,.2f})</span></div>
             </div>
@@ -780,24 +804,24 @@ class DemoParityJournal:
             </div>
             <div class="text-sm font-bold text-white">Post-LBMA PM Fix Structural Breakout</div>
             <div class="mt-2 grid grid-cols-2 gap-2 text-[11px]">
-                <div><span class="text-gray-500">Backtest WR:</span> <span class="text-emerald-400 font-bold">57.0%</span> <span class="text-gray-500">(PF 1.65)</span></div>
-                <div><span class="text-gray-500">2019-26 PnL:</span> <span class="text-emerald-400 font-bold">+$1,272.00</span></div>
+                <div><span class="text-gray-500">Backtest WR:</span> <span class="text-emerald-400 font-bold">58.3%</span> <span class="text-gray-500">(PF 1.59)</span></div>
+                <div><span class="text-gray-500">2021-26 PnL:</span> <span class="text-emerald-400 font-bold">+$1,386.62</span></div>
                 <div><span class="text-gray-500">Holding Limit:</span> <span class="text-gray-300">45 min (Flat 11:00)</span></div>
-                <div><span class="text-gray-500">Live Forward:</span> <span class="text-gray-400 font-bold">{s2_count} Trade ({s2_net:+,.2f})</span></div>
+                <div><span class="text-gray-500">Live Forward:</span> <span class="text-gray-300 font-bold">{s2_count} Trade ({s2_net:+,.2f})</span></div>
             </div>
         </div>
 
         <div class="panel p-3 border-l-4 border-l-purple-500 bg-[#111622]">
             <div class="flex justify-between items-center mb-1">
-                <span class="text-[10px] font-bold text-purple-400 uppercase tracking-wider">Unified Prop Portfolio</span>
+                <span class="text-[10px] font-bold text-purple-400 uppercase tracking-wider">Unified Composite Portfolio</span>
                 <span class="px-1.5 py-0.2 rounded text-[10px] bg-purple-500/20 text-purple-300 border border-purple-500/30">LUCIDFLEX 25K</span>
             </div>
-            <div class="text-sm font-bold text-white">Tri-Asset Two-Window Book</div>
+            <div class="text-sm font-bold text-white">Three-Strategy Sequential Ensemble</div>
             <div class="mt-2 grid grid-cols-2 gap-2 text-[11px]">
-                <div><span class="text-gray-500">Backtest WR:</span> <span class="text-emerald-400 font-bold">56.8%</span> <span class="text-gray-500">(PF 1.55)</span></div>
-                <div><span class="text-gray-500">Total PnL:</span> <span class="text-emerald-400 font-bold">+$9,619.79</span></div>
-                <div><span class="text-gray-500">Eval Pass Rate:</span> <span class="text-emerald-400 font-bold">87%</span> <span class="text-gray-500">(MC EEP +$636)</span></div>
-                <div><span class="text-gray-500">Overlap Risk:</span> <span class="text-emerald-400 font-bold">0.0% (Sequential)</span></div>
+                <div><span class="text-gray-500">Backtest WR:</span> <span class="text-emerald-400 font-bold">55.1%</span> <span class="text-gray-500">(PF 1.56)</span></div>
+                <div><span class="text-gray-500">Total Net:</span> <span class="text-emerald-400 font-bold">+$14,916.04</span> <span class="text-gray-500">(SR 3.13)</span></div>
+                <div><span class="text-gray-500">Eval Pass Rate:</span> <span class="text-emerald-400 font-bold">79.1%</span> <span class="text-gray-500">(EV +$862)</span></div>
+                <div><span class="text-gray-500">Live Forward:</span> <span class="text-emerald-400 font-bold">{demo_trades_count} Trade ({demo_net_pnl:+,.2f})</span></div>
             </div>
         </div>
     </div>

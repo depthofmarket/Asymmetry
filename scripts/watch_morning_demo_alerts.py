@@ -170,10 +170,21 @@ def auto_log_session_and_trades(
         if already_in_trades:
             continue
 
-        is_w1 = win_str == "09:45"
-        start_hhmm = "09:45" if is_w1 else "10:15"
-        end_hhmm = "10:15" if is_w1 else "11:00"
-        exit_code = "TIME_EXIT_1015" if is_w1 else "TIME_EXIT_1100"
+        if win_str == "08:35":
+            start_hhmm = "08:35"
+            end_hhmm = "09:25"
+            exit_code = "TIME_EXIT_0925"
+            strategy_name = "Macro Momentum (08:35)"
+        elif win_str == "09:45":
+            start_hhmm = "09:45"
+            end_hhmm = "10:15"
+            exit_code = "TIME_EXIT_1015"
+            strategy_name = "VA Breakout (v2.0)"
+        else:  # "10:15"
+            start_hhmm = "10:15"
+            end_hhmm = "11:00"
+            exit_code = "TIME_EXIT_1100"
+            strategy_name = "Gold London Fix (H14)"
 
         b_day = bars[bars["time"].dt.strftime("%Y-%m-%d") == session_date]
         w_bars = b_day[b_day["time"].dt.strftime("%H:%M").between(start_hhmm, end_hhmm)].copy()
@@ -228,7 +239,7 @@ def auto_log_session_and_trades(
                 theo_target_price=target_p,
                 exit_type=exit_type,
                 actual_exit_fill=actual_exit,
-                strategy="VA Breakout (v2.0)" if is_w1 else "Gold London Fix (H14)",
+                strategy=strategy_name,
                 theo_entry_time=f"{start_hhmm}:00",
                 actual_entry_time=f"{start_hhmm}:01",
                 theo_exit_time=f"{end_hhmm}:00",
@@ -379,6 +390,7 @@ def run_evaluation_and_notify(*, speak: bool = True, auto_log: bool = True) -> d
 
     return {
         "session_date": session_date,
+        "w_macro_fire": w_macro_fire,
         "w1_fires": w1_fires,
         "w2_fire": w2_fire,
     }
