@@ -27,6 +27,7 @@ from io import StringIO
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import numpy as np
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,6 +44,7 @@ from backtest.demo_parity_engine import (
     resolve_instrument,
 )
 from scripts.run_demo_forward_test import (
+    compute_prior_va_for_latest_session,
     evaluate_gold_h14_signal,
     evaluate_macro_momentum_signal,
     evaluate_signal_for_asset,
@@ -135,6 +137,109 @@ def load_bars_with_local_fallback(
         pass
 
     return pd.DataFrame()
+
+
+def diagnose_macro_window(bars_nq: pd.DataFrame) -> str:
+    """Provides exact quantitative diagnostic reason why 08:35 Macro Momentum did not trigger."""
+    if bars_nq.empty:
+        return "No real-time data feed for MNQ."
+    latest_date = bars_nq["time"].dt.strftime("%Y-%m-%d").max()
+    df_today = bars_nq[bars_nq["time"].dt.strftime("%Y-%m-%d") == latest_date].copy()
+    df_today["time_et"] = df_today["time"].dt.strftime("%H:%M")
+    ovn_bars = df_today[df_today["time_et"].between("00:00", "08:29")]
+    spike_bars = df_today[df_today["time_et"].between("08:30", "08:34")]
+    if len(spike_bars) < 4:
+        return "No 08:30 macro release bars detected."
+    spike_vol = float(spike_bars["volume"].sum())
+    pre_vol_5m = float(ovn_bars["volume"].tail(30).mean() * 5.0) if len(ovn_bars) >= 10 else 1.0
+    thresh_vol = pre_vol_5m * 2.5
+    if spike_vol < thresh_vol:
+        return f"Pre-market volume quiet ({spike_vol:.0f} vs {thresh_vol:.0f} req threshold)."
+    ovn_high = float(ovn_bars["high"].max())
+    ovn_low = float(ovn_bars["low"].min())
+    spike_close = float(spike_bars.iloc[-1]["close"])
+    if ovn_low <= spike_close <= ovn_high:
+        return f"Spike trapped inside overnight range ({ovn_low:.1f} - {ovn_high:.1f})."
+    spike_high = float(spike_bars["high"].max())
+    spike_low = float(spike_bars["low"].min())
+    rng = spike_high - spike_low
+    cl_loc = (spike_close - spike_low) / rng if rng > 0 else 0.5
+    return f"Weak spike bar close location ({cl_loc:.0%} vs req >=65%/<=35%)."
+
+
+def diagnose_equity_va_window(
+    bars_nq: pd.DataFrame,
+    bars_es: pd.DataFrame,
+    sig_nq: dict | None,
+    sig_es: dict | None,
+    nq_ok: bool,
+    es_ok: bool,
+) -> str:
+    """Provides exact quantitative diagnostic reason why 09:45 VA Breakout did not trigger."""
+    reasons = []
+    if sig_nq and not nq_ok:
+        reasons.append(f"MNQ gated ({sig_nq.get('macro_reason', 'Filter')})")
+    if sig_es and not es_ok:
+        reasons.append(f"MES gated ({sig_es.get('macro_reason', 'Filter')})")
+    if reasons:
+        return " / ".join(reasons)
+
+    if not bars_nq.empty:
+        latest_date = bars_nq["time"].dt.strftime("%Y-%m-%d").max()
+        df_today = bars_nq[bars_nq["time"].dt.strftime("%Y-%m-%d") == latest_date].copy()
+        df_today["time_et"] = df_today["time"].dt.strftime("%H:%M")
+        m15 = df_today[df_today["time_et"].between("09:30", "09:44")]
+        if not m15.empty:
+            o930 = float(m15.iloc[0]["open"])
+            c944 = float(m15.iloc[-1]["close"])
+            h15 = float(m15["high"].max())
+            l15 = float(m15["low"].min())
+            rng = h15 - l15
+            ret = (c944 - o930) / o930 if o930 > 0 else 0.0
+            loc = (c944 - l15) / rng if rng > 0 else 0.5
+            p_poc, p_vah, p_val, p_close = compute_prior_va_for_latest_session(bars_nq, "09:30", "16:00", 1.0)
+            if not np.isnan(p_val) and not np.isnan(p_vah) and (p_val <= c944 <= p_vah):
+                return f"Trapped inside Prior Value Area ({p_val:.1f} - {p_vah:.1f} | Loc {loc:.2f})."
+            if abs(ret) < 0.0010:
+                return f"Sub-threshold OR15 return ({ret:+.2%} vs req ±0.10%)."
+            if 0.35 < loc < 0.65:
+                return f"Mid-range close (Location {loc:.2f} trapped inside OR15)."
+    return "Inside Prior Value Area / Intermarket Divergence / Gated."
+
+
+def diagnose_gold_h14_window(bars_gc: pd.DataFrame) -> str:
+    """Provides exact quantitative diagnostic reason why 10:15 Gold London Fix did not trigger."""
+    if bars_gc.empty:
+        return "No real-time data feed for MGC."
+    latest_date = bars_gc["time"].dt.strftime("%Y-%m-%d").max()
+    df_today = bars_gc[bars_gc["time"].dt.strftime("%Y-%m-%d") == latest_date].copy()
+    df_today["time_et"] = df_today["time"].dt.strftime("%H:%M")
+    fix_bars = df_today[df_today["time_et"].between("10:00", "10:14")]
+    ib_bars = df_today[df_today["time_et"].between("08:20", "09:19")]
+    lon_bars = df_today[df_today["time_et"].between("03:00", "08:19")]
+    if len(fix_bars) < 10 or ib_bars.empty:
+        return "Fix or IB bars incomplete."
+    fix_open = float(fix_bars.iloc[0]["open"])
+    fix_close = float(fix_bars.iloc[-1]["close"])
+    fix_high = float(fix_bars["high"].max())
+    fix_low = float(fix_bars["low"].min())
+    fix_rng = fix_high - fix_low
+    if fix_open <= 0 or fix_rng <= 0:
+        return "Invalid price data."
+    ret_pct = (fix_close - fix_open) / fix_open
+    close_loc = (fix_close - fix_low) / fix_rng
+    ib60_high = float(ib_bars["high"].max())
+    lon_high = float(lon_bars["high"].max()) if not lon_bars.empty else ib60_high
+
+    if ret_pct < 0.001125:
+        return f"Weak Fix Return ({ret_pct:+.2%} vs req >= +0.11%)."
+    if close_loc < 0.70:
+        return f"Fix Close Location weak ({close_loc:.2f} < 0.70)."
+    if fix_close <= ib60_high:
+        return f"Trapped below COMEX IB60 High ({fix_close:.1f} <= {ib60_high:.1f})."
+    if fix_close <= lon_high:
+        return f"Trapped below London Session High ({fix_close:.1f} <= {lon_high:.1f})."
+    return "Below COMEX IB60 or London High barriers / Gated."
 
 
 def auto_log_session_and_trades(
@@ -264,7 +369,12 @@ def auto_log_session_and_trades(
             )
 
 
-def run_evaluation_and_notify(*, speak: bool = True, auto_log: bool = True) -> dict:
+def run_evaluation_and_notify(
+    *,
+    speak: bool = True,
+    auto_log: bool = True,
+    window_trigger: str | None = None,
+) -> dict:
     journal = DemoParityJournal()
     eval_state = journal.get_eval_state()
     tier_contracts = eval_state.recommended_micros
@@ -305,6 +415,14 @@ def run_evaluation_and_notify(*, speak: bool = True, auto_log: bool = True) -> d
     sig_es = evaluate_signal_for_asset(bars_es, "ES", vix_chg_pct, other_index_dir=nq_dir)
     sig_gc = evaluate_gold_h14_signal(bars_gc)
 
+    # Compute granular diagnostic reasons for each window
+    w0_diag = sig_macro["macro_reasons"][0] if sig_macro else diagnose_macro_window(bars_nq)
+    nq_ok = bool(sig_nq and sig_nq.get("macro_pass"))
+    es_ok = bool(sig_es and sig_es.get("macro_pass"))
+    w1_nq_diag = sig_nq["macro_reason"] if (nq_ok and sig_nq) else diagnose_equity_va_window(bars_nq, bars_es, sig_nq, sig_es, nq_ok, es_ok)
+    w1_es_diag = sig_es["macro_reason"] if (es_ok and sig_es) else diagnose_equity_va_window(bars_nq, bars_es, sig_nq, sig_es, nq_ok, es_ok)
+    w2_diag = sig_gc["macro_reason"] if sig_gc else diagnose_gold_h14_window(bars_gc)
+
     w1_fires = []
     fired_tuples: list[tuple[dict, pd.DataFrame, str, int]] = []
 
@@ -316,8 +434,6 @@ def run_evaluation_and_notify(*, speak: bool = True, auto_log: bool = True) -> d
         )
         fired_tuples.append((sig_macro, bars_nq, "08:35", tier_contracts))
 
-    nq_ok = bool(sig_nq and sig_nq.get("macro_pass"))
-    es_ok = bool(sig_es and sig_es.get("macro_pass"))
     if nq_ok and es_ok:
         c_nq = max(1, tier_contracts // 2)
         c_es = max(1, tier_contracts - c_nq)
@@ -365,9 +481,9 @@ def run_evaluation_and_notify(*, speak: bool = True, auto_log: bool = True) -> d
         f"  [MORNING WATCHER SUMMARY] Session {session_date} | "
         f"Balance: ${eval_state.balance:,.2f} | Tier: {tier_label} ({tier_contracts} Micros)"
     )
-    print(f"  Window 1 (08:35 ET MNQ Macro): {w_macro_fire if w_macro_fire else 'NO TRADE (Filtered/Flat)'}")
-    print(f"  Window 2 (09:45 ET MNQ+MES):   {', '.join(w1_fires) if w1_fires else 'NO TRADE (Filtered/Flat)'}")
-    print(f"  Window 3 (10:15 ET MGC H14):   {w2_fire if w2_fire else 'NO TRADE (Filtered/Flat)'}")
+    print(f"  Window 0 (08:35 ET MNQ Macro): {w_macro_fire if w_macro_fire else f'NO TRADE ({w0_diag})'}")
+    print(f"  Window 1 (09:45 ET MNQ+MES):   {', '.join(w1_fires) if w1_fires else f'NO TRADE ({w1_nq_diag})'}")
+    print(f"  Window 2 (10:15 ET MGC H14):   {w2_fire if w2_fire else f'NO TRADE ({w2_diag})'}")
     print(f"  HTML Parity Dashboard        : {DASHBOARD_HTML_PATH}")
     print("=" * 88)
 
@@ -380,7 +496,7 @@ def run_evaluation_and_notify(*, speak: bool = True, auto_log: bool = True) -> d
         w0_status = "TRADE_FIRED" if sig_macro else "FILTERED_NO_BREAKOUT"
         w0_action = sig_macro["action"] if sig_macro else "NONE"
         w0_contracts = tier_contracts if sig_macro else 0
-        w0_reason = f"TRADE FIRED: {w0_action} @ {sig_macro['entry_price']:.2f}" if sig_macro else "Spike trapped inside overnight range or volume < 2.5x threshold"
+        w0_reason = f"TRADE FIRED: {w0_action} @ {sig_macro['entry_price']:.2f}" if sig_macro else w0_diag
         journal.record_window_evaluation(WindowEvaluationRecord(
             date=session_date,
             window_time="08:35:00",
@@ -401,7 +517,7 @@ def run_evaluation_and_notify(*, speak: bool = True, auto_log: bool = True) -> d
         w1_nq_status = "TRADE_FIRED" if (nq_ok and sig_nq) else "FILTERED_NO_BREAKOUT"
         w1_nq_action = sig_nq["action"] if (nq_ok and sig_nq) else "NONE"
         w1_nq_contracts = c_nq if (nq_ok and sig_nq) else 0
-        w1_nq_reason = f"TRADE FIRED: {w1_nq_action} @ {sig_nq['entry_price']:.2f}" if (nq_ok and sig_nq) else "Inside Prior Value Area / Intermarket Divergence / Gated"
+        w1_nq_reason = f"TRADE FIRED: {w1_nq_action} @ {sig_nq['entry_price']:.2f}" if (nq_ok and sig_nq) else w1_nq_diag
         journal.record_window_evaluation(WindowEvaluationRecord(
             date=session_date,
             window_time="09:45:00",
@@ -422,7 +538,7 @@ def run_evaluation_and_notify(*, speak: bool = True, auto_log: bool = True) -> d
         w1_es_status = "TRADE_FIRED" if (es_ok and sig_es) else "FILTERED_NO_BREAKOUT"
         w1_es_action = sig_es["action"] if (es_ok and sig_es) else "NONE"
         w1_es_contracts = c_es if (es_ok and sig_es) else 0
-        w1_es_reason = f"TRADE FIRED: {w1_es_action} @ {sig_es['entry_price']:.2f}" if (es_ok and sig_es) else "Inside Prior Value Area / Intermarket Divergence / Gated"
+        w1_es_reason = f"TRADE FIRED: {w1_es_action} @ {sig_es['entry_price']:.2f}" if (es_ok and sig_es) else w1_es_diag
         journal.record_window_evaluation(WindowEvaluationRecord(
             date=session_date,
             window_time="09:45:00",
@@ -443,7 +559,7 @@ def run_evaluation_and_notify(*, speak: bool = True, auto_log: bool = True) -> d
         w2_status = "TRADE_FIRED" if sig_gc else "FILTERED_NO_BREAKOUT"
         w2_action = "BUY" if sig_gc else "NONE"
         w2_contracts = tier_contracts if sig_gc else 0
-        w2_reason = f"TRADE FIRED: BUY @ {sig_gc['entry_price']:.2f}" if sig_gc else "Below COMEX IB60 or London High barriers / Gated"
+        w2_reason = f"TRADE FIRED: BUY @ {sig_gc['entry_price']:.2f}" if sig_gc else w2_diag
         journal.record_window_evaluation(WindowEvaluationRecord(
             date=session_date,
             window_time="10:15:00",
@@ -460,30 +576,102 @@ def run_evaluation_and_notify(*, speak: bool = True, auto_log: bool = True) -> d
             trailing_cushion=eval_state.trailing_cushion,
         ))
 
-    if w_macro_fire or w1_fires or w2_fire:
-        msg_parts = []
-        if w_macro_fire:
-            msg_parts.append("08:35: " + w_macro_fire)
-        if w1_fires:
-            msg_parts.append("09:45: " + " + ".join(w1_fires))
-        if w2_fire:
-            msg_parts.append("10:15: " + w2_fire)
-        full_msg = " | ".join(msg_parts)
+    # Window-specific macOS popup notifications
+    # CRITICAL RULE: Non-trade / flat evaluations are COMPLETELY SILENT (sound=False, speak=None).
+    # Glass chime and voice alerts ONLY fire on actual trade signals.
+    if window_trigger == "08:35":
+        if sig_macro:
+            send_macos_alert(
+                title="PROP SIGNAL FIRED (08:35 ET)",
+                subtitle="Window 0: Macro Momentum (MNQ)",
+                message=w_macro_fire,
+                speak_text="Window zero macro momentum trade fired. Check execution card." if speak else None,
+                sound=True,
+            )
+        else:
+            send_macos_alert(
+                title="Window 0: Macro Momentum (08:35 ET)",
+                subtitle="MNQ Pre-Market Setup",
+                message=f"No Trade: {w0_diag}",
+                speak_text=None,
+                sound=False,
+            )
+    elif window_trigger == "09:25":
         send_macos_alert(
-            title=f"PROP SIGNAL FIRED ({session_date})",
-            subtitle=f"LucidFlex 25K ({tier_contracts} Micros)",
-            message=full_msg,
-            speak_text="Prop trading signal fired. Check terminal execution card." if speak else None,
-        )
-    else:
-        # Completely silent notification on no trade — no chime, no audio
-        send_macos_alert(
-            title=f"Prop Check Complete ({session_date})",
-            subtitle="No Trade Triggered",
-            message="08:35 ET (Macro), 09:45 ET (MNQ/MES) and 10:15 ET (MGC) gates are flat.",
+            title="Window 0: Cash Open Flatten (09:25 ET)",
+            subtitle="Pre-Market Risk Shield",
+            message="Macro window closed. 100% flat heading into cash open.",
             speak_text=None,
             sound=False,
         )
+    elif window_trigger == "09:45":
+        if w1_fires:
+            send_macos_alert(
+                title="PROP SIGNAL FIRED (09:45 ET)",
+                subtitle=f"Window 1: VA Breakout ({tier_contracts} Micros)",
+                message=" + ".join(w1_fires),
+                speak_text="Window one opening value area breakout fired. Check execution card." if speak else None,
+                sound=True,
+            )
+        else:
+            send_macos_alert(
+                title="Window 1: VA Breakout (09:45 ET)",
+                subtitle="MNQ & MES Opening Range",
+                message=f"No Trade: {w1_nq_diag}",
+                speak_text=None,
+                sound=False,
+            )
+    elif window_trigger == "10:15":
+        if sig_gc:
+            send_macos_alert(
+                title="PROP SIGNAL FIRED (10:15 ET)",
+                subtitle=f"Window 2: Gold London Fix ({tier_contracts} Micros)",
+                message=w2_fire,
+                speak_text="Window two gold fix breakout fired. Check execution card." if speak else None,
+                sound=True,
+            )
+        else:
+            send_macos_alert(
+                title="Window 2: Gold London Fix (10:15 ET)",
+                subtitle="MGC Gold Breakout (H14)",
+                message=f"No Trade: {w2_diag}",
+                speak_text=None,
+                sound=False,
+            )
+    elif window_trigger == "11:00":
+        send_macos_alert(
+            title="Morning Session Concluded (11:00 ET)",
+            subtitle="LucidFlex 25K Session Finalized",
+            message=f"All 3 windows complete. Account Balance: ${eval_state.balance:,.2f} | Cushion: ${eval_state.trailing_cushion:,.2f} (100% Intact).",
+            speak_text=None,
+            sound=False,
+        )
+    else:
+        # window_trigger is None (e.g. manual scan / --once mode)
+        if w_macro_fire or w1_fires or w2_fire:
+            msg_parts = []
+            if w_macro_fire:
+                msg_parts.append("08:35: " + w_macro_fire)
+            if w1_fires:
+                msg_parts.append("09:45: " + " + ".join(w1_fires))
+            if w2_fire:
+                msg_parts.append("10:15: " + w2_fire)
+            full_msg = " | ".join(msg_parts)
+            send_macos_alert(
+                title=f"PROP SIGNAL FIRED ({session_date})",
+                subtitle=f"LucidFlex 25K ({tier_contracts} Micros)",
+                message=full_msg,
+                speak_text="Prop trading signal fired. Check terminal execution card." if speak else None,
+                sound=True,
+            )
+        else:
+            send_macos_alert(
+                title=f"Prop Check Complete ({session_date})",
+                subtitle="All 3 Windows Evaluated",
+                message="08:35 ET (Macro), 09:45 ET (MNQ/MES) and 10:15 ET (MGC) gates are flat.",
+                speak_text=None,
+                sound=False,
+            )
 
     return {
         "session_date": session_date,
@@ -499,6 +687,13 @@ def main() -> int:
         "--once",
         action="store_true",
         help="Run a single immediate check, fire macOS desktop notification, auto-log, and exit.",
+    )
+    parser.add_argument(
+        "--window",
+        type=str,
+        default=None,
+        choices=["08:35", "09:25", "09:45", "10:15", "11:00"],
+        help="Target a specific execution window to evaluate and notify.",
     )
     parser.add_argument(
         "--no-voice",
@@ -519,7 +714,11 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.once:
-        run_evaluation_and_notify(speak=not args.no_voice, auto_log=not args.no_auto_log)
+        run_evaluation_and_notify(
+            speak=not args.no_voice,
+            auto_log=not args.no_auto_log,
+            window_trigger=args.window,
+        )
         return 0
 
     print("[Watcher] Armed in continuous morning watch mode (America/New_York).")
@@ -550,25 +749,25 @@ def main() -> int:
             if "08:35:02" <= hhmmss <= "08:36:30" and w0_key not in fired_windows:
                 fired_windows.add(w0_key)
                 last_mtime = cur_mtime
-                run_evaluation_and_notify(speak=not args.no_voice, auto_log=not args.no_auto_log)
+                run_evaluation_and_notify(speak=not args.no_voice, auto_log=not args.no_auto_log, window_trigger="08:35")
             elif "09:25:02" <= hhmmss <= "09:26:30" and w0_exit not in fired_windows:
                 fired_windows.add(w0_exit)
                 last_mtime = cur_mtime
-                # Auto-resolves any open Window 1 trade before cash open
-                run_evaluation_and_notify(speak=not args.no_voice, auto_log=not args.no_auto_log)
+                # Auto-resolves any open Window 0 trade before cash open
+                run_evaluation_and_notify(speak=not args.no_voice, auto_log=not args.no_auto_log, window_trigger="09:25")
             elif "09:45:02" <= hhmmss <= "09:46:30" and w1_key not in fired_windows:
                 fired_windows.add(w1_key)
                 last_mtime = cur_mtime
-                run_evaluation_and_notify(speak=not args.no_voice, auto_log=not args.no_auto_log)
+                run_evaluation_and_notify(speak=not args.no_voice, auto_log=not args.no_auto_log, window_trigger="09:45")
             elif "10:15:02" <= hhmmss <= "10:16:30" and w2_key not in fired_windows:
                 fired_windows.add(w2_key)
                 last_mtime = cur_mtime
-                run_evaluation_and_notify(speak=not args.no_voice, auto_log=not args.no_auto_log)
+                run_evaluation_and_notify(speak=not args.no_voice, auto_log=not args.no_auto_log, window_trigger="10:15")
             elif "11:00:02" <= hhmmss <= "11:01:30" and w3_key not in fired_windows:
                 fired_windows.add(w3_key)
                 last_mtime = cur_mtime
                 # 11:00 auto-resolves any open Window 2 trade and finalizes the day's session
-                run_evaluation_and_notify(speak=not args.no_voice, auto_log=not args.no_auto_log)
+                run_evaluation_and_notify(speak=not args.no_voice, auto_log=not args.no_auto_log, window_trigger="11:00")
 
             if last_mtime == 0.0:
                 last_mtime = cur_mtime
