@@ -19,6 +19,7 @@ import argparse
 import subprocess
 import sys
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from io import StringIO
 from pathlib import Path
 import numpy as np
@@ -88,6 +89,16 @@ def load_asset_bars_priority(
                 df_cqg["time"] = pd.to_datetime(df_cqg["dt_str"], format="%d/%m/%Y %H:%M:%S", errors="coerce")
                 df_cqg = df_cqg.dropna(subset=["time"]).drop(columns=["dt_str"]).reset_index(drop=True)
                 if not df_cqg.empty:
+                    today_et = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+                    cqg_date = df_cqg["time"].dt.strftime("%Y-%m-%d").max()
+                    if cqg_date == today_et:
+                        return df_cqg
+                    # If CQG file has not been updated for today yet, check if Yahoo Finance has today's live data
+                    print(f"[FEED STATUS] MotiveWave CQG CSV ends on {cqg_date}. Checking live feed for today ({today_et})...")
+                    df_live = fetch_live_morning_bars(yf_ticker, period="5d")
+                    if not df_live.empty and df_live["time"].dt.strftime("%Y-%m-%d").max() == today_et:
+                        print(f"[FEED STATUS] Using live {yf_ticker} feed ({len(df_live)} bars) while MotiveWave export is pending.")
+                        return df_live
                     return df_cqg
         except Exception:
             pass

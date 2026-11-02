@@ -102,6 +102,14 @@ def load_bars_with_local_fallback(
                 df_cqg["time"] = pd.to_datetime(df_cqg["dt_str"], format="%d/%m/%Y %H:%M:%S", errors="coerce")
                 df_cqg = df_cqg.dropna(subset=["time"]).drop(columns=["dt_str"]).reset_index(drop=True)
                 if not df_cqg.empty:
+                    today_et = datetime.now(ET_TZ).strftime("%Y-%m-%d")
+                    cqg_date = df_cqg["time"].dt.strftime("%Y-%m-%d").max()
+                    if cqg_date == today_et:
+                        return df_cqg
+                    # If MotiveWave export is still pending today, check live feed
+                    df_live = fetch_live_morning_bars(yf_ticker, period="5d")
+                    if not df_live.empty and df_live["time"].dt.strftime("%Y-%m-%d").max() == today_et:
+                        return df_live
                     return df_cqg
         except Exception:
             pass
