@@ -182,8 +182,8 @@ def main():
         ("2. Static 2 Micros (Conservative Baseline)", lambda p, mode: 2),
         ("3. Static 3 Micros (Balanced Static)", lambda p, mode: 3),
         ("4. Static 4 Micros (Aggressive Flat)", lambda p, mode: 4),
-        ("5. Current Ratchet: 2 -> 3 -> 4 Micros", lambda p, mode: (
-            4 if p >= 750.0 else (3 if p >= 350.0 else 2)
+        ("5. Canonical Ratchet: 2 -> 3 -> 4 Micros", lambda p, mode: (
+            4 if p >= 500.0 else (3 if p >= 200.0 else 2)
         )),
         ("6. Dynamic Ratchet: 2 -> 4 -> 6 Micros", lambda p, mode: (
             6 if p >= 750.0 else (4 if p >= 350.0 else 2)

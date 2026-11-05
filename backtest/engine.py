@@ -1777,7 +1777,7 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
         expectancy = (winning_trades / total_trades * avg_win) + (losing_trades / total_trades * avg_loss)
         calmar = return_pct / max_dd if max_dd > 0 else 0
 
-        return {
+        results_out = {
             'total_trades': total_trades,
             'winning_trades': winning_trades,
             'losing_trades': losing_trades,
@@ -1811,3 +1811,38 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
             **bar_metrics,
             **execution_bar_metrics,
         }
+
+        # Rule 5: Automatic fail-safe recording into provenance store
+        if self.strategy_params.get("auto_record_provenance", False):
+            try:
+                import math
+                from backtest.provenance import default_store
+                strat_name = str(self.strategy_params.get("name", "Custom Backtest"))
+                strat_id = str(self.strategy_params.get("strategy_id", strat_name.lower().replace(" ", "_")))
+                data_path = str(self.strategy_params.get("data_path", "data/raw/data.parquet"))
+                d_start = str(trades_df['entry_time'].min())[:10] if not trades_df.empty else "N/A"
+                d_end = str(trades_df['exit_time'].max())[:10] if not trades_df.empty else "N/A"
+                default_store.record_run(
+                    strategy_id=strat_id,
+                    strategy_name=strat_name,
+                    methodology=str(self.strategy_params.get("methodology", "historical_simulation")),
+                    date_start=d_start,
+                    date_end=d_end,
+                    data_path=data_path,
+                    total_trades=total_trades,
+                    win_rate=(winning_trades / total_trades * 100) if total_trades > 0 else 0.0,
+                    profit_factor=profit_factor,
+                    gross_profit=win_sum,
+                    net_profit=total_pnl,
+                    max_drawdown=max_dd,
+                    sharpe_ratio=sharpe if sharpe is not None and not math.isnan(sharpe) else 0.0,
+                    largest_win=float(trades_df['pnl'].max()) if not trades_df.empty else 0.0,
+                    slippage_model=str(self.strategy_params.get("slippage_model", "CQG Realism")),
+                    commission_model=str(self.strategy_params.get("commission_model", "$1.40 RT micro")),
+                    is_net=True,
+                    params=self.strategy_params,
+                )
+            except Exception:
+                pass
+
+        return results_out

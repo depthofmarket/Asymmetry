@@ -77,6 +77,70 @@ def send_macos_alert(title: str, subtitle: str, message: str, speak_text: str | 
             pass
 
 
+def dispatch_active_order_card(
+    orders: list[dict[str, any]],
+    eval_state: AccountEvalState,
+    tier_label: str,
+) -> str | None:
+    """
+    Generates an active order ticket with bracket specifications, writes it to:
+      1. ~/Desktop/active_order_card.txt
+      2. results/forward_test/active_order_card.txt
+    and copies it to the macOS clipboard via pbcopy.
+    """
+    if not orders:
+        return None
+
+    now_et = datetime.now(ET_TZ).strftime("%Y-%m-%d %H:%M:%S ET")
+    lines = [
+        "=" * 78,
+        "🚀 LUCIDFLEX 25K ACTIVE ORDER TICKET",
+        "=" * 78,
+        f" Timestamp (ET) : {now_et}",
+        f" Account State  : Balance: ${eval_state.balance:,.2f} | Cushion: ${eval_state.trailing_cushion:,.2f}",
+        f" Sizing Policy  : {tier_label}",
+        "-" * 78,
+    ]
+    for i, ord_info in enumerate(orders, start=1):
+        lines.append(f" [ORDER #{i}] {ord_info['strategy']} ({ord_info['window']} ET)")
+        lines.append(f"   Symbol        : {ord_info['symbol']}")
+        lines.append(f"   Action        : {ord_info['action']} (OPEN)")
+        lines.append(f"   Quantity      : {ord_info['contracts']} Micros")
+        lines.append(f"   Order Type    : BRACKET (OCO)")
+        lines.append(f"   Entry Price   : {ord_info['entry_price']:.2f}")
+        lines.append(f"   Stop Loss     : {ord_info['stop_price']:.2f} (Risk: {ord_info['risk_pts']:+.2f} pts | ${ord_info['risk_dollars']:,.2f})")
+        lines.append(f"   Profit Target : {ord_info['target_price']:.2f} (Reward: {ord_info['reward_pts']:+.2f} pts | ${ord_info['reward_dollars']:,.2f})")
+        lines.append(f"   Exit Rule     : {ord_info['exit_rule']}")
+        lines.append("-" * 78)
+    lines.append(" ⚠️ MotiveWave: Place bracket on DOM or confirm automated signal fill.")
+    lines.append("=" * 78)
+    card_text = "\n".join(lines) + "\n"
+
+    # Write to results directory
+    card_path_repo = ROOT / "results" / "forward_test" / "active_order_card.txt"
+    try:
+        card_path_repo.write_text(card_text, encoding="utf-8")
+    except Exception:
+        pass
+
+    # Write to user Desktop
+    desktop_path = Path.home() / "Desktop" / "active_order_card.txt"
+    try:
+        desktop_path.write_text(card_text, encoding="utf-8")
+    except Exception:
+        pass
+
+    # Copy to macOS clipboard
+    try:
+        subprocess.run(["pbcopy"], input=card_text.encode("utf-8"), check=False, timeout=2)
+    except Exception:
+        pass
+
+    print(f"\n[ORDER CARD GENERATED] Copied to clipboard & saved to {desktop_path}")
+    print(card_text)
+    return card_text
+
+
 def load_bars_with_local_fallback(
     yf_ticker: str,
     local_parquet: Path,
@@ -247,6 +311,7 @@ def auto_log_session_and_trades(
     session_date: str,
     fired_signals: list[tuple[dict, pd.DataFrame, str, int]],
     eval_state: AccountEvalState,
+    diag_summary: str | None = None,
 ) -> None:
     """
     Automatically logs daily sessions and auto-resolves trades if holding window is complete.
@@ -254,21 +319,16 @@ def auto_log_session_and_trades(
     """
     # Case 1: No trades fired today
     if not fired_signals:
-        df_sessions = journal.load_sessions_df()
-        already_recorded = False
-        if not df_sessions.empty and "date" in df_sessions.columns:
-            already_recorded = session_date in df_sessions["date"].astype(str).values
-
-        if not already_recorded:
-            rec = DailySessionRecord(
-                date=session_date,
-                setup_detected=False,
-                setup_fired=False,
-                diagnostic_reason="NO TRADE: Window 1 (MNQ/MES) flat/gated | Window 2 (MGC H14) flat/gated",
-                end_of_day_balance=eval_state.balance,
-            )
-            journal.record_session(rec)
-            print(f"  [AUTO-LOGGER] Recorded NO-TRADE session for {session_date} in demo_sessions_ledger.csv")
+        reason = diag_summary or "NO TRADE: Window 0 (Macro), Window 1 (MNQ/MES), and Window 2 (MGC) flat/gated"
+        rec = DailySessionRecord(
+            date=session_date,
+            setup_detected=False,
+            setup_fired=False,
+            diagnostic_reason=reason,
+            end_of_day_balance=eval_state.balance,
+        )
+        journal.record_session(rec)
+        print(f"  [AUTO-LOGGER] Recorded session for {session_date} in demo_sessions_ledger.csv")
         return
 
     # Case 2: Trades fired today -> check if already resolved or if holding window is complete
@@ -375,6 +435,20 @@ def run_evaluation_and_notify(
     auto_log: bool = True,
     window_trigger: str | None = None,
 ) -> dict:
+    if window_trigger == "08:25":
+        try:
+            from scripts.check_morning_readiness import run_diagnostics
+            run_diagnostics(verbose=False, send_alert=True)
+            print("[Watcher] 08:25 ET Pre-Market Readiness Check completed successfully.")
+        except Exception as e:
+            print(f"[Watcher] Pre-market diagnostic error: {e}")
+        return {
+            "session_date": datetime.now(ET_TZ).strftime("%Y-%m-%d"),
+            "w_macro_fire": None,
+            "w1_fires": [],
+            "w2_fire": None,
+        }
+
     journal = DemoParityJournal()
     eval_state = journal.get_eval_state()
     tier_contracts = eval_state.recommended_micros
@@ -473,8 +547,16 @@ def run_evaluation_and_notify(
         )
     )
 
-    # Subprocess execution card display
-    subprocess.run([sys.executable, str(ROOT / "scripts/run_demo_forward_test.py")], check=False)
+    # Daily multi-strategy scan display
+    print("\n--- DAILY MULTI-STRATEGY ENSEMBLE SIGNAL SCAN ---")
+    print(f"  [08:35 ET] MNQ (Strategy 3 / Macro): {'SIGNAL FIRED' if sig_macro else 'NO SIGNAL'}")
+    print(f"  [09:45 ET] MNQ (Strategy 1 / Cash):  {'SIGNAL FIRED' if (nq_ok and sig_nq) else 'NO SIGNAL'}")
+    print(f"  [09:45 ET] MES (Strategy 1 / Cash):  {'SIGNAL FIRED' if (es_ok and sig_es) else 'NO SIGNAL'}")
+    print(f"  [10:15 ET] MGC (Strategy 2 / Fix):   {'SIGNAL FIRED' if sig_gc else 'NO SIGNAL'}")
+    print("--------------------------------------------------")
+    if not fired_tuples:
+        print("[NO SIGNAL TODAY] None of 08:35 ET (Macro), 09:45 ET (Cash VA), or 10:15 ET (Fix) met breakout criteria.")
+        print(f"Account Balance: ${eval_state.balance:,.2f} | Trailing Floor: ${eval_state.trailing_floor:,.2f}")
 
     print("\n" + "=" * 88)
     print(
@@ -489,92 +571,181 @@ def run_evaluation_and_notify(
 
     # Auto-log if enabled
     if auto_log:
-        auto_log_session_and_trades(journal, session_date, fired_tuples, eval_state)
+        flat_diag = f"NO TRADE: [08:35] {w0_diag} | [09:45] {w1_nq_diag} | [10:15] {w2_diag}"
+        auto_log_session_and_trades(journal, session_date, fired_tuples, eval_state, diag_summary=flat_diag)
 
         # Granular window-by-window evaluation ledger (every opportunity, trade, and filter tracked)
         # Window 0: 08:35 ET MNQ Macro
-        w0_status = "TRADE_FIRED" if sig_macro else "FILTERED_NO_BREAKOUT"
-        w0_action = sig_macro["action"] if sig_macro else "NONE"
-        w0_contracts = tier_contracts if sig_macro else 0
-        w0_reason = f"TRADE FIRED: {w0_action} @ {sig_macro['entry_price']:.2f}" if sig_macro else w0_diag
-        journal.record_window_evaluation(WindowEvaluationRecord(
-            date=session_date,
-            window_time="08:35:00",
-            strategy="Macro Momentum (08:35)",
-            symbol="MNQ",
-            status=w0_status,
-            action=w0_action,
-            contracts=w0_contracts,
-            diagnostic_reason=w0_reason,
-            entry_price=sig_macro["entry_price"] if sig_macro else None,
-            stop_price=sig_macro["stop_price"] if sig_macro else None,
-            target_price=sig_macro["target_price"] if sig_macro else None,
-            account_balance=eval_state.balance,
-            trailing_cushion=eval_state.trailing_cushion,
-        ))
+        if window_trigger is None or window_trigger == "08:35":
+            w0_status = "TRADE_FIRED" if sig_macro else "FILTERED_NO_BREAKOUT"
+            w0_action = sig_macro["action"] if sig_macro else "NONE"
+            w0_contracts = tier_contracts if sig_macro else 0
+            w0_reason = f"TRADE FIRED: {w0_action} @ {sig_macro['entry_price']:.2f}" if sig_macro else w0_diag
+            journal.record_window_evaluation(WindowEvaluationRecord(
+                date=session_date,
+                window_time="08:35:00",
+                strategy="Macro Momentum (08:35)",
+                symbol="MNQ",
+                status=w0_status,
+                action=w0_action,
+                contracts=w0_contracts,
+                diagnostic_reason=w0_reason,
+                entry_price=sig_macro["entry_price"] if sig_macro else None,
+                stop_price=sig_macro["stop_price"] if sig_macro else None,
+                target_price=sig_macro["target_price"] if sig_macro else None,
+                account_balance=eval_state.balance,
+                trailing_cushion=eval_state.trailing_cushion,
+            ))
 
-        # Window 1: 09:45 ET MNQ
-        w1_nq_status = "TRADE_FIRED" if (nq_ok and sig_nq) else "FILTERED_NO_BREAKOUT"
-        w1_nq_action = sig_nq["action"] if (nq_ok and sig_nq) else "NONE"
-        w1_nq_contracts = c_nq if (nq_ok and sig_nq) else 0
-        w1_nq_reason = f"TRADE FIRED: {w1_nq_action} @ {sig_nq['entry_price']:.2f}" if (nq_ok and sig_nq) else w1_nq_diag
-        journal.record_window_evaluation(WindowEvaluationRecord(
-            date=session_date,
-            window_time="09:45:00",
-            strategy="VA Breakout (v2.0)",
-            symbol="MNQ",
-            status=w1_nq_status,
-            action=w1_nq_action,
-            contracts=w1_nq_contracts,
-            diagnostic_reason=w1_nq_reason,
-            entry_price=sig_nq["entry_price"] if (nq_ok and sig_nq) else None,
-            stop_price=sig_nq["stop_price"] if (nq_ok and sig_nq) else None,
-            target_price=sig_nq["target_price"] if (nq_ok and sig_nq) else None,
-            account_balance=eval_state.balance,
-            trailing_cushion=eval_state.trailing_cushion,
-        ))
+        # Window 1: 09:45 ET MNQ & MES
+        if window_trigger is None or window_trigger == "09:45":
+            w1_nq_status = "TRADE_FIRED" if (nq_ok and sig_nq) else "FILTERED_NO_BREAKOUT"
+            w1_nq_action = sig_nq["action"] if (nq_ok and sig_nq) else "NONE"
+            w1_nq_contracts = c_nq if (nq_ok and sig_nq) else 0
+            w1_nq_reason = f"TRADE FIRED: {w1_nq_action} @ {sig_nq['entry_price']:.2f}" if (nq_ok and sig_nq) else w1_nq_diag
+            journal.record_window_evaluation(WindowEvaluationRecord(
+                date=session_date,
+                window_time="09:45:00",
+                strategy="VA Breakout (v2.0)",
+                symbol="MNQ",
+                status=w1_nq_status,
+                action=w1_nq_action,
+                contracts=w1_nq_contracts,
+                diagnostic_reason=w1_nq_reason,
+                entry_price=sig_nq["entry_price"] if (nq_ok and sig_nq) else None,
+                stop_price=sig_nq["stop_price"] if (nq_ok and sig_nq) else None,
+                target_price=sig_nq["target_price"] if (nq_ok and sig_nq) else None,
+                account_balance=eval_state.balance,
+                trailing_cushion=eval_state.trailing_cushion,
+            ))
 
-        # Window 1: 09:45 ET MES
-        w1_es_status = "TRADE_FIRED" if (es_ok and sig_es) else "FILTERED_NO_BREAKOUT"
-        w1_es_action = sig_es["action"] if (es_ok and sig_es) else "NONE"
-        w1_es_contracts = c_es if (es_ok and sig_es) else 0
-        w1_es_reason = f"TRADE FIRED: {w1_es_action} @ {sig_es['entry_price']:.2f}" if (es_ok and sig_es) else w1_es_diag
-        journal.record_window_evaluation(WindowEvaluationRecord(
-            date=session_date,
-            window_time="09:45:00",
-            strategy="VA Breakout (v2.0)",
-            symbol="MES",
-            status=w1_es_status,
-            action=w1_es_action,
-            contracts=w1_es_contracts,
-            diagnostic_reason=w1_es_reason,
-            entry_price=sig_es["entry_price"] if (es_ok and sig_es) else None,
-            stop_price=sig_es["stop_price"] if (es_ok and sig_es) else None,
-            target_price=sig_es["target_price"] if (es_ok and sig_es) else None,
-            account_balance=eval_state.balance,
-            trailing_cushion=eval_state.trailing_cushion,
-        ))
+            w1_es_status = "TRADE_FIRED" if (es_ok and sig_es) else "FILTERED_NO_BREAKOUT"
+            w1_es_action = sig_es["action"] if (es_ok and sig_es) else "NONE"
+            w1_es_contracts = c_es if (es_ok and sig_es) else 0
+            w1_es_reason = f"TRADE FIRED: {w1_es_action} @ {sig_es['entry_price']:.2f}" if (es_ok and sig_es) else w1_es_diag
+            journal.record_window_evaluation(WindowEvaluationRecord(
+                date=session_date,
+                window_time="09:45:00",
+                strategy="VA Breakout (v2.0)",
+                symbol="MES",
+                status=w1_es_status,
+                action=w1_es_action,
+                contracts=w1_es_contracts,
+                diagnostic_reason=w1_es_reason,
+                entry_price=sig_es["entry_price"] if (es_ok and sig_es) else None,
+                stop_price=sig_es["stop_price"] if (es_ok and sig_es) else None,
+                target_price=sig_es["target_price"] if (es_ok and sig_es) else None,
+                account_balance=eval_state.balance,
+                trailing_cushion=eval_state.trailing_cushion,
+            ))
 
         # Window 2: 10:15 ET MGC
-        w2_status = "TRADE_FIRED" if sig_gc else "FILTERED_NO_BREAKOUT"
-        w2_action = "BUY" if sig_gc else "NONE"
-        w2_contracts = tier_contracts if sig_gc else 0
-        w2_reason = f"TRADE FIRED: BUY @ {sig_gc['entry_price']:.2f}" if sig_gc else w2_diag
-        journal.record_window_evaluation(WindowEvaluationRecord(
-            date=session_date,
-            window_time="10:15:00",
-            strategy="Gold London Fix (H14)",
-            symbol="MGC",
-            status=w2_status,
-            action=w2_action,
-            contracts=w2_contracts,
-            diagnostic_reason=w2_reason,
-            entry_price=sig_gc["entry_price"] if sig_gc else None,
-            stop_price=sig_gc["stop_price"] if sig_gc else None,
-            target_price=sig_gc["target_price"] if sig_gc else None,
-            account_balance=eval_state.balance,
-            trailing_cushion=eval_state.trailing_cushion,
-        ))
+        if window_trigger is None or window_trigger == "10:15":
+            w2_status = "TRADE_FIRED" if sig_gc else "FILTERED_NO_BREAKOUT"
+            w2_action = "BUY" if sig_gc else "NONE"
+            w2_contracts = tier_contracts if sig_gc else 0
+            w2_reason = f"TRADE FIRED: BUY @ {sig_gc['entry_price']:.2f}" if sig_gc else w2_diag
+            journal.record_window_evaluation(WindowEvaluationRecord(
+                date=session_date,
+                window_time="10:15:00",
+                strategy="Gold London Fix (H14)",
+                symbol="MGC",
+                status=w2_status,
+                action=w2_action,
+                contracts=w2_contracts,
+                diagnostic_reason=w2_reason,
+                entry_price=sig_gc["entry_price"] if sig_gc else None,
+                stop_price=sig_gc["stop_price"] if sig_gc else None,
+                target_price=sig_gc["target_price"] if sig_gc else None,
+                account_balance=eval_state.balance,
+                trailing_cushion=eval_state.trailing_cushion,
+            ))
+
+        # Refresh state JSON and regenerate HTML dashboard
+        final_state = journal.get_eval_state()
+        journal.save_state_json(final_state)
+        journal.generate_html_dashboard()
+
+    # Generate and dispatch automated active order ticket (Desktop file + macOS clipboard)
+    active_orders: list[dict[str, any]] = []
+    if (window_trigger is None or window_trigger == "08:35") and sig_macro:
+        risk_pts = abs(sig_macro["entry_price"] - sig_macro["stop_price"])
+        rew_pts = abs(sig_macro["target_price"] - sig_macro["entry_price"])
+        active_orders.append({
+            "strategy": "Macro Momentum (08:35)",
+            "window": "08:35",
+            "symbol": "MNQ",
+            "action": sig_macro["action"],
+            "contracts": tier_contracts,
+            "entry_price": sig_macro["entry_price"],
+            "stop_price": sig_macro["stop_price"],
+            "target_price": sig_macro["target_price"],
+            "risk_pts": risk_pts,
+            "risk_dollars": round(risk_pts * 2.0 * tier_contracts, 2),
+            "reward_pts": rew_pts,
+            "reward_dollars": round(rew_pts * 2.0 * tier_contracts, 2),
+            "exit_rule": "Flatten before 09:25 ET (Pre-Cash Open Risk Shield)",
+        })
+
+    if window_trigger is None or window_trigger == "09:45":
+        if nq_ok and sig_nq:
+            risk_pts = abs(sig_nq["entry_price"] - sig_nq["stop_price"])
+            rew_pts = abs(sig_nq["target_price"] - sig_nq["entry_price"])
+            active_orders.append({
+                "strategy": "VA Breakout v2.0 (09:45)",
+                "window": "09:45",
+                "symbol": "MNQ",
+                "action": sig_nq["action"],
+                "contracts": c_nq,
+                "entry_price": sig_nq["entry_price"],
+                "stop_price": sig_nq["stop_price"],
+                "target_price": sig_nq["target_price"],
+                "risk_pts": risk_pts,
+                "risk_dollars": round(risk_pts * 2.0 * c_nq, 2),
+                "reward_pts": rew_pts,
+                "reward_dollars": round(rew_pts * 2.0 * c_nq, 2),
+                "exit_rule": "10:15 ET Max Time Exit (News guard at 09:59 if red-folder data)",
+            })
+        if es_ok and sig_es:
+            risk_pts = abs(sig_es["entry_price"] - sig_es["stop_price"])
+            rew_pts = abs(sig_es["target_price"] - sig_es["entry_price"])
+            active_orders.append({
+                "strategy": "VA Breakout v2.0 (09:45)",
+                "window": "09:45",
+                "symbol": "MES",
+                "action": sig_es["action"],
+                "contracts": c_es,
+                "entry_price": sig_es["entry_price"],
+                "stop_price": sig_es["stop_price"],
+                "target_price": sig_es["target_price"],
+                "risk_pts": risk_pts,
+                "risk_dollars": round(risk_pts * 5.0 * c_es, 2),
+                "reward_pts": rew_pts,
+                "reward_dollars": round(rew_pts * 5.0 * c_es, 2),
+                "exit_rule": "10:15 ET Max Time Exit (News guard at 09:59 if red-folder data)",
+            })
+
+    if (window_trigger is None or window_trigger == "10:15") and sig_gc:
+        risk_pts = abs(sig_gc["entry_price"] - sig_gc["stop_price"])
+        rew_pts = abs(sig_gc["target_price"] - sig_gc["entry_price"])
+        active_orders.append({
+            "strategy": "Gold London Fix H14 (10:15)",
+            "window": "10:15",
+            "symbol": "MGC",
+            "action": "BUY",
+            "contracts": tier_contracts,
+            "entry_price": sig_gc["entry_price"],
+            "stop_price": sig_gc["stop_price"],
+            "target_price": sig_gc["target_price"],
+            "risk_pts": risk_pts,
+            "risk_dollars": round(risk_pts * 10.0 * tier_contracts, 2),
+            "reward_pts": rew_pts,
+            "reward_dollars": round(rew_pts * 10.0 * tier_contracts, 2),
+            "exit_rule": "11:00 ET Hard Session Close",
+        })
+
+    if active_orders:
+        dispatch_active_order_card(active_orders, eval_state, tier_label)
 
     # Window-specific macOS popup notifications
     # CRITICAL RULE: Non-trade / flat evaluations are COMPLETELY SILENT (sound=False, speak=None).
@@ -692,7 +863,7 @@ def main() -> int:
         "--window",
         type=str,
         default=None,
-        choices=["08:35", "09:25", "09:45", "10:15", "11:00"],
+        choices=["08:25", "08:35", "09:25", "09:45", "10:15", "11:00"],
         help="Target a specific execution window to evaluate and notify.",
     )
     parser.add_argument(
@@ -723,7 +894,7 @@ def main() -> int:
 
     print("[Watcher] Armed in continuous morning watch mode (America/New_York).")
     print("[Watcher] Automatic logging is ENABLED: No-trade days and completed trades are logged without user input.")
-    print("[Watcher] Will automatically evaluate and alert at 08:35 ET, 09:25 ET, 09:45 ET, 10:15 ET, and 11:00 ET.")
+    print("[Watcher] Will automatically evaluate and alert at 08:25 ET (Pre-Market), 08:35 ET, 09:25 ET, 09:45 ET, 10:15 ET, and 11:00 ET.")
     fired_windows: set[str] = set()
     last_mtime = 0.0
 
@@ -740,33 +911,61 @@ def main() -> int:
             ]
             cur_mtime = max((p.stat().st_mtime for p in csv_files if p.exists()), default=0.0)
 
+            w_premarket_key = f"{d_str}_0825"
             w0_key = f"{d_str}_0835"
             w0_exit = f"{d_str}_0925"
             w1_key = f"{d_str}_0945"
             w2_key = f"{d_str}_1015"
             w3_key = f"{d_str}_1100"
 
-            if "08:35:02" <= hhmmss <= "08:36:30" and w0_key not in fired_windows:
+            # Check persistent ledger so sleep/wake cycles or late wakeups catch up on any missed window
+            journal = DemoParityJournal()
+            df_w = journal.load_windows_df()
+            df_s = journal.load_sessions_df()
+
+            recorded_w_times = set()
+            if not df_w.empty and "date" in df_w.columns and "window_time" in df_w.columns:
+                d_rows = df_w[df_w["date"].astype(str) == d_str]
+                recorded_w_times = set(d_rows["window_time"].astype(str).tolist())
+
+            has_session_today = False
+            if not df_s.empty and "date" in df_s.columns:
+                has_session_today = d_str in df_s["date"].astype(str).values
+
+            # Pre-Market Readiness Check (08:25 ET): Silent system health & MotiveWave check
+            if "08:25:02" <= hhmmss < "08:35:00" and w_premarket_key not in fired_windows:
+                fired_windows.add(w_premarket_key)
+                try:
+                    from scripts.check_morning_readiness import run_diagnostics
+                    run_diagnostics(verbose=False, send_alert=True)
+                    print(f"[Watcher] 08:25 ET Pre-Market Readiness Check complete. Notification dispatched.")
+                except Exception as e:
+                    print(f"[Watcher] Pre-market diagnostic error: {e}")
+
+            # Window 0 (08:35 ET): S3 Macro Momentum
+            if hhmmss >= "08:35:02" and "08:35:00" not in recorded_w_times and w0_key not in fired_windows:
                 fired_windows.add(w0_key)
                 last_mtime = cur_mtime
                 run_evaluation_and_notify(speak=not args.no_voice, auto_log=not args.no_auto_log, window_trigger="08:35")
-            elif "09:25:02" <= hhmmss <= "09:26:30" and w0_exit not in fired_windows:
+            # Window 0 Exit (09:25 ET): Pre-Cash Flatten
+            elif hhmmss >= "09:25:02" and w0_exit not in fired_windows:
                 fired_windows.add(w0_exit)
                 last_mtime = cur_mtime
-                # Auto-resolves any open Window 0 trade before cash open
                 run_evaluation_and_notify(speak=not args.no_voice, auto_log=not args.no_auto_log, window_trigger="09:25")
-            elif "09:45:02" <= hhmmss <= "09:46:30" and w1_key not in fired_windows:
+            # Window 1 (09:45 ET): S1 VA Breakout (MNQ + MES)
+            elif hhmmss >= "09:45:02" and "09:45:00" not in recorded_w_times and w1_key not in fired_windows:
                 fired_windows.add(w1_key)
                 last_mtime = cur_mtime
                 run_evaluation_and_notify(speak=not args.no_voice, auto_log=not args.no_auto_log, window_trigger="09:45")
-            elif "10:15:02" <= hhmmss <= "10:16:30" and w2_key not in fired_windows:
+            # Window 2 (10:15 ET): S2 Gold London Fix & S1 Time Exit
+            elif hhmmss >= "10:15:02" and "10:15:00" not in recorded_w_times and w2_key not in fired_windows:
                 fired_windows.add(w2_key)
                 last_mtime = cur_mtime
                 run_evaluation_and_notify(speak=not args.no_voice, auto_log=not args.no_auto_log, window_trigger="10:15")
-            elif "11:00:02" <= hhmmss <= "11:01:30" and w3_key not in fired_windows:
+            # Session Close (11:00 ET): Finalize Day
+            elif hhmmss >= "11:00:02" and not has_session_today and w3_key not in fired_windows:
                 fired_windows.add(w3_key)
                 last_mtime = cur_mtime
-                # 11:00 auto-resolves any open Window 2 trade and finalizes the day's session
                 run_evaluation_and_notify(speak=not args.no_voice, auto_log=not args.no_auto_log, window_trigger="11:00")
 
             if last_mtime == 0.0:

@@ -52,9 +52,9 @@ def simulate_eval_attempt(
 ) -> dict:
     """
     Simulate one LucidFlex 25K eval attempt using Anti-Martingale Ratchet.
-    Tier 1 (<$350): 2 Micros (0.20x mini)
-    Tier 2 ($350 - $750): 3 Micros (0.30x mini)
-    Tier 3 (>=$750): 4 Micros (0.40x mini)
+    Tier 1 (<$200): 2 Micros (0.20x mini)
+    Tier 2 ($200 - $500): 3 Micros (0.30x mini)
+    Tier 3 (>=$500): 4 Micros (0.40x mini)
     """
     balance = starting_capital
     peak_balance = starting_capital
@@ -64,9 +64,9 @@ def simulate_eval_attempt(
         profit = balance - starting_capital
         
         # Determine sizing multiplier
-        if profit >= 750.0:
+        if profit >= 500.0:
             scale = 0.40  # 4 Micros
-        elif profit >= 350.0:
+        elif profit >= 200.0:
             scale = 0.30  # 3 Micros
         else:
             scale = 0.20  # 2 Micros

@@ -32,8 +32,8 @@ DEFAULT_MORNING_VA_BREAKOUT_CONTEXT_COLUMNS = (
 @dataclass(frozen=True)
 class MorningValueAreaBreakoutConfig:
     min_abs_return_pct: float = 0.0010  # 0.10%
-    min_long_close_location: float = 0.65
-    max_short_close_location: float = 0.35
+    min_long_close_location: float = 0.60
+    max_short_close_location: float = 0.40
     require_outside_prior_va: bool = True
     require_with_gap: bool = True
     allow_long: bool = True

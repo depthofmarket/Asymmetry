@@ -5,8 +5,10 @@ import com.motivewave.platform.sdk.common.DataContext;
 import com.motivewave.platform.sdk.common.DataSeries;
 import com.motivewave.platform.sdk.common.Defaults;
 import com.motivewave.platform.sdk.common.Enums$MarkerType;
+import com.motivewave.platform.sdk.common.Enums$OrderAction;
 import com.motivewave.platform.sdk.common.Enums$Position;
 import com.motivewave.platform.sdk.common.Enums$Size;
+import com.motivewave.platform.sdk.common.Enums$TIF;
 import com.motivewave.platform.sdk.common.MarkerInfo;
 import com.motivewave.platform.sdk.common.desc.BooleanDescriptor;
 import com.motivewave.platform.sdk.common.desc.DoubleDescriptor;
@@ -16,6 +18,8 @@ import com.motivewave.platform.sdk.common.desc.SettingTab;
 import com.motivewave.platform.sdk.common.desc.SettingsDescriptor;
 import com.motivewave.platform.sdk.draw.Line;
 import com.motivewave.platform.sdk.draw.Marker;
+import com.motivewave.platform.sdk.order_mgmt.Order;
+import com.motivewave.platform.sdk.order_mgmt.OrderContext;
 import com.motivewave.platform.sdk.study.RuntimeDescriptor;
 import com.motivewave.platform.sdk.study.Study;
 import com.motivewave.platform.sdk.study.StudyHeader;
@@ -23,6 +27,9 @@ import com.motivewave.platform.sdk.study.StudyHeader;
 import java.awt.Color;
 import java.awt.Font;
 import java.awt.Toolkit;
+import java.io.File;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
@@ -31,30 +38,74 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @StudyHeader(
     namespace = "com.motivewave.platform.study.custom",
     id = "VA_BREAKOUT_ALGO_V2",
     name = "Lucid 25K — 1. Morning VA Breakout (09:45 ET)",
-    desc = "09:45 ET Breakout outside Prior Day Value Area with $250 Volatility Risk Budgeting, 1.5x R:R Target, 10:00 AM News Guard, and Live Non-Repainting Trade Tracker",
+    desc = "09:45 ET Breakout outside Prior Day Value Area with $250 Volatility Risk Budgeting, 1.5x R:R Target, 10:00 AM News Guard, Live CQG Bracket Execution, and Live Trade Tracker",
     menu = "Custom",
     overlay = true,
-    signals = true
+    signals = true,
+    strategy = true,
+    showTradeOptions = true,
+    supportsTradeLots = true,
+    supportsPosition = true
 )
 public class LucidMorningVABreakoutStudy extends Study {
 
     private static final Font LINE_FONT = new Font("SansSerif", Font.BOLD, 10);
+    private static final java.awt.BasicStroke DASHED_STROKE = new java.awt.BasicStroke(1.0f, java.awt.BasicStroke.CAP_BUTT, java.awt.BasicStroke.JOIN_MITER, 10.0f, new float[]{3.0f, 3.0f}, 0.0f);
+    private static final java.awt.BasicStroke SOLID_STROKE = new java.awt.BasicStroke(1.5f);
+    private static final Color BADGE_BG = new Color(15, 20, 26, 210);
+
+    private static void styleLine(Line line, Color color, java.awt.Stroke stroke, String text, Font font, Color textColor, Color bgColor) {
+        if (line == null) return;
+        line.setColor(color);
+        if (stroke != null) line.setStroke(stroke);
+        if (text != null && font != null) {
+            line.setText(text, font);
+            com.motivewave.platform.sdk.draw.Text t = line.getText();
+            if (t != null) {
+                t.setShowBorder(false);
+                t.setShowOutline(false);
+                if (bgColor != null) t.setBackground(bgColor);
+                if (textColor != null) t.setTextColor(textColor);
+            }
+        }
+    }
+
+    private static void styleMarker(Marker marker, String text, Color bgColor, Color textColor) {
+        if (marker == null) return;
+        if (text != null) {
+            marker.setTextValue(text);
+            com.motivewave.platform.sdk.draw.Text t = marker.getText();
+            if (t != null) {
+                t.setFont(LINE_FONT);
+                t.setShowBorder(false);
+                t.setShowOutline(false);
+                if (bgColor != null) t.setBackground(bgColor);
+                if (textColor != null) t.setTextColor(textColor);
+            }
+        }
+    }
 
     // Settings Keys
+    private static final String ENABLE_LIVE_AUTOTRADE = "enableLiveAutoTrade";
     private static final String MIN_RETURN_PCT = "minReturnPct";
     private static final String MIN_LONG_CLOSE_LOC = "minLongCloseLoc";
     private static final String MAX_SHORT_CLOSE_LOC = "maxShortCloseLoc";
     private static final String REWARD_RISK_RATIO = "rewardRiskRatio";
     private static final String RISK_BUDGET_DOLLARS = "riskBudgetDollars";
     private static final String RATCHET_TIER_OVERRIDE = "ratchetTierOverride";
+    private static final String ENABLE_PAIR_SPLIT = "enablePairSplit";
     private static final String ENABLE_10AM_NEWS_GUARD = "enable10amNewsGuard";
     private static final String ENABLE_SOUND_ALERT = "enableSoundAlert";
     private static final String SHOW_LEVEL_LINES = "showLevelLines";
+    private static final String HIDE_LINES_WHEN_LIVE = "hideLinesWhenLive";
+    private static final String SHOW_TIME_EXIT_LINES = "showTimeExitLines";
     private static final String SHOW_NO_SETUP_MARKER = "showNoSetupMarker";
     private static final String SHOW_MVT_DP_LINES = "showMvtDpLines";
     private static final String ENABLE_GARCH_EXHAUSTION_GATE = "enableGarchExhaustionGate";
@@ -85,9 +136,63 @@ public class LucidMorningVABreakoutStudy extends Study {
         String microSym;
         double ptVal;
         boolean closed = false;
+        boolean orderSubmitted = false;
         Line slLine;
         Line tpLine;
         Line entryLine;
+    }
+
+    private static class DaemonRiskState {
+        int recommendedMicros = 2;
+        double trailingCushion = 1000.0;
+        double currentDatePnl = 0.0;
+        boolean circuitBreakerHit = false;
+        boolean emergencyDelever = false;
+        boolean finishLineShield = false;
+        boolean garchDecileHalving = false;
+    }
+
+    private static DaemonRiskState loadDaemonRiskState() {
+        DaemonRiskState state = new DaemonRiskState();
+        File f = new File(System.getProperty("user.home"), "trading_strategy/nq-scalper-backtest/results/forward_test/demo_parity_state.json");
+        if (!f.exists() || !f.canRead()) {
+            return state;
+        }
+        try {
+            String content = new String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8);
+            Matcher mMicros = Pattern.compile("\"recommended_micros\"\\s*:\\s*(\\d+)").matcher(content);
+            if (mMicros.find()) {
+                state.recommendedMicros = Integer.parseInt(mMicros.group(1));
+            }
+            Matcher mCushion = Pattern.compile("\"trailing_cushion\"\\s*:\\s*([-+]?[0-9]*\\.?[0-9]+)").matcher(content);
+            if (mCushion.find()) {
+                state.trailingCushion = Double.parseDouble(mCushion.group(1));
+            }
+            Matcher mPnl = Pattern.compile("\"current_date_pnl\"\\s*:\\s*([-+]?[0-9]*\\.?[0-9]+)").matcher(content);
+            if (mPnl.find()) {
+                state.currentDatePnl = Double.parseDouble(mPnl.group(1));
+            }
+            Matcher mShield = Pattern.compile("\"finish_line_shield\"\\s*:\\s*(true|false)").matcher(content);
+            if (mShield.find()) {
+                state.finishLineShield = Boolean.parseBoolean(mShield.group(1));
+            }
+            Matcher mGarch = Pattern.compile("\"garch_decile_halving\"\\s*:\\s*(true|false)").matcher(content);
+            if (mGarch.find()) {
+                state.garchDecileHalving = Boolean.parseBoolean(mGarch.group(1));
+            }
+            Matcher mDelever = Pattern.compile("\"defensive_delever\"\\s*:\\s*(true|false)").matcher(content);
+            if (mDelever.find()) {
+                state.emergencyDelever = Boolean.parseBoolean(mDelever.group(1));
+            }
+            if (state.currentDatePnl <= -500.0) {
+                state.circuitBreakerHit = true;
+            }
+            if (state.trailingCushion < 500.0 || state.emergencyDelever || state.finishLineShield || state.garchDecileHalving) {
+                state.recommendedMicros = 1;
+            }
+        } catch (Exception ignored) {
+        }
+        return state;
     }
 
     private static class SessionProfile {
@@ -196,21 +301,25 @@ public class LucidMorningVABreakoutStudy extends Study {
         SettingTab tab = sd.addTab("Lucid 25K VA Breakout (09:45)");
         SettingGroup group = tab.addGroup("Breakout & Risk Management");
 
+        group.addRow(new BooleanDescriptor(ENABLE_LIVE_AUTOTRADE, "Enable Live Auto-Trading (CQG Execution)", false));
         group.addRow(new DoubleDescriptor(MIN_RETURN_PCT, "Min 15m Return (0.10% = 0.0010)", 0.0010, 0.0001, 0.0050, 0.0001));
-        group.addRow(new DoubleDescriptor(MIN_LONG_CLOSE_LOC, "Min Long Close Location (0.65)", 0.65, 0.50, 0.95, 0.05));
-        group.addRow(new DoubleDescriptor(MAX_SHORT_CLOSE_LOC, "Max Short Close Location (0.35)", 0.35, 0.05, 0.50, 0.05));
+        group.addRow(new DoubleDescriptor(MIN_LONG_CLOSE_LOC, "Min Long Close Location (0.60)", 0.60, 0.50, 0.95, 0.05));
+        group.addRow(new DoubleDescriptor(MAX_SHORT_CLOSE_LOC, "Max Short Close Location (0.40)", 0.40, 0.05, 0.50, 0.05));
         group.addRow(new DoubleDescriptor(REWARD_RISK_RATIO, "Target Reward / Risk Ratio (1.50x)", 1.5, 0.5, 3.0, 0.1));
         group.addRow(new DoubleDescriptor(RISK_BUDGET_DOLLARS, "Risk Budget / Trade ($250 for Lucid 25K)", 250.0, 50.0, 500.0, 10.0));
-        group.addRow(new IntegerDescriptor(RATCHET_TIER_OVERRIDE, "Ratchet Sizing Override (0=Auto, 2/3/4 Micros)", 0, 0, 4, 1));
+        group.addRow(new IntegerDescriptor(RATCHET_TIER_OVERRIDE, "Ratchet Sizing Override (0=Auto-Sync Daemon State, 1/2/3/4 Micros)", 0, 0, 4, 1));
+        group.addRow(new BooleanDescriptor(ENABLE_PAIR_SPLIT, "Split Sizing Across NQ/ES Pair (e.g. 1 MNQ + 1 MES in Tier 1)", false));
         group.addRow(new BooleanDescriptor(ENABLE_10AM_NEWS_GUARD, "Enable 10:00 AM News Guard Flatten", true));
         group.addRow(new BooleanDescriptor(ENABLE_SOUND_ALERT, "Enable Sound Alert & Notification", true));
-        group.addRow(new BooleanDescriptor(SHOW_LEVEL_LINES, "Show SL / TP / Entry / Time Exit Lines", true));
-        group.addRow(new BooleanDescriptor(SHOW_NO_SETUP_MARKER, "Show 'No Setup' Reason Marker at 09:45", true));
+        group.addRow(new BooleanDescriptor(SHOW_LEVEL_LINES, "Show SL / TP / Entry Bracket Lines", true));
+        group.addRow(new BooleanDescriptor(HIDE_LINES_WHEN_LIVE, "Hide Custom Lines When Live Auto-Trade Active (Use Native Orders)", true));
+        group.addRow(new BooleanDescriptor(SHOW_TIME_EXIT_LINES, "Show Time Boundary Lines (10:00 News Guard & 10:15 Exit)", false));
+        group.addRow(new BooleanDescriptor(SHOW_NO_SETUP_MARKER, "Show 'No Setup' Reason Marker (Diagnostic)", false));
 
         SettingGroup garchGroup = tab.addGroup("AntiAchismo GARCH MVT & Desvio Padrao Envelopes");
-        garchGroup.addRow(new BooleanDescriptor(SHOW_MVT_DP_LINES, "Show MVT 0 (VWAP) & DP +/- 1, 2, 2.5 Bands", true));
+        garchGroup.addRow(new BooleanDescriptor(SHOW_MVT_DP_LINES, "Show MVT 0 (VWAP) & DP +/- 1, 2, 2.5 Bands (Clean Default: Off)", false));
         garchGroup.addRow(new BooleanDescriptor(ENABLE_GARCH_EXHAUSTION_GATE, "Enable GARCH Exhaustion Gate (> 2.50 DP)", true));
-        garchGroup.addRow(new DoubleDescriptor(GARCH_DAILY_VOL_PCT, "GARCH Daily Conditional Volatility % (1.25)", 1.25, 0.20, 5.00, 0.05));
+        garchGroup.addRow(new DoubleDescriptor(GARCH_DAILY_VOL_PCT, "GARCH Daily Volatility % (Auto: NQ 1.25% / ES 0.72%)", 1.25, 0.20, 5.00, 0.05));
         garchGroup.addRow(new DoubleDescriptor(GARCH_EXHAUSTION_DP, "Exhaustion Cutoff in Desvio Padrao (2.50 DP)", 2.50, 1.50, 4.00, 0.10));
 
         setSettingsDescriptor(sd);
@@ -331,14 +440,19 @@ public class LucidMorningVABreakoutStudy extends Study {
                     double closeLoc = (or.close944 - or.low15) / orRange;
 
                     double minRet = getSettings().getDouble(MIN_RETURN_PCT, 0.0010);
-                    double minLongLoc = getSettings().getDouble(MIN_LONG_CLOSE_LOC, 0.65);
-                    double maxShortLoc = getSettings().getDouble(MAX_SHORT_CLOSE_LOC, 0.35);
+                    double minLongLoc = getSettings().getDouble(MIN_LONG_CLOSE_LOC, 0.60);
+                    double maxShortLoc = getSettings().getDouble(MAX_SHORT_CLOSE_LOC, 0.40);
                     double rrRatio = getSettings().getDouble(REWARD_RISK_RATIO, 1.5);
                     double riskBudget = getSettings().getDouble(RISK_BUDGET_DOLLARS, 250.0);
                     int ratchetOverride = getSettings().getInteger(RATCHET_TIER_OVERRIDE, 0);
                     boolean newsGuard = getSettings().getBoolean(ENABLE_10AM_NEWS_GUARD, true);
                     boolean soundAlert = getSettings().getBoolean(ENABLE_SOUND_ALERT, true);
                     boolean showLines = getSettings().getBoolean(SHOW_LEVEL_LINES, true);
+                    boolean hideWhenLive = getSettings().getBoolean(HIDE_LINES_WHEN_LIVE, true);
+                    boolean isLive = getSettings().getBoolean(ENABLE_LIVE_AUTOTRADE, false);
+                    if (hideWhenLive && isLive) {
+                        showLines = false;
+                    }
 
                     String sym = (series.getInstrument() != null) ? series.getInstrument().getSymbol().toUpperCase() : "NQ";
                     boolean isES = sym.contains("ES") || sym.contains("MES");
@@ -349,19 +463,44 @@ public class LucidMorningVABreakoutStudy extends Study {
 
                     double stopPts = Math.min(maxStop, Math.max(minStop, orRange));
 
-                    int contracts;
+                    // 1. Enforce Daily Loss Circuit Breaker (-$500 Soft Stop)
+                    DaemonRiskState riskState = loadDaemonRiskState();
+                    if (riskState.circuitBreakerHit) {
+                        if (getSettings().getBoolean(SHOW_NO_SETUP_MARKER, true)) {
+                            Coordinate coord = new Coordinate(barStartTime, high + (tickSize * 4));
+                            MarkerInfo info = new MarkerInfo(Enums$MarkerType.CIRCLE, Enums$Size.MEDIUM, new Color(220, 20, 60), Color.WHITE, Color.PINK, true);
+                            Marker marker = new Marker(coord, Enums$Position.TOP, info);
+                            marker.setTextValue(String.format("NO TRADE: Daily Loss Circuit Breaker Active (Today: -$%.0f <= -$500)", Math.abs(riskState.currentDatePnl)));
+                            addFigure(marker);
+                        }
+                        return;
+                    }
+
+                    // 2. Dynamic Contract Sizing with Pair Allocation & Cushion De-leveraging
+                    int tierMicros = riskState.recommendedMicros;
                     if (ratchetOverride >= 1 && ratchetOverride <= 4) {
-                        contracts = ratchetOverride;
+                        tierMicros = ratchetOverride;
+                    }
+
+                    boolean pairSplit = getSettings().getBoolean(ENABLE_PAIR_SPLIT, true);
+                    int contracts;
+                    if (pairSplit) {
+                        if (isES) {
+                            int cNq = Math.max(1, tierMicros / 2);
+                            contracts = Math.max(1, tierMicros - cNq);
+                        } else { // NQ
+                            contracts = Math.max(1, tierMicros / 2);
+                        }
                     } else {
-                        contracts = (int) Math.round(riskBudget / (stopPts * ptVal));
-                        contracts = Math.max(1, Math.min(4, contracts));
+                        contracts = tierMicros;
                     }
 
                     boolean isLong = (retPct >= minRet) && (closeLoc >= minLongLoc) && (or.close944 > priorVah);
                     boolean isShort = (retPct <= -minRet) && (closeLoc <= maxShortLoc) && (or.close944 < priorVal);
 
                     // AntiAchismo GARCH MVT & Desvio Padrao Calculations
-                    double dailyVolPct = getSettings().getDouble(GARCH_DAILY_VOL_PCT, 1.25);
+                    double userVol = getSettings().getDouble(GARCH_DAILY_VOL_PCT, 1.25);
+                    double dailyVolPct = isES && (Math.abs(userVol - 1.25) < 1e-4) ? 0.72 : userVol;
                     double sigmaOpen = or.close944 * (dailyVolPct / 100.0) * Math.sqrt(15.0 / 390.0);
                     double mvt0 = or.getVwap();
                     double dp1Pos = mvt0 + (1.0 * sigmaOpen);
@@ -372,7 +511,7 @@ public class LucidMorningVABreakoutStudy extends Study {
                     double dp25Neg = mvt0 - (2.5 * sigmaOpen);
                     double zScore = (or.close944 - mvt0) / Math.max(sigmaOpen, 1e-4);
 
-                    boolean showMvtLines = getSettings().getBoolean(SHOW_MVT_DP_LINES, true);
+                    boolean showMvtLines = getSettings().getBoolean(SHOW_MVT_DP_LINES, false);
                     if (showMvtLines) {
                         long lineStart = (or.startTime > 0) ? or.startTime : (barStartTime - (15 * 60 * 1000L));
                         long lineEnd = barStartTime + (45 * 60 * 1000L); // Spans 09:30 to 10:30 ET
@@ -454,85 +593,135 @@ public class LucidMorningVABreakoutStudy extends Study {
                         trade.ptVal = ptVal;
                         trade.closed = false;
 
+                        boolean showTimeLines = getSettings().getBoolean(SHOW_TIME_EXIT_LINES, false);
+
                         if (isLong) {
-                            Coordinate coord = new Coordinate(entryTime, low - (stopPts * 0.15));
-                            MarkerInfo info = new MarkerInfo(Enums$MarkerType.ARROW, Enums$Size.LARGE, Color.GREEN, Color.GREEN, true);
+                            Coordinate coord = new Coordinate(entryTime, low - (stopPts * 0.10));
+                            MarkerInfo info = new MarkerInfo(Enums$MarkerType.ARROW, Enums$Size.MEDIUM, new Color(0, 204, 102), new Color(0, 204, 102), true);
                             Marker marker = new Marker(coord, Enums$Position.BOTTOM, info);
-                            marker.setTextValue(String.format("BUY %dx %s @ %.2f | SL: %.2f (-$%.0f) | TP: %.2f (+$%.0f, 1.5R) | MAX: 10:15",
-                                contracts, microSym, entryPrice, stopPrice, actualRiskDollars, targetPrice, actualRewardDollars));
+                            marker.setTextValue(String.format("BUY %dx %s @ %.2f", contracts, microSym, entryPrice));
                             addFigure(marker);
 
                             if (showLines) {
                                 Line slLine = new Line(entryTime, stopPrice, exitTime, stopPrice);
-                                slLine.setColor(Color.RED);
-                                slLine.setText(String.format("STOP LOSS: %.2f (-$%.0f)", stopPrice, actualRiskDollars), LINE_FONT);
+                                slLine.setColor(new Color(220, 20, 60));
+                                slLine.setText(String.format("SL: %.2f (-$%.0f)", stopPrice, actualRiskDollars), LINE_FONT);
+                                if (slLine.getText() != null) {
+                                    slLine.getText().setShowBorder(false);
+                                    slLine.getText().setBackground(null);
+                                }
                                 addFigure(slLine);
                                 trade.slLine = slLine;
 
                                 Line tpLine = new Line(entryTime, targetPrice, exitTime, targetPrice);
-                                tpLine.setColor(Color.GREEN);
-                                tpLine.setText(String.format("PROFIT TARGET 1.5R: %.2f (+$%.0f)", targetPrice, actualRewardDollars), LINE_FONT);
+                                tpLine.setColor(new Color(0, 204, 102));
+                                tpLine.setText(String.format("TP (1.5R): %.2f (+$%.0f)", targetPrice, actualRewardDollars), LINE_FONT);
+                                if (tpLine.getText() != null) {
+                                    tpLine.getText().setShowBorder(false);
+                                    tpLine.getText().setBackground(null);
+                                }
                                 addFigure(tpLine);
                                 trade.tpLine = tpLine;
 
                                 Line entryLine = new Line(entryTime, entryPrice, exitTime, entryPrice);
-                                entryLine.setColor(Color.WHITE);
+                                entryLine.setColor(new Color(200, 200, 200, 180));
+                                entryLine.setStroke(new java.awt.BasicStroke(1.0f, java.awt.BasicStroke.CAP_BUTT, java.awt.BasicStroke.JOIN_MITER, 10.0f, new float[]{4.0f, 4.0f}, 0.0f));
                                 entryLine.setText(String.format("ENTRY: %.2f (%dx %s)", entryPrice, contracts, microSym), LINE_FONT);
+                                if (entryLine.getText() != null) {
+                                    entryLine.getText().setShowBorder(false);
+                                    entryLine.getText().setBackground(null);
+                                }
                                 addFigure(entryLine);
                                 trade.entryLine = entryLine;
 
-                                if (newsGuard && is10amNewsDay(today)) {
-                                    Line newsLine = new Line(newsTime, stopPrice, newsTime, targetPrice);
-                                    newsLine.setColor(Color.ORANGE);
-                                    newsLine.setText("10:00 AM NEWS GUARD: Flatten @ 09:59 if Red-Folder Data", LINE_FONT);
-                                    addFigure(newsLine);
-                                }
+                                if (showTimeLines) {
+                                    if (newsGuard && is10amNewsDay(today)) {
+                                        Line newsLine = new Line(newsTime, stopPrice, newsTime, targetPrice);
+                                        newsLine.setColor(new Color(255, 140, 0, 180));
+                                        newsLine.setStroke(new java.awt.BasicStroke(1.0f, java.awt.BasicStroke.CAP_BUTT, java.awt.BasicStroke.JOIN_MITER, 10.0f, new float[]{3.0f, 3.0f}, 0.0f));
+                                        newsLine.setText("10:00 NEWS GUARD", LINE_FONT);
+                                        if (newsLine.getText() != null) {
+                                            newsLine.getText().setShowBorder(false);
+                                            newsLine.getText().setBackground(null);
+                                        }
+                                        addFigure(newsLine);
+                                    }
 
-                                Line exitLine = new Line(exitTime, stopPrice, exitTime, targetPrice);
-                                exitLine.setColor(Color.CYAN);
-                                exitLine.setText("10:15 MAX TIME EXIT", LINE_FONT);
-                                addFigure(exitLine);
+                                    Line exitLine = new Line(exitTime, stopPrice, exitTime, targetPrice);
+                                    exitLine.setColor(new Color(0, 206, 209, 180));
+                                    exitLine.setStroke(new java.awt.BasicStroke(1.0f, java.awt.BasicStroke.CAP_BUTT, java.awt.BasicStroke.JOIN_MITER, 10.0f, new float[]{3.0f, 3.0f}, 0.0f));
+                                    exitLine.setText("10:15 MAX EXIT", LINE_FONT);
+                                    if (exitLine.getText() != null) {
+                                        exitLine.getText().setShowBorder(false);
+                                        exitLine.getText().setBackground(null);
+                                    }
+                                    addFigure(exitLine);
+                                }
                             }
 
                             ctx.signal(index, SIGNAL_BUY, String.format("VA BREAKOUT BUY %dx %s @ %.2f (SL: %.2f, TP: %.2f)", contracts, microSym, entryPrice, stopPrice, targetPrice), entryPrice);
                         } else {
-                            Coordinate coord = new Coordinate(entryTime, high + (stopPts * 0.15));
-                            MarkerInfo info = new MarkerInfo(Enums$MarkerType.ARROW, Enums$Size.LARGE, Color.RED, Color.RED, true);
+                            Coordinate coord = new Coordinate(entryTime, high + (stopPts * 0.10));
+                            MarkerInfo info = new MarkerInfo(Enums$MarkerType.ARROW, Enums$Size.MEDIUM, new Color(220, 20, 60), new Color(220, 20, 60), true);
                             Marker marker = new Marker(coord, Enums$Position.TOP, info);
-                            marker.setTextValue(String.format("SELL %dx %s @ %.2f | SL: %.2f (-$%.0f) | TP: %.2f (+$%.0f, 1.5R) | MAX: 10:15",
-                                contracts, microSym, entryPrice, stopPrice, actualRiskDollars, targetPrice, actualRewardDollars));
+                            marker.setTextValue(String.format("SELL %dx %s @ %.2f", contracts, microSym, entryPrice));
                             addFigure(marker);
 
                             if (showLines) {
                                 Line slLine = new Line(entryTime, stopPrice, exitTime, stopPrice);
-                                slLine.setColor(Color.RED);
-                                slLine.setText(String.format("STOP LOSS: %.2f (-$%.0f)", stopPrice, actualRiskDollars), LINE_FONT);
+                                slLine.setColor(new Color(220, 20, 60));
+                                slLine.setText(String.format("SL: %.2f (-$%.0f)", stopPrice, actualRiskDollars), LINE_FONT);
+                                if (slLine.getText() != null) {
+                                    slLine.getText().setShowBorder(false);
+                                    slLine.getText().setBackground(null);
+                                }
                                 addFigure(slLine);
                                 trade.slLine = slLine;
 
                                 Line tpLine = new Line(entryTime, targetPrice, exitTime, targetPrice);
-                                tpLine.setColor(Color.GREEN);
-                                tpLine.setText(String.format("PROFIT TARGET 1.5R: %.2f (+$%.0f)", targetPrice, actualRewardDollars), LINE_FONT);
+                                tpLine.setColor(new Color(0, 204, 102));
+                                tpLine.setText(String.format("TP (1.5R): %.2f (+$%.0f)", targetPrice, actualRewardDollars), LINE_FONT);
+                                if (tpLine.getText() != null) {
+                                    tpLine.getText().setShowBorder(false);
+                                    tpLine.getText().setBackground(null);
+                                }
                                 addFigure(tpLine);
                                 trade.tpLine = tpLine;
 
                                 Line entryLine = new Line(entryTime, entryPrice, exitTime, entryPrice);
-                                entryLine.setColor(Color.WHITE);
+                                entryLine.setColor(new Color(200, 200, 200, 180));
+                                entryLine.setStroke(new java.awt.BasicStroke(1.0f, java.awt.BasicStroke.CAP_BUTT, java.awt.BasicStroke.JOIN_MITER, 10.0f, new float[]{4.0f, 4.0f}, 0.0f));
                                 entryLine.setText(String.format("ENTRY: %.2f (%dx %s)", entryPrice, contracts, microSym), LINE_FONT);
+                                if (entryLine.getText() != null) {
+                                    entryLine.getText().setShowBorder(false);
+                                    entryLine.getText().setBackground(null);
+                                }
                                 addFigure(entryLine);
                                 trade.entryLine = entryLine;
 
-                                if (newsGuard && is10amNewsDay(today)) {
-                                    Line newsLine = new Line(newsTime, stopPrice, newsTime, targetPrice);
-                                    newsLine.setColor(Color.ORANGE);
-                                    newsLine.setText("10:00 AM NEWS GUARD: Flatten @ 09:59 if Red-Folder Data", LINE_FONT);
-                                    addFigure(newsLine);
-                                }
+                                if (showTimeLines) {
+                                    if (newsGuard && is10amNewsDay(today)) {
+                                        Line newsLine = new Line(newsTime, stopPrice, newsTime, targetPrice);
+                                        newsLine.setColor(new Color(255, 140, 0, 180));
+                                        newsLine.setStroke(new java.awt.BasicStroke(1.0f, java.awt.BasicStroke.CAP_BUTT, java.awt.BasicStroke.JOIN_MITER, 10.0f, new float[]{3.0f, 3.0f}, 0.0f));
+                                        newsLine.setText("10:00 NEWS GUARD", LINE_FONT);
+                                        if (newsLine.getText() != null) {
+                                            newsLine.getText().setShowBorder(false);
+                                            newsLine.getText().setBackground(null);
+                                        }
+                                        addFigure(newsLine);
+                                    }
 
-                                Line exitLine = new Line(exitTime, targetPrice, exitTime, stopPrice);
-                                exitLine.setColor(Color.CYAN);
-                                exitLine.setText("10:15 MAX TIME EXIT", LINE_FONT);
-                                addFigure(exitLine);
+                                    Line exitLine = new Line(exitTime, targetPrice, exitTime, stopPrice);
+                                    exitLine.setColor(new Color(0, 206, 209, 180));
+                                    exitLine.setStroke(new java.awt.BasicStroke(1.0f, java.awt.BasicStroke.CAP_BUTT, java.awt.BasicStroke.JOIN_MITER, 10.0f, new float[]{3.0f, 3.0f}, 0.0f));
+                                    exitLine.setText("10:15 MAX EXIT", LINE_FONT);
+                                    if (exitLine.getText() != null) {
+                                        exitLine.getText().setShowBorder(false);
+                                        exitLine.getText().setBackground(null);
+                                    }
+                                    addFigure(exitLine);
+                                }
                             }
 
                             ctx.signal(index, SIGNAL_SELL, String.format("VA BREAKOUT SELL %dx %s @ %.2f (SL: %.2f, TP: %.2f)", contracts, microSym, entryPrice, stopPrice, targetPrice), entryPrice);
@@ -660,8 +849,127 @@ public class LucidMorningVABreakoutStudy extends Study {
                 MarkerInfo info = new MarkerInfo(Enums$MarkerType.CIRCLE, Enums$Size.LARGE, outcomeColor, outcomeColor, true);
                 Marker marker = new Marker(coord, activeTrade.isLong ? Enums$Position.TOP : Enums$Position.BOTTOM, info);
                 marker.setTextValue(outcomeText);
+                if (marker.getText() != null) {
+                    marker.getText().setShowBorder(false);
+                    marker.getText().setBackground(null);
+                }
                 addFigure(marker);
             }
+        }
+    }
+
+    // =========================================================================
+    // MOTIVEWAVE STRATEGY & AUTOMATED ORDER EXECUTION LIFECYCLE (CQG / RITHMIC)
+    // =========================================================================
+
+    @Override
+    public void onActivate(OrderContext ctx) {
+        // Armed on strategy activation
+    }
+
+    @Override
+    public void onSignal(OrderContext ctx, Object signal) {
+        if (ctx == null) return;
+        if (!getSettings().getBoolean(ENABLE_LIVE_AUTOTRADE, false)) return;
+        executeAutoTradeIfArmed(ctx, signal);
+    }
+
+    @Override
+    public void onBarClose(OrderContext ctx) {
+        if (ctx == null) return;
+        if (!getSettings().getBoolean(ENABLE_LIVE_AUTOTRADE, false)) return;
+
+        // 1. If flat, check if an unsubmitted trade signal exists for today
+        if (ctx.getPosition() == 0) {
+            long now = ctx.getCurrentTime();
+            LocalDate today = Instant.ofEpochMilli(now).atZone(NY_ZONE).toLocalDate();
+            ActiveTrade trade = tradesByDate.get(today);
+            if (trade != null && !trade.orderSubmitted && !trade.closed && now >= trade.entryTime) {
+                executeAutoTradeIfArmed(ctx, trade.isLong ? SIGNAL_BUY : SIGNAL_SELL);
+            }
+        }
+
+        // 2. Automated Time-Based Flattens if currently in a live position
+        if (ctx.getPosition() != 0) {
+            long barTime = ctx.getCurrentTime();
+            ZonedDateTime zdt = Instant.ofEpochMilli(barTime).atZone(NY_ZONE);
+            int hour = zdt.getHour();
+            int min = zdt.getMinute();
+            LocalDate today = zdt.toLocalDate();
+            boolean newsGuard = getSettings().getBoolean(ENABLE_10AM_NEWS_GUARD, true);
+            boolean isNews = is10amNewsDay(today);
+
+            // 10:15 ET Hard Max Time Exit
+            if (hour > 10 || (hour == 10 && min >= 15)) {
+                ctx.cancelOrders();
+                ctx.closeAtMarket();
+            }
+            // 09:59 ET News Guard Flatten if Red-Folder Day
+            else if (newsGuard && isNews && hour == 9 && min >= 59) {
+                ctx.cancelOrders();
+                ctx.closeAtMarket();
+            }
+        }
+    }
+
+    private synchronized void executeAutoTradeIfArmed(OrderContext ctx, Object signal) {
+        if (ctx.getPosition() != 0) return; // Prevent double-entry / pyramiding
+
+        // Gateway-level circuit breaker check
+        DaemonRiskState riskState = loadDaemonRiskState();
+        if (riskState.circuitBreakerHit) return;
+
+        long now = ctx.getCurrentTime();
+        LocalDate today = Instant.ofEpochMilli(now).atZone(NY_ZONE).toLocalDate();
+        ActiveTrade trade = tradesByDate.get(today);
+        if (trade == null || trade.orderSubmitted || trade.closed) return;
+
+        int contracts = trade.contracts;
+        if (contracts <= 0) contracts = 1;
+
+        float stopPrice = ctx.getInstrument().round((float) trade.stopPrice);
+        float targetPrice = ctx.getInstrument().round((float) trade.targetPrice);
+
+        boolean isLong = trade.isLong;
+        if (signal != null) {
+            String sigStr = signal.toString();
+            if (sigStr.contains("BUY") || SIGNAL_BUY.equals(sigStr)) isLong = true;
+            else if (sigStr.contains("SELL") || SIGNAL_SELL.equals(sigStr)) isLong = false;
+        }
+
+        if (isLong) {
+            Order entry = ctx.createMarketOrder(Enums$OrderAction.BUY, contracts);
+            Order sl = ctx.createStopOrder(Enums$OrderAction.SELL, Enums$TIF.GTC, contracts, stopPrice);
+            Order tp = ctx.createLimitOrder(Enums$OrderAction.SELL, Enums$TIF.GTC, contracts, targetPrice);
+            ctx.submitOrders(entry, sl, tp);
+            trade.orderSubmitted = true;
+        } else {
+            Order entry = ctx.createMarketOrder(Enums$OrderAction.SELL, contracts);
+            Order sl = ctx.createStopOrder(Enums$OrderAction.BUY, Enums$TIF.GTC, contracts, stopPrice);
+            Order tp = ctx.createLimitOrder(Enums$OrderAction.BUY, Enums$TIF.GTC, contracts, targetPrice);
+            ctx.submitOrders(entry, sl, tp);
+            trade.orderSubmitted = true;
+        }
+    }
+
+    @Override
+    public void onPositionClosed(OrderContext ctx) {
+        if (ctx != null) {
+            ctx.cancelOrders();
+        }
+    }
+
+    @Override
+    public void onOrderFilled(OrderContext ctx, Order order) {
+        if (ctx != null && ctx.getPosition() == 0) {
+            ctx.cancelOrders();
+        }
+    }
+
+    @Override
+    public void onDeactivate(OrderContext ctx) {
+        if (ctx != null) {
+            ctx.cancelOrders();
         }
     }
 }

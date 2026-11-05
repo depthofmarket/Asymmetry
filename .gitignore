@@ -12,4 +12,6 @@ results/
 build/
 scratch/
 tools/
+logs/
+.agents/teamwork/
 

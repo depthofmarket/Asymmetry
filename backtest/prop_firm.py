@@ -1261,10 +1261,10 @@ def simulate_ratchet_profile(
     ratchet_tiers is a list of (profit_threshold, size_multiplier) tuples,
     sorted by profit_threshold ascending.
     Example for LucidFlex 25K:
-        ratchet_tiers=[(0.0, 0.2), (350.0, 0.3), (750.0, 0.4)]
-    - If profit < $350, multiplier = 0.2 (2 micros).
-    - If profit >= $350, multiplier = 0.3 (3 micros).
-    - If profit >= $750, multiplier = 0.4 (4 micros).
+        ratchet_tiers=[(0.0, 0.2), (200.0, 0.3), (500.0, 0.4)]
+    - If profit < $200, multiplier = 0.2 (2 micros).
+    - If profit >= $200, multiplier = 0.3 (3 micros).
+    - If profit >= $500, multiplier = 0.4 (4 micros).
     - If profit drops back down, multiplier steps down defensively.
     """
     rules = _normalize_profile(profile)
@@ -1272,7 +1272,7 @@ def simulate_ratchet_profile(
     horizon = int(max_days or rules["max_trading_days"])
     
     if ratchet_tiers is None:
-        ratchet_tiers = [(0.0, 0.2), (350.0, 0.3), (750.0, 0.4)]
+        ratchet_tiers = [(0.0, 0.2), (200.0, 0.3), (500.0, 0.4)]
     ratchet_tiers = sorted(ratchet_tiers, key=lambda x: x[0])
     
     account_size = float(rules["account_size"])

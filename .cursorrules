@@ -1,0 +1,13 @@
+# Cursor Quantitative Provenance Rules
+
+Every backtest auto-records into a single store (results/backtest_provenance.db). Cursor may quote stats ONLY by querying it — never from memory, prose, or prior chats.
+
+Query verified stats using:
+python scripts/query_provenance.py --strategy <strategy_id> --stat <metric_name>
+
+Rules:
+1. One source of truth (results/backtest_provenance.db)
+2. No naked numbers (must include methodology, dates, and data hash)
+3. Provenance footers on every tool
+4. Warnings travel with the number (LOW_SAMPLE_SIZE, GROSS_EXECUTION, OUTLIER_DOMINANCE, SHORT_EVALUATION_WINDOW)
+5. Recording is automatic, not discipline

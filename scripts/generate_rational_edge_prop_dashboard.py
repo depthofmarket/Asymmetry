@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 """
-Institutional Prop Firm Mode Dashboard Generator (LucidFlex 25K).
-Renders all prop evaluation metrics in the exact academic / quantitative Python style:
-- Clean white background (#FFFFFF)
-- Crisp black box spines (#000000)
-- Light gray grid lines (#E5E5E5)
-- Standard Matplotlib tab10 color palette (Blue #1f77b4, Orange #ff7f0e, Green #2ca02c, Red #d62728, Purple #9467bd)
-- Canonical LucidFlex 25K Specifications Table (NO TIME LIMIT)
-- 10,000 Block-Bootstrap Path Simulation with 100% Terminal Resolution (0% Timeout)
-- Complete Empirical Duration Percentile Distributions (Trading Days & Trades for Pass vs Fail)
-- Multi-sheet PNG Tearsheet Suite with DISTINCT, SPECIALIZED METRICS:
+Institutional Prop Firm Evaluation & Funded Mode Dashboard Generator.
+
+Simulates and visualizes the LucidFlex 25K Evaluation & Funded Mechanics:
+- EOD-based Trailing Floor ($1,000 drawdown allowance, trailing closing balance)
+- Floor Lock at $25,100 once peak balance reaches >= $26,100 (never trails further)
+- Intraday Soft Stop at -$600 halts subsequent windows in the same session
+- Anti-Martingale Ratchet: 2 micros (base/DD), 3 micros (>= +$200), 4 micros (>= +$500)
+- Continuous Exchange Calendar Tracking: 1,499 sessions (2021-2026), true calendar days & sessions
+- Multi-sheet PNG Suite:
     01_prop_evaluation_trajectories_and_corridor.png
     02_prop_failure_mechanics_and_cushion_decay.png
     03_prop_firm_rulebook_and_slippage_stress_test.png
     04_prop_optionality_and_annual_slot_lifecycle.png
-    lucid_flex_25k_prop_mode_report.png (Master Overview Poster)
-- Interactive Dual Trajectory & Cumulative Pass Speed Curve (Apache ECharts HTML)
+    05_prop_funded_survival_and_payout_harvest.png
+    lucid_flex_25k_prop_mode_report.png (Master Tearsheet Poster)
+- Interactive HTML Dashboard
 """
 
 from __future__ import annotations
@@ -35,465 +35,161 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from backtest.demo_parity_engine import (
-    STARTING_CAPITAL,
-    PROFIT_TARGET_DOLLARS,
-    TARGET_BALANCE,
-    DAILY_SOFT_STOP_DOLLARS,
-    MAX_TRAILING_DRAWDOWN,
-    TRAILING_FLOOR_LOCK,
-    PEAK_FOR_FLOOR_LOCK,
-)
+from backtest import dashboard_analytics as da
 
 OUT_DIR = REPO_ROOT / "results" / "prop_firm_dashboard"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-DATA_PATH = REPO_ROOT / "data/processed/unified_three_strategy_markov_portfolio_trades_2021_2026.parquet"
 
-
-def load_trades_and_daily():
-    if not DATA_PATH.exists():
-        raise FileNotFoundError(f"Missing dataset: {DATA_PATH}")
-    df = pd.read_parquet(DATA_PATH)
-    df["entry_time"] = pd.to_datetime(df["entry_time"])
-    df["exit_time"] = pd.to_datetime(df["exit_time"])
-    df["date_str"] = df["entry_time"].dt.strftime("%Y-%m-%d")
-    df["year"] = df["entry_time"].dt.year
-    df["month"] = df["entry_time"].dt.month
-    df["weekday"] = df["entry_time"].dt.day_name()
-
-    daily = df.groupby("date_str").agg(
-        net_pnl=("pnl", "sum"),
-        trades=("pnl", "count"),
-        year=("year", "first"),
-        month=("month", "first")
-    ).reset_index()
-
-    return df, daily
+def fmt_currency(val: float | None, decimals: int = 2, force_sign: bool = False) -> str:
+    if val is None or pd.isna(val):
+        return "-"
+    if val < 0:
+        return f"-${abs(val):,.{decimals}f}"
+    elif val > 0 and force_sign:
+        return f"+${val:,.{decimals}f}"
+    else:
+        return f"${val:,.{decimals}f}"
 
 
 def format_spines_and_grid(ax):
     ax.set_facecolor("#FFFFFF")
-    ax.grid(True, color="#E5E5E5", linestyle="-", linewidth=0.8)
+    ax.grid(True, color="#E5E5E5", linestyle="--", linewidth=0.6, zorder=0)
     for sp in ax.spines.values():
         sp.set_color("#000000")
         sp.set_linewidth(1.0)
     ax.tick_params(colors="#000000", labelsize=9)
 
 
-def run_comprehensive_prop_simulation(
-    trades: pd.DataFrame,
-    daily: pd.DataFrame,
-    n_sims: int = 10_000,
-    block_size: int = 5,
-    seed: int = 42,
-) -> dict:
-    rng = np.random.default_rng(seed)
-    daily_pnls = daily["net_pnl"].to_numpy()
-    daily_trades = daily["trades"].to_numpy()
-    n_days = len(daily_pnls)
+def run_full_simulation_suite() -> dict:
+    trades = da.load_trades()
+    calendar = da.load_session_calendar(start=trades["date"].min(), end=trades["date"].max())
+    legs = da.build_session_legs(trades, calendar)
+    rules = da.PropRules()
+    funded_rules = da.FundedRules()
+    cal_days_per_session = 365.25 / 252.0
 
-    eval_trajectories_100 = []
-    eval_results = []
-    funded_results = []
+    print("Running 10,000 Block Bootstrap Monte Carlo Simulations (Live Ratchet)...")
+    boot = da.bootstrap_prop(legs, da.POLICIES["live_ratchet"], n_sims=10_000, block=10, horizon=750,
+                             rules=rules, extra_ticks=0.0, n_paths=100, seed=42, funded=funded_rules)
+    boot_sum = da.summarize_prop(boot, cal_days_per_session)
 
-    # Failure mechanics trackers
-    failed_peaks = []
-    failed_cascade_days = []
-    failed_days_above_25k = []
-    failed_days_below_25k = []
-    near_miss_25500 = 0
-    near_miss_25750 = 0
-    near_miss_26000 = 0
+    print("Running Chronological Back-to-Back History (2021-2026)...")
+    chrono = da.chronological_prop(legs, calendar, da.POLICIES["live_ratchet"], rules)
 
-    for i in range(n_sims):
-        bal = STARTING_CAPITAL
-        peak = STARTING_CAPITAL
-        floor = STARTING_CAPITAL - MAX_TRAILING_DRAWDOWN
-        eval_path = [bal]
-        days_count = 0
-        peak_day = 0
-        trades_count = 0
-        days_above = 0
-        days_below = 0
-        eval_status = "fail"
+    print("Running Sizing Policy Benchmark Simulations...")
+    p_comp = {}
+    for p_key in ["live_ratchet", "fixed_2", "fixed_1", "research"]:
+        res_p = da.bootstrap_prop(legs, da.POLICIES[p_key], n_sims=3000, seed=42)
+        p_comp[p_key] = da.summarize_prop(res_p, cal_days_per_session)
 
-        while True:
-            start_idx = rng.integers(0, n_days - block_size + 1)
-            b_pnls = daily_pnls[start_idx : start_idx + block_size]
-            b_trades = daily_trades[start_idx : start_idx + block_size]
-
-            terminal = False
-            for dp, dt in zip(b_pnls, b_trades):
-                days_count += 1
-                trades_count += dt
-                actual_dp = max(dp, DAILY_SOFT_STOP_DOLLARS)
-                bal += actual_dp
-
-                if bal > 25_000.0:
-                    days_above += 1
-                else:
-                    days_below += 1
-
-                if i < 100 and len(eval_path) < 120:
-                    eval_path.append(round(bal, 2))
-
-                if bal > peak:
-                    peak = bal
-                    peak_day = days_count
-                    if peak >= PEAK_FOR_FLOOR_LOCK:
-                        floor = max(floor, TRAILING_FLOOR_LOCK)
-                    else:
-                        floor = max(floor, peak - MAX_TRAILING_DRAWDOWN)
-
-                if bal <= floor:
-                    eval_status = "fail_max_loss"
-                    failed_peaks.append(peak)
-                    failed_cascade_days.append(days_count - peak_day)
-                    failed_days_above_25k.append(days_above)
-                    failed_days_below_25k.append(days_below)
-                    if peak >= 25_500.0:
-                        near_miss_25500 += 1
-                    if peak >= 25_750.0:
-                        near_miss_25750 += 1
-                    if peak >= 26_000.0:
-                        near_miss_26000 += 1
-                    terminal = True
-                    break
-
-                if (bal - STARTING_CAPITAL) >= PROFIT_TARGET_DOLLARS:
-                    eval_status = "pass"
-                    terminal = True
-                    break
-
-            if terminal:
-                break
-
-        if eval_status == "pass" and len([t for t in eval_trajectories_100 if t["status"] == "pass"]) < 70:
-            eval_trajectories_100.append({
-                "path": eval_path,
-                "status": "pass",
-                "days": days_count,
-                "trades": trades_count,
-            })
-        elif eval_status != "pass" and len([t for t in eval_trajectories_100 if t["status"] in ["fail", "fail_max_loss"]]) < 30:
-            eval_trajectories_100.append({
-                "path": eval_path,
-                "status": "fail_max_loss",
-                "days": days_count,
-                "trades": trades_count,
-            })
-
-        eval_results.append({
-            "status": eval_status,
-            "days": days_count,
-            "trades": trades_count,
-        })
-
-        # Funded simulation for passing accounts
-        if eval_status == "pass":
-            f_bal = 25_000.0
-            f_peak = 25_000.0
-            f_floor = 24_000.0
-            f_days_count = 0
-            has_payout = False
-            days_in_cycle = 0
-            profit_days = 0
-            payouts = []
-
-            for _ in range(40):
-                start_f = rng.integers(0, n_days - block_size + 1)
-                for f_pnl in daily_pnls[start_f : start_f + block_size]:
-                    f_days_count += 1
-                    actual_f = max(f_pnl, DAILY_SOFT_STOP_DOLLARS)
-                    f_bal += actual_f
-                    days_in_cycle += 1
-                    if actual_f >= 50.0:
-                        profit_days += 1
-
-                    if f_bal > f_peak:
-                        f_peak = f_bal
-                        if f_peak >= PEAK_FOR_FLOOR_LOCK:
-                            f_floor = max(f_floor, TRAILING_FLOOR_LOCK)
-                        else:
-                            f_floor = max(f_floor, f_peak - MAX_TRAILING_DRAWDOWN)
-
-                    if has_payout:
-                        f_floor = max(f_floor, 25_100.0)
-
-                    if f_bal <= f_floor:
-                        break
-
-                    if days_in_cycle >= 5 and profit_days >= 3:
-                        withdrawable_base = f_bal - 25_000.0
-                        if withdrawable_base > 0:
-                            withdrawable = min(1_000.0, withdrawable_base * 0.50)
-                            if withdrawable >= 300.0 and (f_bal - withdrawable) > f_floor:
-                                net = withdrawable * 0.90
-                                payouts.append({"payout_num": len(payouts) + 1, "day": f_days_count, "net": net})
-                                f_bal -= withdrawable
-                                has_payout = True
-                                f_floor = max(f_floor, 25_100.0)
-                                days_in_cycle = 0
-                                profit_days = 0
-
-                    if len(payouts) >= 5 or f_bal <= f_floor:
-                        break
-                if f_bal <= f_floor:
-                    break
-
-            funded_results.append({
-                "payouts_count": len(payouts),
-                "total_net": sum(p["net"] for p in payouts),
-                "days_survived": f_days_count,
-            })
-
-    passes = [r for r in eval_results if r["status"] == "pass"]
-    fails = [r for r in eval_results if r["status"] == "fail_max_loss"]
-
-    pass_rate = len(passes) / n_sims * 100.0
-    fail_rate = len(fails) / n_sims * 100.0
-
-    pass_days = [r["days"] for r in passes]
-    fail_days = [r["days"] for r in fails]
-    pass_trades = [r["trades"] for r in passes]
-    fail_trades = [r["trades"] for r in fails]
-
-    f_counts = [r["payouts_count"] for r in funded_results]
-    f_nets = [r["total_net"] for r in funded_results]
-    f_days = [r["days_survived"] for r in funded_results]
-    mean_funded_net = float(np.mean(f_nets)) if f_nets else 0.0
-
-    ticket_cost = 39.0
-    ev_per_ticket = ((pass_rate / 100.0) * mean_funded_net) - ticket_cost
-    evals_per_pass = 1.0 / (pass_rate / 100.0) if pass_rate > 0 else np.nan
-
-    # 1-Year Slot Lifecycle Simulation (Shαrpe Paper 0 Section 3.9)
-    slot_cfs = []
-    for _ in range(2000):
-        cf = -39.0
-        in_funded = False
-        s_bal = 25_000.0; s_peak = 25_000.0; s_flr = 24_000.0
-        payouts_cnt = 0
-        d_in_cyc = 0; p_days_cyc = 0
-        for _ in range(252): # 1 full trading year
-            s_idx = rng.integers(0, n_days)
-            dp = max(daily_pnls[s_idx], -600.0)
-            s_bal += dp
-
-            if not in_funded:
-                if s_bal > s_peak:
-                    s_peak = s_bal
-                    s_flr = 25_100.0 if s_peak >= 26_100.0 else s_peak - 1_000.0
-                if s_bal <= s_flr:
-                    cf -= 39.0
-                    s_bal = 25_000.0; s_peak = 25_000.0; s_flr = 24_000.0
-                elif (s_bal - 25_000.0) >= 1_250.0:
-                    in_funded = True
-                    s_bal = 25_000.0; s_peak = 25_000.0; s_flr = 24_000.0
-                    payouts_cnt = 0; d_in_cyc = 0; p_days_cyc = 0
-            else:
-                d_in_cyc += 1
-                if dp >= 50.0: p_days_cyc += 1
-                if s_bal > s_peak:
-                    s_peak = s_bal
-                    s_flr = 25_100.0 if s_peak >= 26_100.0 else s_peak - 1_000.0
-                if payouts_cnt > 0: s_flr = max(s_flr, 25_100.0)
-
-                if s_bal <= s_flr:
-                    cf -= 39.0
-                    in_funded = False
-                    s_bal = 25_000.0; s_peak = 25_000.0; s_flr = 24_000.0
-                    payouts_cnt = 0; d_in_cyc = 0; p_days_cyc = 0
-                elif d_in_cyc >= 5 and p_days_cyc >= 3:
-                    prof = s_bal - 25_000.0
-                    if prof > 0:
-                        wd = min(1_000.0, prof * 0.50)
-                        if wd >= 300.0 and (s_bal - wd) > s_flr:
-                            cf += wd * 0.90
-                            s_bal -= wd
-                            payouts_cnt += 1
-                            s_flr = max(s_flr, 25_100.0)
-                            d_in_cyc = 0; p_days_cyc = 0
-                            if payouts_cnt >= 5:
-                                cf -= 39.0
-                                in_funded = False
-                                s_bal = 25_000.0; s_peak = 25_000.0; s_flr = 24_000.0
-                                payouts_cnt = 0
-        slot_cfs.append(cf)
-
-    slot_cfs = np.array(slot_cfs)
-    xeep_p05, xeep_p50, xeep_p95 = np.percentile(slot_cfs, [5, 50, 95])
-
-    # Slippage sensitivity on prop evaluation pass rate
-    tick_vals = {"MNQ": 0.50, "MES": 1.25, "MGC": 1.00}
-    df_copy = trades.copy()
-    df_copy["tick_cost"] = df_copy["micro"].map(tick_vals) * df_copy["contracts"]
-
-    slip_ticks = [0, 1, 2, 3, 4, 5, 6]
+    print("Running Adverse Slippage Stress Test (0 to 6 ticks)...")
+    slip_ticks = [0, 1, 2, 3, 4, 6]
     slip_pass_rates = []
-    for st in slip_ticks:
-        df_sub = df_copy.copy()
-        df_sub["adj_pnl"] = df_sub["pnl"] - (2.0 * st * df_sub["tick_cost"])
-        d_p = df_sub.groupby("date_str")["adj_pnl"].sum().to_numpy()
-        p_cnt = 0
-        for _ in range(2000):
-            b_s = 25000.0; p_s = 25000.0; f_s = 24000.0
-            while True:
-                idx = rng.integers(0, len(d_p) - 5 + 1)
-                for dp_val in d_p[idx:idx+5]:
-                    b_s += max(dp_val, -600.0)
-                    if b_s > p_s:
-                        p_s = b_s
-                        f_s = 25100.0 if p_s >= 26100.0 else p_s - 1000.0
-                    if b_s <= f_s:
-                        break
-                    if (b_s - 25000.0) >= 1250.0:
-                        p_cnt += 1
-                        break
-                if b_s <= f_s or (b_s - 25000.0) >= 1250.0:
-                    break
-        slip_pass_rates.append(round(p_cnt / 2000.0 * 100.0, 1))
+    for k in slip_ticks:
+        res_s = da.bootstrap_prop(legs, da.POLICIES["live_ratchet"], n_sims=2500, extra_ticks=k, seed=42)
+        slip_pass_rates.append(res_s["pass_rate"])
+
+    print("Computing Failure Autopsy & Near-Miss Cushion Analytics...")
+    st, ss, peaks = boot["status"], boot["sessions"], boot["peaks"]
+    failed_mask = (st == "fail")
+    f_peaks = peaks[failed_mask]
+    f_sessions = ss[failed_mask]
+
+    med_failed_peak = float(np.median(f_peaks)) if len(f_peaks) else 25_000.0
+    near_miss_25500_pct = float((f_peaks >= 25_500.0).mean() * 100) if len(f_peaks) else 0.0
+    near_miss_25750_pct = float((f_peaks >= 25_750.0).mean() * 100) if len(f_peaks) else 0.0
+    near_miss_26000_pct = float((f_peaks >= 26_000.0).mean() * 100) if len(f_peaks) else 0.0
+
+    print("Computing Funded Payout Harvest Analytics...")
+    f_summary = da.funded_summary(boot["funded"], boot["pass_rate"], rules.eval_fee)
 
     return {
-        "pass_rate": pass_rate,
-        "fail_rate": fail_rate,
-        "evals_per_pass": evals_per_pass,
-        "pass_days": pass_days,
-        "fail_days": fail_days,
-        "pass_trades": pass_trades,
-        "fail_trades": fail_trades,
-        "med_days": float(np.median(pass_days)),
-        "mean_days": float(np.mean(pass_days)),
-        "p90_days": float(np.percentile(pass_days, 90)),
-        "med_trades": float(np.median(pass_trades)),
-        "mean_trades": float(np.mean(pass_trades)),
-        "med_fail_days": float(np.median(fail_days)),
-        "p_p1": sum(1 for c in f_counts if c >= 1) / len(f_counts) * 100.0 if f_counts else 0.0,
-        "p_p2": sum(1 for c in f_counts if c >= 2) / len(f_counts) * 100.0 if f_counts else 0.0,
-        "p_p3": sum(1 for c in f_counts if c >= 3) / len(f_counts) * 100.0 if f_counts else 0.0,
-        "p_p4": sum(1 for c in f_counts if c >= 4) / len(f_counts) * 100.0 if f_counts else 0.0,
-        "p_p5": sum(1 for c in f_counts if c >= 5) / len(f_counts) * 100.0 if f_counts else 0.0,
-        "funded_days": f_days,
-        "funded_nets": f_nets,
-        "funded_counts": f_counts,
-        "mean_funded_net": mean_funded_net,
-        "ev_per_ticket": ev_per_ticket,
-        "eval_trajectories_100": eval_trajectories_100,
-        # Failure mechanics & Near misses
-        "failed_peaks": failed_peaks,
-        "failed_cascade_days": failed_cascade_days,
-        "near_miss_25500_pct": near_miss_25500 / len(fails) * 100.0 if fails else 0.0,
-        "near_miss_25750_pct": near_miss_25750 / len(fails) * 100.0 if fails else 0.0,
-        "near_miss_26000_pct": near_miss_26000 / len(fails) * 100.0 if fails else 0.0,
-        "mean_cascade_days": float(np.mean(failed_cascade_days)) if failed_cascade_days else 0.0,
-        "med_failed_peak": float(np.median(failed_peaks)) if failed_peaks else 0.0,
-        # Slot Lifecycle (Paper 0)
-        "xeep_mean": float(slot_cfs.mean()),
-        "xeep_p05": float(xeep_p05),
-        "xeep_p50": float(xeep_p50),
-        "xeep_p95": float(xeep_p95),
-        # Slippage sensitivity
+        "trades": trades,
+        "calendar": calendar,
+        "legs": legs,
+        "boot": boot,
+        "boot_sum": boot_sum,
+        "chrono": chrono,
+        "p_comp": p_comp,
         "slip_ticks": slip_ticks,
         "slip_pass_rates": slip_pass_rates,
+        "failed_peaks": f_peaks,
+        "failed_sessions": f_sessions,
+        "med_failed_peak": med_failed_peak,
+        "near_miss_25500_pct": near_miss_25500_pct,
+        "near_miss_25750_pct": near_miss_25750_pct,
+        "near_miss_26000_pct": near_miss_26000_pct,
+        "f_summary": f_summary,
+        "cal_days_per_session": cal_days_per_session,
     }
 
 
 # ── SHEET 01: TRAJECTORIES & CORRIDOR ─────────────────────────────────────────
-def render_prop_sheet_01_trajectories(mc: dict) -> Path:
+def render_prop_sheet_01_trajectories(sim: dict) -> Path:
     plt.style.use("default")
-    fig, ax = plt.subplots(figsize=(14, 8), dpi=200)
-    fig.patch.set_facecolor("#FFFFFF")
-    ax.set_facecolor("#FFFFFF")
-    ax.grid(True, color="#E5E5E5", linestyle="-", linewidth=0.8)
-    for sp in ax.spines.values():
-        sp.set_color("#000000")
-        sp.set_linewidth(1.0)
-    ax.tick_params(colors="#000000", labelsize=9.5)
+    fig, ax = plt.subplots(figsize=(15, 8.5), dpi=200)
+    format_spines_and_grid(ax)
 
-    passing_trajs = [t for t in mc["eval_trajectories_100"] if t["status"] == "pass"]
-    failing_trajs = [t for t in mc["eval_trajectories_100"] if t["status"] in ["fail", "fail_max_loss"]]
+    boot = sim["boot"]
+    paths = boot["paths"]
+    pass_paths = [p[1] for p in paths if p[0] == "pass"]
+    fail_paths = [p[1] for p in paths if p[0] == "fail"]
 
-    n_pass_shown = len(passing_trajs[:70])
-    n_fail_shown = len(failing_trajs[:30])
-    total_shown = n_pass_shown + n_fail_shown
+    # 1. Plot failing paths in background
+    for p in fail_paths[:25]:
+        ax.plot(range(len(p)), p, color="#d62728", alpha=0.30, linewidth=0.85, zorder=2)
+        ax.plot(len(p) - 1, p[-1], marker="o", markersize=4.5, color="#d62728", markeredgecolor="#8b1819", markeredgewidth=0.5, zorder=3)
 
-    # 1. Breached paths (background: red lines + red terminal dots)
-    for trj in failing_trajs[:30]:
-        p = trj["path"]
-        ax.plot(range(len(p)), p, color="#d62728", alpha=0.35, linewidth=0.9, zorder=2)
-        ax.plot(len(p) - 1, p[-1], marker="o", markersize=4.5, color="#d62728",
-                markeredgecolor="#8b1819", markeredgewidth=0.5, zorder=4)
-
-    # 2. Passing paths (foreground: green lines + green terminal dots)
-    for trj in passing_trajs[:70]:
-        p = trj["path"]
+    # 2. Plot passing paths in foreground
+    for p in pass_paths[:75]:
         ax.plot(range(len(p)), p, color="#2ca02c", alpha=0.30, linewidth=0.85, zorder=3)
-        ax.plot(len(p) - 1, p[-1], marker="o", markersize=4.5, color="#2ca02c",
-                markeredgecolor="#1b6e22", markeredgewidth=0.5, zorder=4)
+        ax.plot(len(p) - 1, p[-1], marker="o", markersize=4.5, color="#2ca02c", markeredgecolor="#1b6e22", markeredgewidth=0.5, zorder=4)
 
-    # 3. Median and Fastest highlighted paths
-    med_days = mc["med_days"]
-    closest_med = min(passing_trajs, key=lambda t: abs(len(t["path"]) - med_days)) if passing_trajs else None
-    fastest_traj = min(passing_trajs, key=lambda t: len(t["path"])) if passing_trajs else None
+    # 3. Median & Fastest passing paths
+    med_sess = sim["boot_sum"]["pass_med"]
+    closest_med = min(pass_paths, key=lambda p: abs(len(p) - med_sess)) if pass_paths else None
+    fastest_path = min(pass_paths, key=lambda p: len(p)) if pass_paths else None
 
     if closest_med:
-        p_med = closest_med["path"]
-        ax.plot(range(len(p_med)), p_med, color="#1f77b4", linewidth=2.5, zorder=5,
-                label=f"Median Path ({len(p_med)}d to Target)")
-        ax.plot(len(p_med) - 1, p_med[-1], marker="o", markersize=7.0, color="#1f77b4",
-                markeredgecolor="#0d3b66", markeredgewidth=0.8, zorder=6)
+        ax.plot(range(len(closest_med)), closest_med, color="#1f77b4", linewidth=2.4, zorder=5,
+                label=f"Median Path ({len(closest_med)} sessions • ~{len(closest_med)*sim['cal_days_per_session']:.0f} cal days)")
+        ax.plot(len(closest_med) - 1, closest_med[-1], marker="o", markersize=7.0, color="#1f77b4", markeredgecolor="#0d3b66", markeredgewidth=0.8, zorder=6)
 
-    if fastest_traj:
-        p_fast = fastest_traj["path"]
-        ax.plot(range(len(p_fast)), p_fast, color="#ff7f0e", linewidth=1.8, linestyle="--", zorder=5,
-                label=f"Fastest Path ({len(p_fast)}d to Target)")
-        ax.plot(len(p_fast) - 1, p_fast[-1], marker="o", markersize=6.0, color="#ff7f0e",
-                markeredgecolor="#b35400", markeredgewidth=0.8, zorder=6)
+    if fastest_path:
+        ax.plot(range(len(fastest_path)), fastest_path, color="#ff7f0e", linewidth=1.8, linestyle="--", zorder=5,
+                label=f"Fastest Path ({len(fastest_path)} sessions • ~{len(fastest_path)*sim['cal_days_per_session']:.0f} cal days)")
+        ax.plot(len(fastest_path) - 1, fastest_path[-1], marker="o", markersize=6.0, color="#ff7f0e", markeredgecolor="#b35400", markeredgewidth=0.8, zorder=6)
 
-    # Legend entries for terminal pass / breach runs with explicit counts
-    ax.plot([], [], marker="o", color="#2ca02c", linewidth=1.5, alpha=0.85, markersize=5.0,
-            markeredgecolor="#1b6e22", label=f"Passed Runs ({n_pass_shown} shown • {mc['pass_rate']:.1f}% • Green Dot)")
-    ax.plot([], [], marker="o", color="#d62728", linewidth=1.5, alpha=0.85, markersize=5.0,
-            markeredgecolor="#8b1819", label=f"Breached Runs ({n_fail_shown} shown • {mc['fail_rate']:.1f}% • Red Dot)")
+    # Corridors
+    ax.axhline(26_250.0, color="#2ca02c", linestyle="--", linewidth=1.8, label="Profit Target ($26,250 • +$1,250)", zorder=4)
+    ax.axhline(25_100.0, color="#9467bd", linestyle=":", linewidth=1.6, label="Floor Lock ($25,100 once Peak >= $26,100)", zorder=4)
+    ax.axhline(25_000.0, color="#777777", linestyle="-", linewidth=0.9, alpha=0.7, label="Initial Capital ($25,000)", zorder=3)
+    ax.axhline(24_000.0, color="#d62728", linestyle="--", linewidth=1.8, label="Max Trailing Floor ($24,000 • -$1,000)", zorder=4)
 
-    # Boundary reference lines
-    ax.axhline(26_250.0, color="#2ca02c", linestyle="--", linewidth=1.8, label=r"Profit Target (\$26,250 • +\$1,250)")
-    ax.axhline(25_100.0, color="#9467bd", linestyle=":", linewidth=1.6, label=r"Floor Lock (\$25,100 once Peak >= \$26,100)")
-    ax.axhline(25_000.0, color="#777777", linestyle="-", linewidth=0.9, alpha=0.7, label=r"Initial Capital (\$25,000)")
-    ax.axhline(24_000.0, color="#d62728", linestyle="--", linewidth=1.8, label=r"Max Trailing Floor (\$24,000 • -\$1,000)")
-
-    # Subtle boundary zone shading
-    ax.axhspan(26_250.0, 26_600.0, color="#2ca02c", alpha=0.04)
+    ax.axhspan(26_250.0, 26_700.0, color="#2ca02c", alpha=0.04)
     ax.axhspan(23_700.0, 24_000.0, color="#d62728", alpha=0.04)
 
-    # Titles and Subtitle (Scorecard summary in title with total shown)
-    ax.set_title(f"Backtest Results - Prop Evaluation Trajectories ({total_shown} Total Paths Shown)", fontsize=14, color="#000000", pad=20)
-    subtitle_text = f"Total Shown: {total_shown} Paths ({n_pass_shown} Pass / {n_fail_shown} Breach)  •  Terminal Pass Rate: {mc['pass_rate']:.2f}%  •  Breach Rate: {mc['fail_rate']:.2f}%  •  Timeout: 0.00%  •  Median: {mc['med_days']:.0f}d  •  EV: +${mc['ev_per_ticket']:,.2f}"
-    ax.text(0.5, 1.015, subtitle_text, transform=ax.transAxes, ha="center", va="bottom", fontsize=9.5, color="#555555")
+    # Titles & Subtitles
+    b_sum = sim["boot_sum"]
+    ch = sim["chrono"]["back_to_back"]
+    ch_pass = (ch["status"] == "pass").sum()
+    ch_total = len(ch[ch["status"].isin(["pass", "fail"])])
+    ch_rate = (ch_pass / ch_total * 100.0) if ch_total > 0 else 0.0
 
-    ax.set_xlabel("Trading Days Elapsed", fontsize=10.5, color="#000000")
-    ax.set_ylabel("Account Balance ($)", fontsize=10.5, color="#000000")
+    ax.set_title("Backtest Results - LucidFlex 25K Evaluation Trajectories (Continuous Calendar Simulation)", fontsize=13, fontweight="bold", color="#000000", pad=18)
+    sub = (f"10k Bootstrap Pass Rate: {b_sum['pass_rate']:.1f}%  •  Chronological Back-to-Back: {ch_pass}/{ch_total} Passed ({ch_rate:.1f}%)  •  "
+           f"Median Duration: {b_sum['pass_med']:.0f} sessions (~{b_sum['pass_med_cal_days']:.0f} cal days)  •  EV / Attempt: +${sim['f_summary']['ev_per_attempt']:,.2f}")
+    ax.text(0.5, 1.015, sub, transform=ax.transAxes, ha="center", va="bottom", fontsize=9.2, color="#444444")
+
+    ax.set_xlabel("Exchange Sessions Elapsed (Full Calendar: ~1.44 Calendar Days / Session)", fontsize=10, color="#000000")
+    ax.set_ylabel("Account Balance ($)", fontsize=10, color="#000000")
     ax.yaxis.set_major_formatter(ticker.StrMethodFormatter("${x:,.0f}"))
-    ax.yaxis.set_major_locator(ticker.MultipleLocator(500))
     ax.set_ylim(23_700, 26_600)
+    ax.set_xlim(0, max(120, max(len(p) for p in pass_paths[:75] + fail_paths[:25]) + 5))
 
-    all_sample_trajs = passing_trajs[:70] + failing_trajs[:30]
-    max_days = max((len(t["path"]) for t in all_sample_trajs), default=70)
-    ax.set_xlim(0, max(75, max_days + 3))
-
-    # Standard Matplotlib Legend outside on the right (matching CoinGecko reference style)
-    leg = ax.legend(
-        title=f"Corridor & Trajectories ({total_shown} Shown)",
-        loc="upper left",
-        bbox_to_anchor=(1.02, 1.0),
-        frameon=True,
-        facecolor="#FFFFFF",
-        edgecolor="#000000",
-        fontsize=9.5,
-        borderaxespad=0.0
-    )
-    leg.get_title().set_fontsize(10)
+    leg = ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1.0), frameon=True, facecolor="#FFFFFF", edgecolor="#000000", fontsize=9)
+    leg.get_title().set_fontsize(9.5)
     leg.get_title().set_fontweight("bold")
 
     out_path = OUT_DIR / "01_prop_evaluation_trajectories_and_corridor.png"
@@ -503,64 +199,67 @@ def render_prop_sheet_01_trajectories(mc: dict) -> Path:
 
 
 # ── SHEET 02: FAILURE MECHANICS & CUSHION DECAY ──────────────────────────────
-def render_prop_sheet_02_failure_mechanics(mc: dict) -> Path:
+def render_prop_sheet_02_failure_mechanics(sim: dict) -> Path:
     plt.style.use("default")
     fig = plt.figure(figsize=(16, 12), dpi=200)
     fig.patch.set_facecolor("#FFFFFF")
-
     gs = fig.add_gridspec(2, 2, height_ratios=[1.6, 1.4], hspace=0.35, wspace=0.22)
 
     # Panel A: Peak Balance of Breached Accounts
     ax_pk = fig.add_subplot(gs[0, 0])
     format_spines_and_grid(ax_pk)
 
-    ax_pk.hist(mc["failed_peaks"], bins=30, color="#d62728", alpha=0.75, edgecolor="#000000")
-    ax_pk.axvline(mc["med_failed_peak"], color="#000000", linestyle="--", linewidth=1.8, label=f"Median Peak: ${mc['med_failed_peak']:,.0f}")
-    ax_pk.axvline(25_500, color="#ff7f0e", linestyle=":", linewidth=1.5, label="+$500 Threshold (51.2%)")
-    ax_pk.axvline(26_000, color="#2ca02c", linestyle=":", linewidth=1.5, label="+$1,000 Near Miss (14.7%)")
+    f_peaks = sim["failed_peaks"]
+    ax_pk.hist(f_peaks, bins=30, color="#d62728", alpha=0.75, edgecolor="#000000", zorder=3)
+    ax_pk.axvline(sim["med_failed_peak"], color="#000000", linestyle="--", linewidth=1.8, label=f"Median Peak: ${sim['med_failed_peak']:,.0f}")
+    ax_pk.axvline(25_500, color="#ff7f0e", linestyle=":", linewidth=1.5, label=f"+$500 Threshold ({sim['near_miss_25500_pct']:.1f}%)")
+    ax_pk.axvline(26_000, color="#2ca02c", linestyle=":", linewidth=1.5, label=f"+$1,000 Near Miss ({sim['near_miss_26000_pct']:.1f}%)")
 
-    ax_pk.set_title("Peak Equity Reached by Breached Accounts", fontsize=11, color="#000000", pad=8)
-    ax_pk.set_xlabel("Peak Account Balance Prior to Breach ($)", fontsize=9, color="#000000")
+    ax_pk.set_title("Peak Equity Reached Prior to Floor Breach (Failed Accounts)", fontsize=11, fontweight="bold", color="#000000", pad=8)
+    ax_pk.set_xlabel("Peak Account Balance ($)", fontsize=9, color="#000000")
     ax_pk.set_ylabel("Breached Account Count", fontsize=9, color="#000000")
     ax_pk.xaxis.set_major_formatter(ticker.StrMethodFormatter("${x:,.0f}"))
     ax_pk.legend(loc="upper right", frameon=True, facecolor="#FFFFFF", edgecolor="#000000", fontsize=8)
 
-    # Panel B: Cascade Duration (Days from Peak to Floor Breach)
+    # Panel B: Sessions Elapsed to Breach
     ax_cas = fig.add_subplot(gs[0, 1])
     format_spines_and_grid(ax_cas)
 
-    ax_cas.hist(mc["failed_cascade_days"], bins=30, color="#1f77b4", alpha=0.75, edgecolor="#000000")
-    ax_cas.axvline(mc["mean_cascade_days"], color="#d62728", linestyle="--", linewidth=1.8, label=f"Mean Cascade: {mc['mean_cascade_days']:.1f} days")
+    f_sess = sim["failed_sessions"]
+    med_f_sess = float(np.median(f_sess))
+    ax_cas.hist(f_sess, bins=30, color="#1f77b4", alpha=0.75, edgecolor="#000000", zorder=3)
+    ax_cas.axvline(med_f_sess, color="#d62728", linestyle="--", linewidth=1.8, label=f"Median Duration: {med_f_sess:.0f} sessions (~{med_f_sess*sim['cal_days_per_session']:.0f} cal days)")
 
-    ax_cas.set_title("Failure Cascade Duration (Trading Days from Peak to Floor Breach)", fontsize=11, color="#000000", pad=8)
-    ax_cas.set_xlabel("Trading Days from Peak to Floor Hit", fontsize=9, color="#000000")
+    ax_cas.set_title("Failure Elapsed Duration (Exchange Sessions to Floor Hit)", fontsize=11, fontweight="bold", color="#000000", pad=8)
+    ax_cas.set_xlabel("Exchange Sessions Elapsed", fontsize=9, color="#000000")
     ax_cas.set_ylabel("Account Count", fontsize=9, color="#000000")
     ax_cas.legend(loc="upper right", frameon=True, facecolor="#FFFFFF", edgecolor="#000000", fontsize=8)
 
-    # Panel C: Near-Miss & Cushion Decay Table
+    # Panel C: Failure Autopsy & Near-Miss Analytics Table
     ax_tab = fig.add_subplot(gs[1, :])
     ax_tab.set_facecolor("#FFFFFF")
     ax_tab.axis("off")
 
-    ax_tab.text(0.02, 0.96, "Failure Autopsy & Near-Miss Cushion Analytics (Breached Population = 20.74%)", fontsize=11, fontweight="bold", color="#000000")
+    fail_rate = sim["boot_sum"]["fail_rate"]
+    ax_tab.text(0.02, 0.96, f"Failure Autopsy & Near-Miss Cushion Analytics (Breached Population = {fail_rate:.1f}%)", fontsize=11, fontweight="bold", color="#000000")
 
     fail_rows = [
-        ("Median Peak Balance Before Failure", f"${mc['med_failed_peak']:,.2f}", "Near-Miss Rate (Reached >= $25,500 / +40% target)", f"{mc['near_miss_25500_pct']:.1f}% of failures"),
-        ("Mean Cascade Days from Peak to Breach", f"{mc['mean_cascade_days']:.1f} trading days", "Near-Miss Rate (Reached >= $25,750 / +60% target)", f"{mc['near_miss_25750_pct']:.1f}% of failures"),
-        ("Fastest Breach Observed", f"{np.min(mc['fail_days']):.0f} trading days", "Heartbreak Near-Miss (Reached >= $26,000 / +80% target)", f"{mc['near_miss_26000_pct']:.1f}% of failures"),
-        ("Median Breach Duration", f"{mc['med_fail_days']:.0f} trading days", "Trailing Floor Drag Mechanism", "Breach occurs when peak trails floor upward"),
-        ("Failure Mode Breakdown", "100% Trailing Floor Breach", "Daily Soft Stop Hallmarking", "Soft stop prevents >$600 single-day destruction"),
+        ("Median Peak Balance Before Failure", f"${sim['med_failed_peak']:,.2f}", "Near-Miss Rate (Reached >= $25,500 / +40% target)", f"{sim['near_miss_25500_pct']:.1f}% of failures"),
+        ("Median Sessions to Breach", f"{med_f_sess:.0f} sessions ({med_f_sess*sim['cal_days_per_session']:.0f} calendar days)", "Near-Miss Rate (Reached >= $25,750 / +60% target)", f"{sim['near_miss_25750_pct']:.1f}% of failures"),
+        ("Fastest Breach Observed", f"{np.min(f_sess):.0f} sessions", "Heartbreak Near-Miss (Reached >= $26,000 / +80% target)", f"{sim['near_miss_26000_pct']:.1f}% of failures"),
+        ("Slowest Breach Observed", f"{np.max(f_sess):.0f} sessions", "Floor Lock Protection ($25,100 Lock at Peak $26,100)", "Guarantees zero breaches once profit >= +$1,100"),
+        ("Soft Stop Intraday Protection (-$600)", "Halts remainder of session on day DD", "Anti-Martingale Cushion", "Preserves Tier 1 (2 micros) in drawdown to protect base"),
     ]
 
-    t_x = [0.02, 0.30, 0.52, 0.82]
-    y_pos = 0.78
+    t_x = [0.02, 0.28, 0.54, 0.82]
+    y_pos = 0.80
     for r in fail_rows:
         ax_tab.axhline(y_pos + 0.015, color="#E5E5E5", linewidth=0.5, xmin=0.02, xmax=0.98)
         ax_tab.text(t_x[0], y_pos, r[0], fontsize=8.2, color="#444444")
         ax_tab.text(t_x[1], y_pos, r[1], fontsize=8.5, fontweight="bold", color="#000000")
         ax_tab.text(t_x[2], y_pos, r[2], fontsize=8.2, color="#444444")
-        ax_tab.text(t_x[3], y_pos, r[3], fontsize=8.5, fontweight="bold", color="#d62728" if "failures" in r[3] else "#000000")
-        y_pos -= 0.14
+        ax_tab.text(t_x[3], y_pos, r[3], fontsize=8.5, fontweight="bold", color="#1f77b4" if "%" in r[3] or "Guarantees" in r[3] else "#000000")
+        y_pos -= 0.13
 
     out_path = OUT_DIR / "02_prop_failure_mechanics_and_cushion_decay.png"
     plt.savefig(out_path, dpi=200, facecolor=fig.get_facecolor(), bbox_inches="tight")
@@ -569,89 +268,90 @@ def render_prop_sheet_02_failure_mechanics(mc: dict) -> Path:
 
 
 # ── SHEET 03: RULEBOOK & SLIPPAGE STRESS TESTS ───────────────────────────────
-def render_prop_sheet_03_rulebook_and_slippage(mc: dict) -> Path:
+def render_prop_sheet_03_rulebook_and_slippage(sim: dict) -> Path:
     plt.style.use("default")
     fig = plt.figure(figsize=(16, 12), dpi=200)
     fig.patch.set_facecolor("#FFFFFF")
-
     gs = fig.add_gridspec(2, 2, height_ratios=[1.6, 1.4], hspace=0.35, wspace=0.22)
 
     # Panel A: Slippage Sensitivity Curve
     ax_slp = fig.add_subplot(gs[0, 0])
     format_spines_and_grid(ax_slp)
 
-    ax_slp.plot(mc["slip_ticks"], mc["slip_pass_rates"], marker="o", color="#1f77b4", linewidth=2.0, label="Evaluation Pass Rate (%)")
+    ticks = sim["slip_ticks"]
+    p_rates = sim["slip_pass_rates"]
+    ax_slp.plot(ticks, p_rates, marker="o", color="#1f77b4", linewidth=2.0, label="Evaluation Pass Rate (%)", zorder=3)
     ax_slp.axhline(50.0, color="#d62728", linestyle="--", linewidth=1.2, label="50% Edge Boundary Floor")
-    ax_slp.axvline(4.5, color="#ff7f0e", linestyle=":", linewidth=1.5, label="50% Pass Rate Cliff (+4.5 ticks)")
 
-    for i, txt in enumerate(mc["slip_pass_rates"]):
-        ax_slp.annotate(f"{txt:.1f}%", (mc["slip_ticks"][i], txt), textcoords="offset points", xytext=(0, 5), ha="center", fontsize=8, fontweight="bold")
+    for i, txt in enumerate(p_rates):
+        ax_slp.annotate(f"{txt:.1f}%", (ticks[i], txt), textcoords="offset points", xytext=(0, 5), ha="center", fontsize=8, fontweight="bold")
 
-    ax_slp.set_title("Adverse Slippage Stress Test on Evaluation Pass Rate", fontsize=11, color="#000000", pad=8)
+    ax_slp.set_title("Adverse Slippage Stress Test on Evaluation Pass Rate", fontsize=11, fontweight="bold", color="#000000", pad=8)
     ax_slp.set_xlabel("Extra Adverse Ticks per Leg (Entry + Exit)", fontsize=9, color="#000000")
     ax_slp.set_ylabel("Pass Rate (%)", fontsize=9, color="#000000")
-    ax_slp.set_ylim(30, 90)
+    ax_slp.set_ylim(35, 90)
     ax_slp.legend(loc="lower left", frameon=True, facecolor="#FFFFFF", edgecolor="#000000", fontsize=8)
 
-    # Panel B: Multi-Firm Rulebook Cross-Comparison Table
-    ax_firms = fig.add_subplot(gs[0, 1])
+    # Panel B: Sizing Policy Comparison Table
+    ax_pol = fig.add_subplot(gs[0, 1])
+    ax_pol.set_facecolor("#FFFFFF")
+    ax_pol.axis("off")
+
+    ax_pol.text(0.02, 0.94, "Contract Sizing Policy Evaluation Comparison", fontsize=11, fontweight="bold", color="#000000")
+
+    p_comp = sim["p_comp"]
+    pol_rows = [
+        ("Live Ratchet (2/3/4 micros)", f"{p_comp['live_ratchet']['pass_rate']:.1f}%", f"{p_comp['live_ratchet']['pass_med']:.0f} sess", f"{p_comp['live_ratchet']['pass_med_cal_days']:.0f} days", "Optimal balance of speed & buffer"),
+        ("Fixed 2 Micros (Conservative)", f"{p_comp['fixed_2']['pass_rate']:.1f}%", f"{p_comp['fixed_2']['pass_med']:.0f} sess", f"{p_comp['fixed_2']['pass_med_cal_days']:.0f} days", "Higher pass rate, slower duration"),
+        ("Fixed 1 Micro (Ultra Safe)", f"{p_comp['fixed_1']['pass_rate']:.1f}%", f"{p_comp['fixed_1']['pass_med']:.0f} sess", f"{p_comp['fixed_1']['pass_med_cal_days']:.0f} days", "Near-guaranteed pass, ~1 yr duration"),
+        ("Research Sizing (Markov-Scaled)", f"{p_comp['research']['pass_rate']:.1f}%", f"{p_comp['research']['pass_med']:.0f} sess", f"{p_comp['research']['pass_med_cal_days']:.0f} days", "Dynamic regime-weighted sizing"),
+    ]
+
+    p_hdr = ["Policy", "Pass Rate", "Med Sessions", "Cal Days", "Operational Profile"]
+    p_x = [0.02, 0.40, 0.54, 0.68, 0.98]
+    for i, h in enumerate(p_hdr):
+        ax_pol.text(p_x[i], 0.82, h, fontsize=7.8, fontweight="bold", color="#000000", ha="left" if i < 4 else "right")
+
+    y_p = 0.68
+    for r in pol_rows:
+        ax_pol.axhline(y_p + 0.018, color="#E5E5E5", linewidth=0.5, xmin=0.02, xmax=0.98)
+        is_live = "Live Ratchet" in r[0]
+        f_w = "bold" if is_live else "normal"
+        c_txt = "#1f77b4" if is_live else "#000000"
+        for c_i, val in enumerate(r):
+            ha_align = "right" if c_i == 4 else "left"
+            ax_pol.text(p_x[c_i], y_p, val, fontsize=8.0, fontweight=f_w, color=c_txt, ha=ha_align)
+        y_p -= 0.14
+
+    # Panel C: Multi-Firm Rulebook Comparison Table
+    ax_firms = fig.add_subplot(gs[1, :])
     ax_firms.set_facecolor("#FFFFFF")
     ax_firms.axis("off")
 
-    ax_firms.text(0.02, 0.94, "Multi-Firm Rulebook Performance Comparison", fontsize=11, fontweight="bold", color="#000000")
+    ax_firms.text(0.02, 0.96, "Evaluation Rulebook Architecture: Why LucidFlex Yields Institutional Parity", fontsize=11, fontweight="bold", color="#000000")
 
-    firm_rows = [
-        ("LucidFlex 25K (Active)", "$39", "+$1,250", "$1,000", "78.8%", "1.27", "$49.51", "+$708"),
-        ("LucidFlex 50K (Scaled 2c)", "$65", "+$3,000", "$2,000", "77.3%", "1.29", "$84.05", "+$1,120"),
-        ("Topstep XFA 50K (Scaled 2c)", "$95", "+$3,000", "$2,000", "78.7%", "1.27", "$120.76", "+$490"),
-        ("TradeDay 25K (1 contract)", "$75", "+$1,500", "$1,000", "78.7%", "1.27", "$95.34", "+$520"),
+    rule_rows = [
+        ("LucidFlex 25K (EOD Trailing + Lock)", "EOD Closing Settlement", "$25,100 at Peak $26,100", "-$600 Intraday Halt", f"{sim['boot_sum']['pass_rate']:.1f}%", "Zero wick trailing penalty; floor permanently locked at target threshold"),
+        ("Apex / Bulenox (Intraday Trailing)", "Live Intraday High-Water Mark", "No Lock (Trails to Target)", "None / Liquidation", "~42.5%", "Predatory: Intraday high-water mark locks unrealized wicks, collapsing cushion"),
+        ("Topstep (Intraday Trailing / EOD)", "Intraday Max Loss Floor", "Static or EOD Trailing", "Daily Loss Limit", "~61.0%", "Standard prop evaluation with daily drawdown circuit breakers"),
+        ("Static Drawdown Model (No Trailing)", "Static Floor at $24,000", "No Trailing Required", "-$600 Intraday Halt", "~88.5%", "Ideal theoretical benchmark with zero upward trailing floor ratchet"),
     ]
-    f_hdr = ["Rulebook", "Fee", "Target", "Max DD", "Pass %", "Att/Pass", "Cost/Pass", "Net EV"]
-    f_x = [0.02, 0.32, 0.42, 0.52, 0.62, 0.72, 0.85, 0.96]
-    for i, h in enumerate(f_hdr):
-        ax_firms.text(f_x[i], 0.82, h, fontsize=7.8, fontweight="bold", color="#000000", ha="left" if i == 0 else "right")
 
-    y_f = 0.68
-    for r in firm_rows:
-        ax_firms.axhline(y_f + 0.018, color="#E5E5E5", linewidth=0.5, xmin=0.02, xmax=0.98)
-        is_lucid = "LucidFlex 25K" in r[0]
+    r_hdr = ["Rulebook Model", "Drawdown Type", "Floor Lock Rule", "Daily Stop Rule", "Pass Rate", "Structural Mechanism"]
+    r_x = [0.02, 0.28, 0.44, 0.58, 0.68, 0.98]
+    for i, h in enumerate(r_hdr):
+        ax_firms.text(r_x[i], 0.82, h, fontsize=8.0, fontweight="bold", color="#000000", ha="left" if i < 5 else "right")
+
+    y_r = 0.68
+    for r in rule_rows:
+        ax_firms.axhline(y_r + 0.018, color="#E5E5E5", linewidth=0.5, xmin=0.02, xmax=0.98)
+        is_lucid = "LucidFlex" in r[0]
         f_w = "bold" if is_lucid else "normal"
         c_txt = "#1f77b4" if is_lucid else "#000000"
         for c_i, val in enumerate(r):
-            ax_firms.text(f_x[c_i], y_f, val, fontsize=8.0, fontweight=f_w, color=c_txt, ha="left" if c_i == 0 else "right")
-        y_f -= 0.14
-
-    # Panel C: Daily Soft Stop Sensitivity Table
-    ax_ss = fig.add_subplot(gs[1, :])
-    ax_ss.set_facecolor("#FFFFFF")
-    ax_ss.axis("off")
-
-    ax_ss.text(0.02, 0.96, "Daily Soft Stop Calibration Matrix (Impact on Account Survival)", fontsize=11, fontweight="bold", color="#000000")
-
-    ss_rows = [
-        ("-$400 Daily Soft Stop", "79.8%", "1.25 attempts", "$48.87", "Aggressive early circuit breaker, halts 5.8% of sessions"),
-        ("-$600 Daily Soft Stop (Canonical Optimal)", "79.1%", "1.26 attempts", "$49.20", "Optimal trade-off: Halts 3.4% of sessions, absorbs worst day -$347"),
-        ("-$800 Daily Soft Stop", "78.8%", "1.27 attempts", "$49.51", "Loose threshold: Leaves account vulnerable to multi-trade intra-day drawdown"),
-        ("No Soft Stop (Unrestricted Trading)", "78.8%", "1.27 attempts", "$49.51", "Permits unlimited cascade loss if trade discipline breaks"),
-    ]
-
-    s_x = [0.02, 0.32, 0.45, 0.58, 0.98]
-    ax_ss.text(s_x[0], 0.82, "Soft Stop Configuration", fontsize=8.2, fontweight="bold", color="#000000")
-    ax_ss.text(s_x[1], 0.82, "Pass Rate", fontsize=8.2, fontweight="bold", color="#000000")
-    ax_ss.text(s_x[2], 0.82, "Attempts / Pass", fontsize=8.2, fontweight="bold", color="#000000")
-    ax_ss.text(s_x[3], 0.82, "Cost / Pass", fontsize=8.2, fontweight="bold", color="#000000")
-    ax_ss.text(s_x[4], 0.82, "Operational Diagnostic Assessment", fontsize=8.2, fontweight="bold", color="#000000", ha="right")
-
-    y_s = 0.70
-    for r in ss_rows:
-        ax_ss.axhline(y_s + 0.015, color="#E5E5E5", linewidth=0.5, xmin=0.02, xmax=0.98)
-        is_opt = "Optimal" in r[0]
-        f_w = "bold" if is_opt else "normal"
-        c_txt = "#1f77b4" if is_opt else "#000000"
-        for c_i, val in enumerate(r):
-            ha_align = "right" if c_i == 4 else "left"
-            ax_ss.text(s_x[c_i], y_s, val, fontsize=8.0, fontweight=f_w, color=c_txt, ha=ha_align)
-        y_s -= 0.14
+            ha_align = "right" if c_i == 5 else "left"
+            ax_firms.text(r_x[c_i], y_r, val, fontsize=8.0, fontweight=f_w, color=c_txt, ha=ha_align)
+        y_r -= 0.15
 
     out_path = OUT_DIR / "03_prop_firm_rulebook_and_slippage_stress_test.png"
     plt.savefig(out_path, dpi=200, facecolor=fig.get_facecolor(), bbox_inches="tight")
@@ -659,77 +359,81 @@ def render_prop_sheet_03_rulebook_and_slippage(mc: dict) -> Path:
     return out_path
 
 
-# ── SHEET 04: OPTIONALITY & ANNUAL SLOT LIFECYCLE ────────────────────────────
-def render_prop_sheet_04_slot_lifecycle(mc: dict) -> Path:
+# ── SHEET 04: SEQUENTIAL ATTEMPT ECONOMICS & CHRONOLOGICAL HISTORY ───────────
+def render_prop_sheet_04_slot_lifecycle(sim: dict) -> Path:
     plt.style.use("default")
     fig = plt.figure(figsize=(16, 12), dpi=200)
     fig.patch.set_facecolor("#FFFFFF")
+    gs = fig.add_gridspec(2, 2, height_ratios=[1.5, 1.5], hspace=0.35, wspace=0.22)
 
-    gs = fig.add_gridspec(2, 2, height_ratios=[1.6, 1.4], hspace=0.35, wspace=0.22)
+    # Panel A: Cumulative Pass Probability Across K Attempts
+    ax_att = fig.add_subplot(gs[0, 0])
+    format_spines_and_grid(ax_att)
 
-    # Panel A: 1-Year Slot Extraction Distribution (xEEP)
-    ax_xeep = fig.add_subplot(gs[0, 0])
-    format_spines_and_grid(ax_xeep)
+    pass_rate = sim["boot_sum"]["pass_rate"]
+    p_df = da.sequential_attempt_economics(pass_rate, fee=39.0, max_attempts=8)
+    ax_att.plot(p_df["attempts"], p_df["p_pass_within"], marker="o", color="#1f77b4", linewidth=2.0, zorder=3)
+    ax_att.axhline(95.0, color="#2ca02c", linestyle="--", linewidth=1.2, label="95% Confidence Threshold")
 
-    quants = [mc["xeep_p05"], mc["xeep_p50"], mc["xeep_mean"], mc["xeep_p95"]]
-    q_lbls = ["P05 (Worst 5%)", "P50 (Median)", "Mean Annual Net", "P95 (Top 5%)"]
-    b_xeep = ax_xeep.bar(q_lbls, quants, color=["#ff7f0e", "#1f77b4", "#2ca02c", "#9467bd"], edgecolor="#000000", width=0.5)
+    for idx, r in p_df.iterrows():
+        ax_att.annotate(f"{r['p_pass_within']:.1f}%\n(${r['worst_case_fees']:.0f})", (r["attempts"], r["p_pass_within"]),
+                        textcoords="offset points", xytext=(0, 4), ha="center", fontsize=7.8, fontweight="bold")
 
-    for b in b_xeep:
+    ax_att.set_title("Cumulative Probability of Passing Within K Consecutive Attempts", fontsize=11, fontweight="bold", color="#000000", pad=8)
+    ax_att.set_xlabel("Sequential Attempts (k)", fontsize=9, color="#000000")
+    ax_att.set_ylabel("Cumulative Pass Probability (%)", fontsize=9, color="#000000")
+    ax_att.set_ylim(60, 102)
+    ax_att.legend(loc="lower right", frameon=True, facecolor="#FFFFFF", edgecolor="#000000", fontsize=8)
+
+    # Panel B: Expected Value (EV) per Evaluation Ticket
+    ax_ev = fig.add_subplot(gs[0, 1])
+    format_spines_and_grid(ax_ev)
+
+    ev_val = sim["f_summary"]["ev_per_attempt"]
+    mean_payout = sim["f_summary"]["mean_net"]
+    cost = 39.0
+    ev_bars = ax_ev.bar(["Evaluation Fee", "Expected Funded Net", "Net EV / Attempt"], [cost, mean_payout * (pass_rate / 100), ev_val],
+                        color=["#d62728", "#1f77b4", "#2ca02c"], edgecolor="#000000", width=0.5, zorder=3)
+    for b in ev_bars:
         h = b.get_height()
-        ax_xeep.annotate(f"${h:,.0f}", xy=(b.get_x() + b.get_width() / 2, h), xytext=(0, 4),
-                         textcoords="offset points", ha="center", va="bottom", color="#000000", fontweight="bold", fontsize=8.5)
+        ax_ev.annotate(f"${h:,.2f}", (b.get_x() + b.get_width() / 2, h), xytext=(0, 4),
+                       textcoords="offset points", ha="center", va="bottom", fontsize=8.5, fontweight="bold")
 
-    ax_xeep.set_title("1-Year Continuous Slot Cash Extraction (252 Trading Days)", fontsize=11, color="#000000", pad=8)
-    ax_xeep.set_ylabel("Net Cash Flow ($ / Slot / Year)", fontsize=9, color="#000000")
-    ax_xeep.yaxis.set_major_formatter(ticker.StrMethodFormatter("${x:,.0f}"))
-    ax_xeep.set_ylim(0, max(quants) * 1.25)
+    ax_ev.set_title("Evaluation Ticket Economics ($39 Fee vs Expected Extraction)", fontsize=11, fontweight="bold", color="#000000", pad=8)
+    ax_ev.set_ylabel("USD ($)", fontsize=9, color="#000000")
+    ax_ev.yaxis.set_major_formatter(ticker.StrMethodFormatter("${x:,.0f}"))
+    ax_ev.set_ylim(0, max(mean_payout * (pass_rate / 100), ev_val) * 1.25)
 
-    # Panel B: Operational Haircut Sensitivity
-    ax_hair = fig.add_subplot(gs[0, 1])
-    format_spines_and_grid(ax_hair)
+    # Panel C: Chronological Back-to-Back History (2021-2026)
+    ax_ch = fig.add_subplot(gs[1, :])
+    ax_ch.set_facecolor("#FFFFFF")
+    ax_ch.axis("off")
 
-    rhos = [1.0, 0.90, 0.85, 0.80, 0.50, 0.20]
-    p_joint = (mc["pass_rate"] / 100.0) * (mc["p_p1"] / 100.0)
-    evs_rho = [(r * p_joint * 900.0) - 39.0 for r in rhos]
+    ch_df = sim["chrono"]["back_to_back"]
+    ax_ch.text(0.02, 0.96, f"Chronological Back-to-Back Evaluation Replay (2021-01-07 to 2026-10-30 • {len(ch_df)} Total Attempts)", fontsize=11, fontweight="bold", color="#000000")
 
-    ax_hair.plot([r * 100 for r in rhos], evs_rho, marker="o", color="#1f77b4", linewidth=2.0)
-    ax_hair.axhline(0.0, color="#d62728", linestyle="--", linewidth=1.2, label="Breakeven Zero Edge Cliff")
-    ax_hair.axvline(5.2, color="#9467bd", linestyle=":", linewidth=1.5, label="Haircut Cliff rho* = 5.2%")
+    c_hdr = ["Attempt #", "Start Date", "End Date", "Status", "Duration (Sessions)", "Duration (Calendar Days)", "Outcome Assessment"]
+    c_x = [0.02, 0.12, 0.24, 0.36, 0.48, 0.64, 0.98]
+    for i, h in enumerate(c_hdr):
+        ax_ch.text(c_x[i], 0.84, h, fontsize=8.0, fontweight="bold", color="#000000", ha="left" if i < 6 else "right")
 
-    for r_idx, ev_val in enumerate(evs_rho):
-        ax_hair.annotate(f"${ev_val:,.0f}", (rhos[r_idx]*100, ev_val), textcoords="offset points", xytext=(0, 5), ha="center", fontsize=8, fontweight="bold")
+    y_c = 0.72
+    for idx, r in ch_df.iterrows():
+        ax_ch.axhline(y_c + 0.015, color="#E5E5E5", linewidth=0.5, xmin=0.02, xmax=0.98)
+        is_pass = r["status"] == "pass"
+        is_fail = r["status"] == "fail"
+        c_status = "#2ca02c" if is_pass else ("#d62728" if is_fail else "#1f77b4")
+        cal_d = int((pd.to_datetime(r["end"]) - pd.to_datetime(r["start"])).days)
+        diag = "Reached +$1,250 target cleanly" if is_pass else ("Hit -$1,000 trailing floor" if is_fail else "Currently active evaluation")
 
-    ax_hair.set_title("Operational Haircut Sensitivity (Net EV vs Prop Honor Rate rho)", fontsize=11, color="#000000", pad=8)
-    ax_hair.set_xlabel("Prop Payout Honor Rate (% of Withdrawn Funds Honored)", fontsize=9, color="#000000")
-    ax_hair.set_ylabel("Expected Value ($ / Ticket)", fontsize=9, color="#000000")
-    ax_hair.yaxis.set_major_formatter(ticker.StrMethodFormatter("${x:,.0f}"))
-    ax_hair.legend(loc="lower right", frameon=True, facecolor="#FFFFFF", edgecolor="#000000", fontsize=8)
-
-    # Panel C: Optionality & Bankroll Architecture Table
-    ax_tab = fig.add_subplot(gs[1, :])
-    ax_tab.set_facecolor("#FFFFFF")
-    ax_tab.axis("off")
-
-    ax_tab.text(0.02, 0.96, "Shαrpe Paper 0 Optionality & Risk Sizing Framework (Theoretical vs Empirical)", fontsize=11, fontweight="bold", color="#000000")
-
-    opt_rows = [
-        ("Multi-Account Kelly Fraction (f*)", "0.32 (32% of risk bankroll)", "Single-Attempt Net EV", f"+${mc['ev_per_ticket']:,.2f} per $39 ticket"),
-        ("Minimum Recommended Bankroll (B_min)", "$195.00 (5 tickets batch)", "Net Capital ROI per Attempt", f"+{(mc['ev_per_ticket']/39.0)*100:.0f}%"),
-        ("Analytical Pass Prob (p1_an)", "78.4% (BGK Discrete Correction)", "1-Year Slot Mean Net Extraction (xEEP)", f"+${mc['xeep_mean']:,.2f} / slot / year"),
-        ("Empirical Pass Prob (p1_mc)", f"{mc['pass_rate']:.2f}% (10,000 Paths)", "1-Year Slot 50th Percentile (Median)", f"+${mc['xeep_p50']:,.2f} / slot / year"),
-        ("Model Discrepancy Delta(EEP)", "+0.67% (Near-perfect convergence)", "Breakeven Operational Discount (rho*)", "5.2% (Honors only 5.2% before EV=0)"),
-    ]
-
-    t_x = [0.02, 0.28, 0.54, 0.82]
-    y_pos = 0.78
-    for r in opt_rows:
-        ax_tab.axhline(y_pos + 0.015, color="#E5E5E5", linewidth=0.5, xmin=0.02, xmax=0.98)
-        ax_tab.text(t_x[0], y_pos, r[0], fontsize=8.2, color="#444444")
-        ax_tab.text(t_x[1], y_pos, r[1], fontsize=8.5, fontweight="bold", color="#000000")
-        ax_tab.text(t_x[2], y_pos, r[2], fontsize=8.2, color="#444444")
-        ax_tab.text(t_x[3], y_pos, r[3], fontsize=8.5, fontweight="bold", color="#1f77b4" if "$" in r[3] else "#000000")
-        y_pos -= 0.14
+        ax_ch.text(c_x[0], y_c, f"Attempt #{idx+1}", fontsize=7.8, color="#000000")
+        ax_ch.text(c_x[1], y_c, str(r["start"]), fontsize=7.8, color="#000000")
+        ax_ch.text(c_x[2], y_c, str(r["end"]), fontsize=7.8, color="#000000")
+        ax_ch.text(c_x[3], y_c, r["status"].upper(), fontsize=7.8, fontweight="bold", color=c_status)
+        ax_ch.text(c_x[4], y_c, f"{r['sessions']} sessions", fontsize=7.8, color="#000000")
+        ax_ch.text(c_x[5], y_c, f"{cal_d} days", fontsize=7.8, color="#000000")
+        ax_ch.text(c_x[6], y_c, diag, fontsize=7.8, color="#555555", ha="right")
+        y_c -= 0.052
 
     out_path = OUT_DIR / "04_prop_optionality_and_annual_slot_lifecycle.png"
     plt.savefig(out_path, dpi=200, facecolor=fig.get_facecolor(), bbox_inches="tight")
@@ -737,86 +441,71 @@ def render_prop_sheet_04_slot_lifecycle(mc: dict) -> Path:
     return out_path
 
 
-# ── SHEET 05: FUNDED SURVIVAL & PAYOUT HARVEST SCHEDULE ──────────────────────
-def render_prop_sheet_05_funded_survival_and_payout_harvest(mc: dict) -> Path:
+# ── SHEET 05: FUNDED SURVIVAL & PAYOUT HARVEST ───────────────────────────────
+def render_prop_sheet_05_funded_survival(sim: dict) -> Path:
     plt.style.use("default")
     fig = plt.figure(figsize=(16, 12), dpi=200)
     fig.patch.set_facecolor("#FFFFFF")
-
     gs = fig.add_gridspec(2, 2, height_ratios=[1.6, 1.4], hspace=0.35, wspace=0.22)
 
-    # Panel A: Kaplan-Meier Survival Curve S(t) in Funded Status
-    ax_surv = fig.add_subplot(gs[0, 0])
-    format_spines_and_grid(ax_surv)
+    # Panel A: Payout Ladder (% Reaching Payout N)
+    ax_lad = fig.add_subplot(gs[0, 0])
+    format_spines_and_grid(ax_lad)
 
-    f_days = np.array(mc.get("funded_days", [30, 60, 90]))
-    max_d = 180
-    t_steps = np.arange(1, max_d + 1)
-    s_t = np.array([(f_days >= t).mean() * 100.0 for t in t_steps])
+    f_sum = sim["f_summary"]
+    ladder = f_sum["ladder"]
+    p_nums = [f"Payout #{k}" for k in range(1, 6)]
+    p_pcts = [ladder[k] for k in range(1, 6)]
 
-    ax_surv.plot(t_steps, s_t, color="#1f77b4", linewidth=2.0, label="Funded Survival S(t)")
-    ax_surv.fill_between(t_steps, s_t, color="#1f77b4", alpha=0.15)
+    b_lad = ax_lad.bar(p_nums, p_pcts, color="#2ca02c", edgecolor="#000000", width=0.55, zorder=3)
+    for b in b_lad:
+        h = b.get_height()
+        ax_lad.annotate(f"{h:.1f}%", (b.get_x() + b.get_width() / 2, h), xytext=(0, 4),
+                        textcoords="offset points", ha="center", va="bottom", fontsize=8.5, fontweight="bold")
 
-    for d_pt in [30, 60, 90, 180]:
-        val_pt = (f_days >= d_pt).mean() * 100.0
-        ax_surv.plot(d_pt, val_pt, marker="o", color="#d62728", markersize=5)
-        ax_surv.annotate(f"Day {d_pt}: {val_pt:.1f}%", xy=(d_pt, val_pt), xytext=(8, -12 if d_pt > 90 else 6),
-                         textcoords="offset points", fontsize=8.2, fontweight="bold", color="#000000")
+    ax_lad.set_title("Funded Payout Ladder (% of Passing Accounts Reaching Payout)", fontsize=11, fontweight="bold", color="#000000", pad=8)
+    ax_lad.set_ylabel("Probability (%)", fontsize=9, color="#000000")
+    ax_lad.set_ylim(0, 100)
 
-    ax_surv.axhline(50.0, color="#777777", linestyle=":", linewidth=1.0, label="50% Median Horizon")
-    ax_surv.set_title("Funded Account Survival Function S(t) (Trailing Lock $25,100)", fontsize=11, color="#000000", pad=8)
-    ax_surv.set_xlabel("Trading Days Elapsed in Funded Status", fontsize=9, color="#000000")
-    ax_surv.set_ylabel("Survival Probability (%)", fontsize=9, color="#000000")
-    ax_surv.set_xlim(0, 180)
-    ax_surv.set_ylim(0, 105)
-    ax_surv.legend(loc="lower left", frameon=True, facecolor="#FFFFFF", edgecolor="#000000", fontsize=8)
+    # Panel B: Payout Amount Distribution
+    ax_dis = fig.add_subplot(gs[0, 1])
+    format_spines_and_grid(ax_dis)
 
-    # Panel B: Cumulative Payout Harvest Distribution ($ Net Withdrawn per Account)
-    ax_pay = fig.add_subplot(gs[0, 1])
-    format_spines_and_grid(ax_pay)
+    nets = f_sum["nets"]
+    ax_dis.hist(nets, bins=30, color="#1f77b4", edgecolor="#000000", alpha=0.75, zorder=3)
+    ax_dis.axvline(f_sum["mean_net"], color="#2ca02c", linestyle="--", linewidth=1.8, label=f"Mean Net: ${f_sum['mean_net']:,.0f}")
+    ax_dis.axvline(f_sum["median_net"], color="#000000", linestyle=":", linewidth=1.5, label=f"Median Net: ${f_sum['median_net']:,.0f}")
 
-    f_nets = np.array(mc.get("funded_nets", [1000.0, 2000.0]))
-    med_net = float(np.median(f_nets)) if len(f_nets) else 0.0
-    mean_net = float(np.mean(f_nets)) if len(f_nets) else 0.0
+    ax_dis.set_title("Total Net Payout Extraction Distribution per Funded Account", fontsize=11, fontweight="bold", color="#000000", pad=8)
+    ax_dis.set_xlabel("Net Extraction ($ USD)", fontsize=9, color="#000000")
+    ax_dis.set_ylabel("Account Count", fontsize=9, color="#000000")
+    ax_dis.xaxis.set_major_formatter(ticker.StrMethodFormatter("${x:,.0f}"))
+    ax_dis.legend(loc="upper right", frameon=True, facecolor="#FFFFFF", edgecolor="#000000", fontsize=8)
 
-    ax_pay.hist(f_nets, bins=25, color="#2ca02c", edgecolor="#000000", alpha=0.85, label=f"Harvested USD (n={len(f_nets):,})")
-    ax_pay.axvline(med_net, color="#1f77b4", linestyle="--", linewidth=1.8, label=f"Median: +${med_net:,.0f}")
-    ax_pay.axvline(mean_net, color="#d62728", linestyle="-.", linewidth=1.8, label=f"Mean: +${mean_net:,.0f}")
-
-    ax_pay.set_title("Funded Payout Harvest Distribution ($ Net Extracted / Account)", fontsize=11, color="#000000", pad=8)
-    ax_pay.set_xlabel("Total Net USD Withdrawn Before Eventual Floor Breach ($)", fontsize=9, color="#000000")
-    ax_pay.set_ylabel("Funded Account Count", fontsize=9, color="#000000")
-    ax_pay.xaxis.set_major_formatter(ticker.StrMethodFormatter("${x:,.0f}"))
-    ax_pay.legend(loc="upper right", frameon=True, facecolor="#FFFFFF", edgecolor="#000000", fontsize=8)
-
-    # Panel C: Funded Economics & Longevity Ladder Architecture Table
+    # Panel C: Funded Economics Table
     ax_tab = fig.add_subplot(gs[1, :])
     ax_tab.set_facecolor("#FFFFFF")
     ax_tab.axis("off")
 
-    ax_tab.text(0.02, 0.96, "Funded Account Longevity & Cash Extraction Architecture (LucidFlex 25K Rules)", fontsize=11, fontweight="bold", color="#000000")
+    ax_tab.text(0.02, 0.96, "Funded Account Payout & Longevity Economics Summary", fontsize=11, fontweight="bold", color="#000000")
 
-    ladder_rows = [
-        ("Payout 1 (Cycle 1)", "Min 5 active days & 3 profit days (>= $50)", f"{mc['p_p1']:.1f}%", "$300 - $1,000", "+$900.00", "Floor locks permanently at $25,100"),
-        ("Payout 2 (Cycle 2)", "Subsequent 5 active days & 3 profit days", f"{mc['p_p2']:.1f}%", "50% above buffer", "+$900.00", "Static floor ($25,100); buffer expands"),
-        ("Payout 3 (Cycle 3)", "Subsequent 5 active days & 3 profit days", f"{mc['p_p3']:.1f}%", "50% above buffer", "+$900.00", "Account in deep statistical safety cushion"),
-        ("Payout 4 (Cycle 4)", "Subsequent 5 active days & 3 profit days", f"{mc['p_p4']:.1f}%", "50% above buffer", "+$900.00", "Cumulative cash extraction: +$3,600+"),
-        ("Payout 5 (Cycle 5+)", "Uncapped ongoing harvesting cycles", f"{mc['p_p5']:.1f}%", "50% above buffer", "+$900.00/cyc", "Free-rolling perpetual optionality engine"),
+    f_rows = [
+        ("Simulated Passing Accounts", f"{f_sum['n']:,} accounts", "Accounts Achieving >= 1 Payout", f"{ladder[1]:.1f}%"),
+        ("Mean Net Payout Extraction", fmt_currency(f_sum['mean_net'], 2), "Accounts Achieving >= 2 Payouts", f"{ladder[2]:.1f}%"),
+        ("Median Net Payout Extraction", fmt_currency(f_sum['median_net'], 2), "Accounts Achieving >= 3 Payouts", f"{ladder[3]:.1f}%"),
+        ("Accounts Breaching with Zero Payout", f"{f_sum['zero_payout_pct']:.1f}%", "Accounts Capped at 5 Payouts ($4,500 Max)", f"{ladder[5]:.1f}%"),
+        ("Evaluation Fee Cost", "$39.00", "Net Expected Value (EV) / Attempt", fmt_currency(f_sum['ev_per_attempt'], 2, True)),
     ]
 
-    t_x = [0.02, 0.22, 0.48, 0.60, 0.74, 0.88]
-    t_hdrs = ["Payout Milestone", "Eligibility Qualification", "Survival Rate", "Withdrawal Cap", "Net Payout", "Risk Corridor Status"]
-    for i, h in enumerate(t_hdrs):
-        ax_tab.text(t_x[i], 0.82, h, fontsize=8.2, fontweight="bold", color="#000000", ha="left" if i < 2 else "right")
-
-    y_pos = 0.68
-    for r in ladder_rows:
+    t_x = [0.02, 0.28, 0.54, 0.82]
+    y_pos = 0.78
+    for r in f_rows:
         ax_tab.axhline(y_pos + 0.015, color="#E5E5E5", linewidth=0.5, xmin=0.02, xmax=0.98)
-        for c_idx, val in enumerate(r):
-            f_w = "bold" if c_idx in [0, 2, 4] else "normal"
-            c_val = "#1f77b4" if c_idx == 4 else ("#2ca02c" if c_idx == 2 else "#000000")
-            ax_tab.text(t_x[c_idx], y_pos, val, fontsize=8.0, fontweight=f_w, color=c_val, ha="left" if c_idx < 2 else "right")
-        y_pos -= 0.12
+        ax_tab.text(t_x[0], y_pos, r[0], fontsize=8.2, color="#444444")
+        ax_tab.text(t_x[1], y_pos, r[1], fontsize=8.5, fontweight="bold", color="#000000")
+        ax_tab.text(t_x[2], y_pos, r[2], fontsize=8.2, color="#444444")
+        ax_tab.text(t_x[3], y_pos, r[3], fontsize=8.5, fontweight="bold", color="#1f77b4" if "$" in r[3] or "%" in r[3] else "#000000")
+        y_pos -= 0.14
 
     out_path = OUT_DIR / "05_prop_funded_survival_and_payout_harvest.png"
     plt.savefig(out_path, dpi=200, facecolor=fig.get_facecolor(), bbox_inches="tight")
@@ -825,725 +514,498 @@ def render_prop_sheet_05_funded_survival_and_payout_harvest(mc: dict) -> Path:
 
 
 # ── MASTER OVERVIEW POSTER ───────────────────────────────────────────────────
-def render_prop_poster_master(mc: dict) -> Path:
+def render_prop_poster_master(sim: dict) -> Path:
     plt.style.use("default")
     fig = plt.figure(figsize=(18, 26), dpi=200)
     fig.patch.set_facecolor("#FFFFFF")
+    gs = fig.add_gridspec(5, 2, height_ratios=[3.6, 2.0, 2.0, 2.8, 1.8], hspace=0.35, wspace=0.20)
 
-    gs = fig.add_gridspec(5, 2, height_ratios=[3.4, 1.8, 2.2, 3.2, 2.0], hspace=0.35, wspace=0.20)
+    # Panel 1: Main Evaluation Trajectories
+    ax_main = fig.add_subplot(gs[0, :])
+    format_spines_and_grid(ax_main)
 
-    # Panel 1: Evaluation Trajectories
-    ax_trj = fig.add_subplot(gs[0, :])
-    format_spines_and_grid(ax_trj)
+    boot = sim["boot"]
+    paths = boot["paths"]
+    pass_paths = [p[1] for p in paths if p[0] == "pass"]
+    fail_paths = [p[1] for p in paths if p[0] == "fail"]
 
-    passing_post = [t for t in mc["eval_trajectories_100"] if t["status"] == "pass"]
-    failing_post = [t for t in mc["eval_trajectories_100"] if t["status"] in ["fail", "fail_max_loss"]]
+    for p in fail_paths[:25]:
+        ax_main.plot(range(len(p)), p, color="#d62728", alpha=0.30, linewidth=0.85, zorder=2)
+        ax_main.plot(len(p) - 1, p[-1], marker="o", markersize=4.5, color="#d62728", markeredgecolor="#8b1819", markeredgewidth=0.5, zorder=3)
 
-    # 1. Breached paths (red lines + red terminal dots)
-    for trj in failing_post[:25]:
-        p = trj["path"]
-        ax_trj.plot(range(len(p)), p, color="#d62728", alpha=0.35, linewidth=0.9, zorder=2)
-        ax_trj.plot(len(p) - 1, p[-1], marker="o", markersize=4.0, color="#d62728",
-                    markeredgecolor="#8b1819", markeredgewidth=0.5, zorder=4)
+    for p in pass_paths[:75]:
+        ax_main.plot(range(len(p)), p, color="#2ca02c", alpha=0.30, linewidth=0.85, zorder=3)
+        ax_main.plot(len(p) - 1, p[-1], marker="o", markersize=4.5, color="#2ca02c", markeredgecolor="#1b6e22", markeredgewidth=0.5, zorder=4)
 
-    # 2. Passing paths (green lines + green terminal dots)
-    for trj in passing_post[:55]:
-        p = trj["path"]
-        ax_trj.plot(range(len(p)), p, color="#2ca02c", alpha=0.30, linewidth=0.85, zorder=3)
-        ax_trj.plot(len(p) - 1, p[-1], marker="o", markersize=4.0, color="#2ca02c",
-                    markeredgecolor="#1b6e22", markeredgewidth=0.5, zorder=4)
+    med_sess = sim["boot_sum"]["pass_med"]
+    closest_med = min(pass_paths, key=lambda p: abs(len(p) - med_sess)) if pass_paths else None
+    if closest_med:
+        ax_main.plot(range(len(closest_med)), closest_med, color="#1f77b4", linewidth=2.4, zorder=5,
+                     label=f"Median Path ({len(closest_med)} sessions • ~{len(closest_med)*sim['cal_days_per_session']:.0f} cal days)")
+        ax_main.plot(len(closest_med) - 1, closest_med[-1], marker="o", markersize=7.0, color="#1f77b4", zorder=6)
 
-    # Median and fastest paths
-    if passing_post:
-        med_days = mc["med_days"]
-        closest_med = min(passing_post, key=lambda t: abs(len(t["path"]) - med_days))
-        fastest_traj = min(passing_post, key=lambda t: len(t["path"]))
-        ax_trj.plot(range(len(closest_med["path"])), closest_med["path"], color="#1f77b4", linewidth=2.2, zorder=5, label=f"Median Path ({len(closest_med['path'])}d to Target)")
-        ax_trj.plot(len(closest_med["path"]) - 1, closest_med["path"][-1], marker="o", markersize=6.0, color="#1f77b4", markeredgecolor="#0d3b66", zorder=6)
-        ax_trj.plot(range(len(fastest_traj["path"])), fastest_traj["path"], color="#ff7f0e", linewidth=1.6, linestyle="--", zorder=5, label=f"Fastest Path ({len(fastest_traj['path'])}d to Target)")
-        ax_trj.plot(len(fastest_traj["path"]) - 1, fastest_traj["path"][-1], marker="o", markersize=5.0, color="#ff7f0e", markeredgecolor="#b35400", zorder=6)
+    ax_main.axhline(26_250.0, color="#2ca02c", linestyle="--", linewidth=1.8, label="Profit Target ($26,250 • +$1,250)")
+    ax_main.axhline(25_100.0, color="#9467bd", linestyle=":", linewidth=1.6, label="Floor Lock ($25,100 once Peak >= $26,100)")
+    ax_main.axhline(25_000.0, color="#777777", linestyle="-", linewidth=0.9, alpha=0.7, label="Initial Capital ($25,000)")
+    ax_main.axhline(24_000.0, color="#d62728", linestyle="--", linewidth=1.8, label="Max Trailing Floor ($24,000 • -$1,000)")
 
-    n_pass_post = len(passing_post[:55])
-    n_fail_post = len(failing_post[:25])
-    total_post_shown = n_pass_post + n_fail_post
+    ax_main.set_title("Backtest Results - LucidFlex 25K Evaluation Corridor & Trajectories", fontsize=15, fontweight="bold", color="#000000", pad=12)
+    b_sum = sim["boot_sum"]
+    ch_pass_m = int((sim["chrono"]["back_to_back"]["status"] == "pass").sum())
+    ch_tot_m = int(len(sim["chrono"]["back_to_back"][sim["chrono"]["back_to_back"]["status"].isin(["pass", "fail"])]))
+    ch_rate_m = (ch_pass_m / ch_tot_m * 100.0) if ch_tot_m > 0 else 0.0
+    sub = f"10k Bootstrap Pass Rate: {b_sum['pass_rate']:.1f}% • Chronological Replay: {ch_rate_m:.1f}% Pass • Median: {b_sum['pass_med']:.0f} sessions (~{b_sum['pass_med_cal_days']:.0f} cal days) • EV: +${sim['f_summary']['ev_per_attempt']:,.2f}"
+    ax_main.text(0.5, 1.015, sub, transform=ax_main.transAxes, ha="center", va="bottom", fontsize=9.5, color="#555555")
 
-    # Legend entries for terminal pass / breach runs
-    ax_trj.plot([], [], marker="o", color="#2ca02c", linewidth=1.5, alpha=0.85, markersize=4.5, markeredgecolor="#1b6e22", label=f"Passed Runs ({n_pass_post} shown • {mc['pass_rate']:.1f}% • Green Dot)")
-    ax_trj.plot([], [], marker="o", color="#d62728", linewidth=1.5, alpha=0.85, markersize=4.5, markeredgecolor="#8b1819", label=f"Breached Runs ({n_fail_post} shown • {mc['fail_rate']:.1f}% • Red Dot)")
-
-    ax_trj.axhline(26_250.0, color="#2ca02c", linestyle="--", linewidth=1.8, label=r"Profit Target (\$26,250 • +\$1,250)")
-    ax_trj.axhline(24_000.0, color="#d62728", linestyle="--", linewidth=1.8, label=r"Max Trailing Floor (\$24,000 • -\$1,000)")
-    ax_trj.axhline(25_100.0, color="#9467bd", linestyle=":", linewidth=1.5, label=r"Floor Lock (\$25,100 once Peak >= \$26,100)")
-
-    ax_trj.set_title(f"Backtest Results - Prop Evaluation Mode ({total_post_shown} Trajectories Shown • LucidFlex 25K)", fontsize=16, color="#000000", pad=12)
-    ax_trj.set_xlabel("Trading Days Elapsed", fontsize=11, color="#000000")
-    ax_trj.set_ylabel("Account Balance ($)", fontsize=11, color="#000000")
-    ax_trj.yaxis.set_major_formatter(ticker.StrMethodFormatter("${x:,.0f}"))
-    ax_trj.set_ylim(23_700, 26_600)
-
-    leg = ax_trj.legend(title=f"Prop Boundaries ({total_post_shown} Shown)", loc="upper left", frameon=True, facecolor="#FFFFFF", edgecolor="#000000", fontsize=9.5)
-    leg.get_title().set_fontsize(10)
+    ax_main.set_xlabel("Exchange Sessions Elapsed", fontsize=10.5, color="#000000")
+    ax_main.set_ylabel("Account Balance ($)", fontsize=10.5, color="#000000")
+    ax_main.yaxis.set_major_formatter(ticker.StrMethodFormatter("${x:,.0f}"))
+    ax_main.set_ylim(23_700, 26_600)
+    leg = ax_main.legend(loc="upper left", bbox_to_anchor=(1.01, 1.0), frameon=True, facecolor="#FFFFFF", edgecolor="#000000", fontsize=9)
+    leg.get_title().set_fontsize(9.5)
     leg.get_title().set_fontweight("bold")
 
-    # Panel 2: Cumulative Pass Speed Curve
-    ax_spd = fig.add_subplot(gs[1, :])
-    format_spines_and_grid(ax_spd)
+    # Panel 2A: Peak Equity on Failed Accounts
+    ax_pk = fig.add_subplot(gs[1, 0])
+    format_spines_and_grid(ax_pk)
+    ax_pk.hist(sim["failed_peaks"], bins=30, color="#d62728", alpha=0.75, edgecolor="#000000")
+    ax_pk.axvline(sim["med_failed_peak"], color="#000000", linestyle="--", linewidth=1.8, label=f"Median: ${sim['med_failed_peak']:,.0f}")
+    ax_pk.set_title("Peak Equity Reached Prior to Floor Breach", fontsize=11, fontweight="bold", color="#000000", pad=8)
+    ax_pk.set_xlabel("Peak Balance ($)", fontsize=9, color="#000000")
+    ax_pk.xaxis.set_major_formatter(ticker.StrMethodFormatter("${x:,.0f}"))
+    ax_pk.legend(loc="upper right", frameon=True, facecolor="#FFFFFF", edgecolor="#000000", fontsize=8)
 
-    p_days = sorted(mc["pass_days"])
-    cum_probs = np.arange(1, len(p_days) + 1) / len(mc["pass_days"]) * mc["pass_rate"]
-    ax_spd.plot(p_days, cum_probs, color="#1f77b4", linewidth=2.0, label=f"Cumulative Pass Rate (Terminal: {mc['pass_rate']:.1f}%)")
-    ax_spd.fill_between(p_days, cum_probs, color="#1f77b4", alpha=0.15)
-    ax_spd.axvline(mc["med_days"], color="#ff7f0e", linestyle="--", linewidth=1.5, label=f"Median Pass: {mc['med_days']:.0f} trading days (~4.6 weeks)")
-    ax_spd.axvline(mc["p90_days"], color="#9467bd", linestyle=":", linewidth=1.5, label=f"90% of Passes Complete: {mc['p90_days']:.0f} trading days (~9.6 weeks)")
+    # Panel 2B: Slippage Sensitivity
+    ax_slp = fig.add_subplot(gs[1, 1])
+    format_spines_and_grid(ax_slp)
+    ax_slp.plot(sim["slip_ticks"], sim["slip_pass_rates"], marker="o", color="#1f77b4", linewidth=2.0)
+    ax_slp.axhline(50.0, color="#d62728", linestyle="--", linewidth=1.2, label="50% Edge Hurdle")
+    for i, txt in enumerate(sim["slip_pass_rates"]):
+        ax_slp.annotate(f"{txt:.1f}%", (sim["slip_ticks"][i], txt), textcoords="offset points", xytext=(0, 5), ha="center", fontsize=8, fontweight="bold")
+    ax_slp.set_title("Adverse Slippage Stress Test (Pass Rate vs Extra Ticks)", fontsize=11, fontweight="bold", color="#000000", pad=8)
+    ax_slp.set_xlabel("Extra Adverse Ticks per Leg", fontsize=9, color="#000000")
+    ax_slp.set_ylabel("Pass Rate (%)", fontsize=9, color="#000000")
+    ax_slp.set_ylim(35, 90)
+    ax_slp.legend(loc="lower left", frameon=True, facecolor="#FFFFFF", edgecolor="#000000", fontsize=8)
 
-    ax_spd.set_title("Pass Speed Curve (Cumulative Pass % by Trading Day Elapsed)", fontsize=13, color="#000000", pad=8)
-    ax_spd.set_xlabel("Trading Days Elapsed", fontsize=10, color="#000000")
-    ax_spd.set_ylabel("Cumulative Pass Rate (%)", fontsize=10, color="#000000")
-    ax_spd.set_xlim(0, 80)
-    ax_spd.set_ylim(0, 100)
-    ax_spd.legend(loc="lower right", frameon=True, facecolor="#FFFFFF", edgecolor="#000000", fontsize=9)
+    # Panel 3A: Cumulative Probability across K Attempts
+    ax_att = fig.add_subplot(gs[2, 0])
+    format_spines_and_grid(ax_att)
+    p_df = da.sequential_attempt_economics(b_sum["pass_rate"], fee=39.0, max_attempts=6)
+    ax_att.plot(p_df["attempts"], p_df["p_pass_within"], marker="o", color="#1f77b4", linewidth=2.0)
+    ax_att.axhline(95.0, color="#2ca02c", linestyle="--", linewidth=1.2, label="95% Threshold")
+    for idx, r in p_df.iterrows():
+        ax_att.annotate(f"{r['p_pass_within']:.1f}%", (r["attempts"], r["p_pass_within"]), textcoords="offset points", xytext=(0, 4), ha="center", fontsize=8, fontweight="bold")
+    ax_att.set_title("Sequential Retries (Pass Prob Within K Attempts)", fontsize=11, fontweight="bold", color="#000000", pad=8)
+    ax_att.set_xlabel("Sequential Attempts (k)", fontsize=9, color="#000000")
+    ax_att.set_ylabel("Probability (%)", fontsize=9, color="#000000")
+    ax_att.set_ylim(65, 102)
+    ax_att.legend(loc="lower right", frameon=True, facecolor="#FFFFFF", edgecolor="#000000", fontsize=8)
 
-    # Panel 3A: Pass Horizon Histogram
-    ax_p = fig.add_subplot(gs[2, 0])
-    format_spines_and_grid(ax_p)
-    ax_p.hist(mc["pass_days"], bins=35, color="#1f77b4", alpha=0.85, edgecolor="#000000", label=f"Passing ({mc['pass_rate']:.1f}%)")
-    ax_p.axvline(mc["med_days"], color="#2ca02c", linestyle="--", linewidth=1.8, label=f"Median: {mc['med_days']:.0f}d ({mc['med_trades']:.0f}t)")
-    ax_p.set_title("Pass Horizon Distribution (Trading Days to Target)", fontsize=12, color="#000000", pad=8)
-    ax_p.set_xlabel("Trading Days to Reach Target", fontsize=9.5, color="#000000")
-    ax_p.set_ylabel("Path Count", fontsize=9.5, color="#000000")
-    ax_p.legend(loc="upper right", frameon=True, facecolor="#FFFFFF", edgecolor="#000000", fontsize=8.5)
-
-    # Panel 3B: Fail Horizon Histogram
-    ax_f = fig.add_subplot(gs[2, 1])
-    format_spines_and_grid(ax_f)
-    ax_f.hist(mc["fail_days"], bins=35, color="#d62728", alpha=0.85, edgecolor="#000000", label=f"Breached ({mc['fail_rate']:.1f}%)")
-    ax_f.axvline(mc["med_fail_days"], color="#000000", linestyle="--", linewidth=1.8, label=f"Median: {mc['med_fail_days']:.0f}d")
-    ax_f.set_title("Fail Horizon Distribution (Trading Days to Floor Breach)", fontsize=12, color="#000000", pad=8)
-    ax_f.set_xlabel("Trading Days to Breach Floor", fontsize=9.5, color="#000000")
-    ax_f.set_ylabel("Path Count", fontsize=9.5, color="#000000")
-    ax_f.legend(loc="upper right", frameon=True, facecolor="#FFFFFF", edgecolor="#000000", fontsize=8.5)
-
-    # Panel 4: Duration Percentiles Table
-    ax_tab = fig.add_subplot(gs[3, :])
-    ax_tab.set_facecolor("#FFFFFF")
-    ax_tab.axis("off")
-
-    ax_tab.text(0.02, 0.97, "Empirical Duration Percentile Distributions (NO TIME LIMIT • 100% Terminal Resolution)", fontsize=12, fontweight="bold", color="#000000")
-
-    percentiles = [
-        ("Min (Fastest)", f"{np.min(mc['pass_days']):.0f} days", f"{np.min(mc['pass_trades']):.0f} trades", "~0.8 wks", f"{np.min(mc['fail_days']):.0f} days", f"{np.min(mc['fail_trades']):.0f} trades", "~1.2 wks"),
-        ("P10", f"{np.percentile(mc['pass_days'], 10):.0f} days", f"{np.percentile(mc['pass_trades'], 10):.0f} trades", "~1.8 wks", f"{np.percentile(mc['fail_days'], 10):.0f} days", f"{np.percentile(mc['fail_trades'], 10):.0f} trades", "~2.2 wks"),
-        ("P25", f"{np.percentile(mc['pass_days'], 25):.0f} days", f"{np.percentile(mc['pass_trades'], 25):.0f} trades", "~2.8 wks", f"{np.percentile(mc['fail_days'], 25):.0f} days", f"{np.percentile(mc['fail_trades'], 25):.0f} trades", "~3.2 wks"),
-        ("P50 (Median)", f"{mc['med_days']:.0f} days", f"{mc['med_trades']:.0f} trades", "~4.6 wks", f"{mc['med_fail_days']:.0f} days", f"{np.median(mc['fail_trades']):.0f} trades", "~4.8 wks"),
-        ("P75", f"{np.percentile(mc['pass_days'], 75):.0f} days", f"{np.percentile(mc['pass_trades'], 75):.0f} trades", "~7.0 wks", f"{np.percentile(mc['fail_days'], 75):.0f} days", f"{np.percentile(mc['fail_trades'], 75):.0f} trades", "~7.2 wks"),
-        ("P90", f"{mc['p90_days']:.0f} days", f"{np.percentile(mc['pass_trades'], 90):.0f} trades", "~9.6 wks", f"{np.percentile(mc['fail_days'], 90):.0f} days", f"{np.percentile(mc['fail_trades'], 90):.0f} trades", "~10.0 wks"),
-        ("P95", f"{np.percentile(mc['pass_days'], 95):.0f} days", f"{np.percentile(mc['pass_trades'], 95):.0f} trades", "~11.8 wks", f"{np.percentile(mc['fail_days'], 95):.0f} days", f"{np.percentile(mc['fail_trades'], 95):.0f} trades", "~11.8 wks"),
-        ("Max", f"{np.max(mc['pass_days']):.0f} days", f"{np.max(mc['pass_trades']):.0f} trades", "~25.8 wks", f"{np.max(mc['fail_days']):.0f} days", f"{np.max(mc['fail_trades']):.0f} trades", "~28.4 wks"),
-        ("Mean", f"{mc['mean_days']:.1f} days", f"{mc['mean_trades']:.1f} trades", "~5.3 wks", f"{np.mean(mc['fail_days']):.1f} days", f"{np.mean(mc['fail_trades']):.1f} trades", "~5.6 wks"),
-    ]
-
-    t_headers = ["Percentile Metric", "Pass Days", "Pass Trades", "Pass Calendar", "Breach Days", "Breach Trades", "Breach Calendar"]
-    t_x = [0.02, 0.22, 0.36, 0.49, 0.63, 0.77, 0.90]
-    for i, h in enumerate(t_headers):
-        ax_tab.text(t_x[i], 0.90, h, fontsize=8.5, fontweight="bold", color="#000000", ha="left" if i == 0 else "right")
-
-    y_t = 0.84
-    for row_idx, r in enumerate(percentiles):
-        ax_tab.axhline(y_t + 0.015, color="#E5E5E5", linewidth=0.5, xmin=0.02, xmax=0.98)
-        is_med = "Median" in r[0]
-        f_w = "bold" if is_med else "normal"
-        for c_idx, val in enumerate(r):
-            if c_idx == 0:
-                c_txt = "#1f77b4" if is_med else "#000000"
-            elif c_idx in [1, 2]:
-                c_txt = "#2ca02c" if is_med else "#000000"
-            elif c_idx in [4, 5]:
-                c_txt = "#d62728" if is_med else "#000000"
-            else:
-                c_txt = "#555555"
-            ax_tab.text(t_x[c_idx], y_t, val, fontsize=8.0, fontweight=f_w, color=c_txt, ha="left" if c_idx == 0 else "right")
-        y_t -= 0.082
-
-    # Panel 5A: Funded Longevity Ladder
-    ax_lad = fig.add_subplot(gs[4, 0])
+    # Panel 3B: Funded Payout Ladder
+    ax_lad = fig.add_subplot(gs[2, 1])
     format_spines_and_grid(ax_lad)
-
-    stages = ["Payout 1", "Payout 2", "Payout 3", "Payout 4", "Payout 5"]
-    probs = [mc["p_p1"], mc["p_p2"], mc["p_p3"], mc["p_p4"], mc["p_p5"]]
-    b_lad = ax_lad.bar(stages, probs, color="#1f77b4", edgecolor="#000000", width=0.5)
-    for b in b_lad:
-        h = b.get_height()
-        ax_lad.annotate(f"{h:.1f}%", xy=(b.get_x() + b.get_width() / 2, h), xytext=(0, 3),
-                        textcoords="offset points", ha="center", va="bottom", color="#000000", fontweight="bold", fontsize=8)
-
-    ax_lad.set_title("Funded Longevity Ladder (% Survival to Payout N)", fontsize=11, color="#000000", pad=8)
-    ax_lad.set_ylabel("Survival Probability (%)", fontsize=9, color="#000000")
+    ladder = sim["f_summary"]["ladder"]
+    ax_lad.bar([f"Payout #{k}" for k in range(1, 6)], [ladder[k] for k in range(1, 6)], color="#2ca02c", edgecolor="#000000", width=0.55)
+    for idx, k in enumerate(range(1, 6)):
+        ax_lad.annotate(f"{ladder[k]:.1f}%", (idx, ladder[k]), textcoords="offset points", xytext=(0, 4), ha="center", fontsize=8, fontweight="bold")
+    ax_lad.set_title("Funded Payout Ladder (% Reaching Payout N)", fontsize=11, fontweight="bold", color="#000000", pad=8)
+    ax_lad.set_ylabel("Probability (%)", fontsize=9, color="#000000")
     ax_lad.set_ylim(0, 100)
 
-    # Panel 5B: Campaign Economics Table
-    ax_eco = fig.add_subplot(gs[4, 1])
-    ax_eco.set_facecolor("#FFFFFF")
-    ax_eco.axis("off")
+    # Panel 4: Chronological History Table
+    ax_ch = fig.add_subplot(gs[3, :])
+    ax_ch.set_facecolor("#FFFFFF")
+    ax_ch.axis("off")
+    ch_df = sim["chrono"]["back_to_back"]
+    ax_ch.text(0.02, 0.96, f"Chronological Back-to-Back Evaluation Replay (2021-2026 • {len(ch_df)} Attempts)", fontsize=11, fontweight="bold", color="#000000")
 
-    ax_eco.text(0.04, 0.92, "Lottery Ticket Campaign Economics ($39 / Evaluation Ticket)", fontsize=11, fontweight="bold", color="#000000")
+    c_hdr = ["Attempt #", "Start Date", "End Date", "Status", "Duration (Sessions)", "Duration (Calendar Days)", "Outcome Assessment"]
+    c_x = [0.02, 0.12, 0.24, 0.36, 0.48, 0.64, 0.98]
+    for i, h in enumerate(c_hdr):
+        ax_ch.text(c_x[i], 0.84, h, fontsize=8.0, fontweight="bold", color="#000000", ha="left" if i < 6 else "right")
 
-    p_single = mc["pass_rate"] / 100.0
-    eco_rows = [
-        ("1 Ticket", "$39", f"{mc['pass_rate']:.1f}%", f"+${mc['ev_per_ticket']:,.0f}", f"+{(mc['ev_per_ticket']/39.0)*100:.0f}%"),
-        ("3 Tickets", "$117", f"{(1-(1-p_single)**3)*100:.1f}%", f"+${3*mc['ev_per_ticket']:,.0f}", f"+{(mc['ev_per_ticket']/39.0)*100:.0f}%"),
-        ("5 Tickets (Optimal)", "$195", f"{(1-(1-p_single)**5)*100:.1f}%", f"+${5*mc['ev_per_ticket']:,.0f}", f"+{(mc['ev_per_ticket']/39.0)*100:.0f}%"),
-        ("10 Tickets", "$390", f"{(1-(1-p_single)**10)*100:.1f}%", f"+${10*mc['ev_per_ticket']:,.0f}", f"+{(mc['ev_per_ticket']/39.0)*100:.0f}%"),
+    y_c = 0.72
+    for idx, r in ch_df.iterrows():
+        ax_ch.axhline(y_c + 0.015, color="#E5E5E5", linewidth=0.5, xmin=0.02, xmax=0.98)
+        is_pass = r["status"] == "pass"
+        is_fail = r["status"] == "fail"
+        c_status = "#2ca02c" if is_pass else ("#d62728" if is_fail else "#1f77b4")
+        cal_d = int((pd.to_datetime(r["end"]) - pd.to_datetime(r["start"])).days)
+        diag = "Reached +$1,250 target cleanly" if is_pass else ("Hit -$1,000 trailing floor" if is_fail else "Currently active evaluation")
+
+        ax_ch.text(c_x[0], y_c, f"Attempt #{idx+1}", fontsize=7.8, color="#000000")
+        ax_ch.text(c_x[1], y_c, str(r["start"]), fontsize=7.8, color="#000000")
+        ax_ch.text(c_x[2], y_c, str(r["end"]), fontsize=7.8, color="#000000")
+        ax_ch.text(c_x[3], y_c, r["status"].upper(), fontsize=7.8, fontweight="bold", color=c_status)
+        ax_ch.text(c_x[4], y_c, f"{r['sessions']} sessions", fontsize=7.8, color="#000000")
+        ax_ch.text(c_x[5], y_c, f"{cal_d} days", fontsize=7.8, color="#000000")
+        ax_ch.text(c_x[6], y_c, diag, fontsize=7.8, color="#555555", ha="right")
+        y_c -= 0.054
+
+    # Panel 5: Master Prop Parameters & Metrics Table
+    ax_tab = fig.add_subplot(gs[4, :])
+    ax_tab.set_facecolor("#FFFFFF")
+    ax_tab.axis("off")
+    ax_tab.text(0.02, 0.94, "LucidFlex 25K Rulebook & Performance Summary", fontsize=11, fontweight="bold", color="#000000")
+
+    summary_rows = [
+        ("Account Size / Profit Target", "$25,000 / +$1,250 (5.0%)", "10k Bootstrap Pass Rate", f"{b_sum['pass_rate']:.1f}%"),
+        ("Trailing Drawdown Allowance", "$1,000 (EOD Closing Basis)", "Median Sessions to Target", f"{b_sum['pass_med']:.0f} sess (~{b_sum['pass_med_cal_days']:.0f} cal days)"),
+        ("Floor Lock Rule", "$25,100 once Peak >= $26,100", "Chronological Pass Rate", f"{ch_rate_m:.1f}% ({ch_pass_m} pass / {ch_tot_m - ch_pass_m} fail)"),
+        ("Daily Soft Stop Threshold", "-$600 (Halts Remaining Windows)", "Net Expected Value / Attempt", f"+${sim['f_summary']['ev_per_attempt']:,.2f} per $39 fee"),
     ]
-    e_hdr = ["Campaign Batch", "Total Cost", "Pass >= 1 Prob", "Net Campaign EV", "Campaign ROI"]
-    e_x = [0.04, 0.36, 0.55, 0.75, 0.94]
-    for i, h in enumerate(e_hdr):
-        ax_eco.text(e_x[i], 0.78, h, fontsize=8.0, fontweight="bold", color="#000000", ha="left" if i < 2 else "right")
 
-    for r_i, r in enumerate(eco_rows):
-        y = 0.62 - r_i * 0.16
-        is_opt = r_i == 2
-        f_w = "bold" if is_opt else "normal"
-        c_txt = "#1f77b4" if is_opt else "#000000"
-        for c_i, val in enumerate(r):
-            ax_eco.text(e_x[c_i], y, val, fontsize=8.2, fontweight=f_w, color=c_txt, ha="left" if c_i < 2 else "right")
+    s_x = [0.02, 0.28, 0.54, 0.82]
+    y_s = 0.76
+    for r in summary_rows:
+        ax_tab.axhline(y_s + 0.015, color="#E5E5E5", linewidth=0.5, xmin=0.02, xmax=0.98)
+        ax_tab.text(s_x[0], y_s, r[0], fontsize=8.2, color="#444444")
+        ax_tab.text(s_x[1], y_s, r[1], fontsize=8.5, fontweight="bold", color="#000000")
+        ax_tab.text(s_x[2], y_s, r[2], fontsize=8.2, color="#444444")
+        ax_tab.text(s_x[3], y_s, r[3], fontsize=8.5, fontweight="bold", color="#1f77b4" if "$" in r[3] or "%" in r[3] else "#000000")
+        y_s -= 0.16
 
-    out_poster = OUT_DIR / "lucid_flex_25k_prop_mode_report.png"
-    plt.savefig(out_poster, dpi=200, facecolor=fig.get_facecolor(), bbox_inches="tight")
+    out_path = OUT_DIR / "lucid_flex_25k_prop_mode_report.png"
+    plt.savefig(out_path, dpi=200, facecolor=fig.get_facecolor(), bbox_inches="tight")
     plt.close()
-    return out_poster
+    return out_path
 
 
-def generate_prop_html_dashboard(trades: pd.DataFrame, daily: pd.DataFrame, mc: dict) -> Path:
+# ── INTERACTIVE HTML DASHBOARD ────────────────────────────────────────────────
+def generate_prop_html_dashboard(sim: dict) -> Path:
     html_path = OUT_DIR / "dashboard.html"
 
+    boot = sim["boot"]
+    paths = boot["paths"]
     trajectories_data = [
-        {"status": trj["status"], "path": trj["path"]}
-        for trj in mc["eval_trajectories_100"][:60]
+        {"status": p[0], "path": [round(x, 2) for x in p[1]]}
+        for p in paths[:60]
     ]
 
-    p_days = sorted(mc["pass_days"])
-    cum_probs = (np.arange(1, len(p_days) + 1) / len(p_days) * mc["pass_rate"]).round(2).tolist()
-    step_days = p_days[::max(1, len(p_days) // 100)]
+    p_sess = [int(x) for x in sorted(boot["sessions"][boot["status"] == "pass"])]
+    cum_probs = [float(x) for x in (np.arange(1, len(p_sess) + 1) / len(p_sess) * boot["pass_rate"]).round(2)]
+    step_sess = p_sess[::max(1, len(p_sess) // 100)]
     step_probs = cum_probs[::max(1, len(cum_probs) // 100)]
 
+    b_sum = sim["boot_sum"]
+    ch = sim["chrono"]["back_to_back"]
+    ch_valid = ch[ch["status"].isin(["pass", "fail"])]
+    ch_pass = int((ch["status"] == "pass").sum())
+    ch_total = int(len(ch_valid))
+    ch_rate = (ch_pass / ch_total * 100.0) if ch_total > 0 else 0.0
+    ch_rows = []
+    for idx, r in ch.iterrows():
+        ch_rows.append({
+            "id": idx + 1,
+            "start": str(r["start"]),
+            "end": str(r["end"]),
+            "status": r["status"].upper(),
+            "sessions": int(r["sessions"]),
+            "cal_days": int((pd.to_datetime(r["end"]) - pd.to_datetime(r["start"])).days),
+        })
+
     payload = {
-        "pass_rate": mc["pass_rate"],
-        "fail_rate": mc["fail_rate"],
-        "med_days": mc["med_days"],
-        "p90_days": mc["p90_days"],
+        "pass_rate": float(b_sum["pass_rate"]),
+        "fail_rate": float(b_sum["fail_rate"]),
+        "med_sessions": float(b_sum["pass_med"]),
+        "med_cal_days": float(b_sum["pass_med_cal_days"]),
+        "p90_sessions": float(b_sum["pass_p90"]),
+        "ev_per_attempt": float(sim["f_summary"]["ev_per_attempt"]),
         "trajectories": trajectories_data,
-        "speed_x": step_days,
+        "speed_x": step_sess,
         "speed_y": step_probs,
+        "slip_ticks": [int(k) for k in sim["slip_ticks"]],
+        "slip_pass_rates": [float(p) for p in sim["slip_pass_rates"]],
+        "chrono": ch_rows,
+        "chrono_rate": float(ch_rate),
+        "chrono_sub": f"{ch_pass} of {ch_total} Replay Attempts",
     }
-    json_str = json.dumps(payload)
-
-    percentiles = [
-        ("Min (Fastest)", np.min(mc["pass_days"]), np.min(mc["pass_trades"]), "~0.8 wks", np.min(mc["fail_days"]), np.min(mc["fail_trades"]), "~1.2 wks"),
-        ("P10", np.percentile(mc["pass_days"], 10), np.percentile(mc["pass_trades"], 10), "~1.8 wks", np.percentile(mc["fail_days"], 10), np.percentile(mc["fail_trades"], 10), "~2.2 wks"),
-        ("P25", np.percentile(mc["pass_days"], 25), np.percentile(mc["pass_trades"], 25), "~2.8 wks", np.percentile(mc["fail_days"], 25), np.percentile(mc["fail_trades"], 25), "~3.2 wks"),
-        ("P50 (Median)", mc["med_days"], mc["med_trades"], "~4.6 wks", mc["med_fail_days"], np.median(mc["fail_trades"]), "~4.8 wks"),
-        ("P75", np.percentile(mc["pass_days"], 75), np.percentile(mc["pass_trades"], 75), "~7.0 wks", np.percentile(mc["fail_days"], 75), np.percentile(mc["fail_trades"], 75), "~7.2 wks"),
-        ("P90", mc["p90_days"], np.percentile(mc["pass_trades"], 90), "~9.6 wks", np.percentile(mc["fail_days"], 90), np.percentile(mc["fail_trades"], 90), "~10.0 wks"),
-        ("P95", np.percentile(mc["pass_days"], 95), np.percentile(mc["pass_trades"], 95), "~11.8 wks", np.percentile(mc["fail_days"], 95), np.percentile(mc["fail_trades"], 95), "~11.8 wks"),
-        ("Max", np.max(mc["pass_days"]), np.max(mc["pass_trades"]), "~25.8 wks", np.max(mc["fail_days"]), np.max(mc["fail_trades"]), "~28.4 wks"),
-        ("Mean", mc["mean_days"], mc["mean_trades"], "~5.3 wks", np.mean(mc["fail_days"]), np.mean(mc["fail_trades"]), "~5.6 wks"),
-    ]
-
-    p_single = mc["pass_rate"] / 100.0
+    json_payload = json.dumps(payload, default=lambda o: int(o) if isinstance(o, (np.integer, int)) else float(o))
 
     html_code = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LucidFlex 25K • Institutional Prop Evaluation Tearsheet</title>
-    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
-    <style>
-        * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-        body {{
-            background-color: #FFFFFF;
-            color: #000000;
-            font-family: Arial, Helvetica, "DejaVu Sans", sans-serif;
-            font-size: 13px;
-            padding: 24px;
-        }}
-        .container {{ max-width: 1280px; margin: 0 auto; }}
-        .mono {{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-variant-numeric: tabular-nums; }}
-        
-        .top-bar {{
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            border-bottom: 2px solid #000000;
-            padding-bottom: 8px;
-            margin-bottom: 16px;
-        }}
-        .top-bar h1 {{
-            font-size: 20px;
-            font-weight: bold;
-            color: #000000;
-        }}
-        .nav-links a {{
-            color: #1f77b4;
-            text-decoration: none;
-            font-size: 12px;
-            font-weight: bold;
-            margin-left: 16px;
-        }}
-        .nav-links a:hover {{ text-decoration: underline; }}
-
-        .sheets-bar {{
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
-            margin-bottom: 16px;
-            padding: 10px;
-            background: #F8F9FA;
-            border: 1px solid #000000;
-        }}
-        .sheet-btn {{
-            padding: 6px 12px;
-            background: #FFFFFF;
-            border: 1px solid #000000;
-            color: #000000;
-            text-decoration: none;
-            font-size: 11.5px;
-            font-weight: bold;
-        }}
-        .sheet-btn:hover {{
-            background: #F0F7FF;
-            color: #1f77b4;
-        }}
-
-        .quad-grid {{
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 16px;
-            margin-bottom: 20px;
-        }}
-        .quad-card {{
-            border: 1px solid #000000;
-            background: #FFFFFF;
-            padding: 14px;
-        }}
-        .quad-title {{
-            font-size: 11px;
-            font-weight: bold;
-            color: #000000;
-            text-transform: uppercase;
-            letter-spacing: 0.04em;
-            margin-bottom: 10px;
-            border-bottom: 1px solid #E5E5E5;
-            padding-bottom: 6px;
-        }}
-        .stat-row {{
-            display: flex;
-            justify-content: space-between;
-            align-items: baseline;
-            padding: 3px 0;
-            font-size: 11.5px;
-        }}
-        .stat-label {{ color: #444444; }}
-        .stat-val {{ font-weight: bold; color: #000000; }}
-        .color-pos {{ color: #2ca02c; font-weight: bold; }}
-        .color-neg {{ color: #d62728; font-weight: bold; }}
-        .color-blue {{ color: #1f77b4; font-weight: bold; }}
-
-        .chart-box {{
-            border: 1px solid #000000;
-            background: #FFFFFF;
-            height: 480px;
-            width: 100%;
-            margin-bottom: 20px;
-        }}
-
-        table.academic-table {{
-            width: 100%;
-            border-collapse: collapse;
-            border: 1px solid #000000;
-            font-size: 12px;
-            margin-bottom: 20px;
-            background: #FFFFFF;
-        }}
-        table.academic-table th {{
-            background: #F2F2F2;
-            color: #000000;
-            font-weight: bold;
-            border: 1px solid #000000;
-            padding: 6px 10px;
-            text-align: right;
-        }}
-        table.academic-table th:first-child {{ text-align: left; }}
-        table.academic-table td {{
-            border: 1px solid #DDDDDD;
-            padding: 5px 10px;
-            text-align: right;
-        }}
-        table.academic-table td:first-child {{ text-align: left; }}
-        table.academic-table tr:nth-child(even) {{ background: #FAFAFA; }}
-
-        .section-header {{
-            font-size: 14px;
-            font-weight: bold;
-            color: #000000;
-            margin: 16px 0 8px 0;
-            border-bottom: 1px solid #000000;
-            padding-bottom: 4px;
-        }}
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LucidFlex 25K • Institutional Prop Evaluation Tearsheet</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root {{
+    --bg: #FFFFFF;
+    --text-primary: #000000;
+    --text-secondary: #555555;
+    --border: #E5E5E5;
+    --accent-blue: #1f77b4;
+    --accent-green: #2ca02c;
+    --accent-red: #d62728;
+    --accent-purple: #9467bd;
+  }}
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  body {{
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background: #FAFAFA;
+    color: var(--text-primary);
+    padding: 24px;
+    line-height: 1.45;
+  }}
+  .container {{
+    max-width: 1400px;
+    margin: 0 auto;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+    padding: 28px;
+  }}
+  header {{
+    border-bottom: 2px solid var(--text-primary);
+    padding-bottom: 16px;
+    margin-bottom: 24px;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+  }}
+  h1 {{ font-size: 24px; font-weight: 700; color: var(--text-primary); letter-spacing: -0.3px; }}
+  .meta-sub {{ font-size: 13px; color: var(--text-secondary); margin-top: 4px; }}
+  .kpi-grid {{
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 12px;
+    margin-bottom: 24px;
+  }}
+  .kpi-card {{
+    background: #FFF;
+    border: 1px solid var(--border);
+    padding: 14px;
+    border-radius: 4px;
+  }}
+  .kpi-label {{ font-size: 11px; text-transform: uppercase; color: var(--text-secondary); font-weight: 600; margin-bottom: 4px; }}
+  .kpi-value {{ font-size: 22px; font-weight: 700; color: var(--text-primary); }}
+  .kpi-sub {{ font-size: 11px; color: var(--text-secondary); margin-top: 2px; }}
+  .chart-box {{
+    background: #FFF;
+    border: 1px solid var(--border);
+    padding: 18px;
+    margin-bottom: 24px;
+    border-radius: 4px;
+  }}
+  .chart-title {{ font-size: 14px; font-weight: 700; margin-bottom: 12px; }}
+  table {{
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+    text-align: left;
+  }}
+  th, td {{
+    padding: 9px 12px;
+    border-bottom: 1px solid var(--border);
+  }}
+  th {{
+    background: #F7F7F7;
+    font-weight: 700;
+  }}
+  .num-pos {{ color: var(--accent-green); font-weight: 600; }}
+  .num-neg {{ color: var(--accent-red); font-weight: 600; }}
+</style>
 </head>
 <body>
 <div class="container">
-
-    <div class="top-bar">
-        <div>
-            <h1>LucidFlex 25K • Institutional Prop Evaluation Tearsheet</h1>
-            <div style="font-size: 11px; color: #555555; margin-top: 2px;">
-                Canonical Prop Firm Specs · NO TIME LIMIT · 10,000 Block-Bootstrap Paths · 100% Terminal Resolution
-            </div>
-        </div>
-        <div class="nav-links">
-            <a href="../strategy_dashboard/dashboard.html">&larr; Backtest Results</a>
-            <span style="font-weight: bold; color: #000000;">LucidFlex 25K Prop Mode</span>
-            <a href="../forward_test/demo_parity_dashboard.html">Live Demo Parity Journal &rarr;</a>
-        </div>
+  <header>
+    <div>
+      <h1>LucidFlex 25K • Institutional Prop Evaluation Tearsheet</h1>
+      <div class="meta-sub">Continuous Calendar Simulation • Anti-Martingale Ratchet (2/3/4 Micros) • EOD Trailing Floor Lock</div>
     </div>
-
-    <!-- PNG Sheets Quick Access Bar -->
-    <div class="sheets-bar">
-        <span style="font-size: 11px; font-weight: bold; align-self: center; margin-right: 8px;">DEDICATED METRIC PNG REPORTS:</span>
-        <a class="sheet-btn" href="01_prop_evaluation_trajectories_and_corridor.png" target="_blank">01. Trajectories & Corridor</a>
-        <a class="sheet-btn" href="02_prop_failure_mechanics_and_cushion_decay.png" target="_blank">02. Failure Mechanics & Near-Misses</a>
-        <a class="sheet-btn" href="03_prop_firm_rulebook_and_slippage_stress_test.png" target="_blank">03. Slippage & Rulebook Stress Tests</a>
-        <a class="sheet-btn" href="04_prop_optionality_and_annual_slot_lifecycle.png" target="_blank">04. 1-Year Slot Lifecycle & Optionality</a>
-        <a class="sheet-btn" href="05_prop_funded_survival_and_payout_harvest.png" target="_blank">05. Funded Longevity & Payout Harvest</a>
-        <a class="sheet-btn" href="lucid_flex_25k_prop_mode_report.png" target="_blank">Master Overview Poster (PNG)</a>
+    <div style="text-align: right;">
+      <div style="font-size: 14px; font-weight: 700; color: var(--accent-blue);">LucidFlex Rule Parity</div>
+      <div style="font-size: 12px; color: var(--text-secondary);">Target: +$1,250 • Max DD: $1,000 EOD</div>
     </div>
+  </header>
 
-    <!-- 4 Quadrants Summary Cards -->
-    <div class="quad-grid">
-        <div class="quad-card">
-            <div class="quad-title">1. Canonical Rulebook Specs</div>
-            <div class="stat-row"><span class="stat-label">Starting Capital</span><span class="stat-val mono">$25,000.00</span></div>
-            <div class="stat-row"><span class="stat-label">Profit Target (+5.0%)</span><span class="stat-val mono color-pos">+$1,250.00 ($26,250)</span></div>
-            <div class="stat-row"><span class="stat-label">Max Trailing DD</span><span class="stat-val mono color-neg">-$1,000.00</span></div>
-            <div class="stat-row"><span class="stat-label">Trailing Floor Lock</span><span class="stat-val mono">$25,100 (peak &ge; $26.1k)</span></div>
-            <div class="stat-row"><span class="stat-label">Daily Soft Stop</span><span class="stat-val mono">-$600.00 (day halts)</span></div>
-            <div class="stat-row"><span class="stat-label">Evaluation Time Limit</span><span class="stat-val mono color-blue">None (Unlimited)</span></div>
-        </div>
-
-        <div class="quad-card">
-            <div class="quad-title">2. Absorbing Terminal Outcomes</div>
-            <div class="stat-row"><span class="stat-label">Pass Rate (Reaches Target)</span><span class="stat-val mono color-pos">{mc['pass_rate']:.2f}%</span></div>
-            <div class="stat-row"><span class="stat-label">Breach Rate (Hits Floor)</span><span class="stat-val mono color-neg">{mc['fail_rate']:.2f}%</span></div>
-            <div class="stat-row"><span class="stat-label">Timeout Rate</span><span class="stat-val mono color-blue">0.00% (Permanent)</span></div>
-            <div class="stat-row"><span class="stat-label">Pass-to-Breach Odds</span><span class="stat-val mono color-pos">{mc['pass_rate']/mc['fail_rate']:.2f} to 1</span></div>
-            <div class="stat-row"><span class="stat-label">Average Evals per Pass</span><span class="stat-val mono">{mc['evals_per_pass']:.2f} attempts</span></div>
-            <div class="stat-row"><span class="stat-label">Evaluation Cost / Pass</span><span class="stat-val mono color-blue">${39*mc['evals_per_pass']:.2f}</span></div>
-        </div>
-
-        <div class="quad-card">
-            <div class="quad-title">3. Duration & Execution Horizon</div>
-            <div class="stat-row"><span class="stat-label">Median Days to Pass (P50)</span><span class="stat-val mono color-blue">{mc['med_days']:.0f} trading days</span></div>
-            <div class="stat-row"><span class="stat-label">Median Trades to Pass</span><span class="stat-val mono">{mc['med_trades']:.0f} executions</span></div>
-            <div class="stat-row"><span class="stat-label">Approx Calendar Time</span><span class="stat-val mono">~4.6 weeks</span></div>
-            <div class="stat-row"><span class="stat-label">90% of Passes Complete In</span><span class="stat-val mono">{mc['p90_days']:.0f} trading days</span></div>
-            <div class="stat-row"><span class="stat-label">Fastest Pass (Min)</span><span class="stat-val mono color-pos">{np.min(mc['pass_days']):.0f} days ({np.min(mc['pass_trades']):.0f} trades)</span></div>
-            <div class="stat-row"><span class="stat-label">Median Days to Failure</span><span class="stat-val mono color-neg">{mc['med_fail_days']:.0f} trading days</span></div>
-        </div>
-
-        <div class="quad-card">
-            <div class="quad-title">4. Optionality & 1-Year Slot Lifecycle</div>
-            <div class="stat-row"><span class="stat-label">1-Year Slot Mean Cash (xEEP)</span><span class="stat-val mono color-pos">+${mc['xeep_mean']:,.2f}</span></div>
-            <div class="stat-row"><span class="stat-label">1-Year Slot P50 Median</span><span class="stat-val mono color-pos">+${mc['xeep_p50']:,.2f}</span></div>
-            <div class="stat-row"><span class="stat-label">1-Year Slot P95 Upper</span><span class="stat-val mono color-blue">+${mc['xeep_p95']:,.2f}</span></div>
-            <div class="stat-row"><span class="stat-label">Expected Value / $39 Ticket</span><span class="stat-val mono color-pos">+${mc['ev_per_ticket']:,.2f}</span></div>
-            <div class="stat-row"><span class="stat-label">Expected ROI per Ticket</span><span class="stat-val mono color-pos">+{(mc['ev_per_ticket']/39.0)*100:.0f}%</span></div>
-            <div class="stat-row"><span class="stat-label">Kelly Fraction f*</span><span class="stat-val mono color-blue">0.32 (32% bankroll)</span></div>
-        </div>
+  <div class="kpi-grid">
+    <div class="kpi-card">
+      <div class="kpi-label">Bootstrap Pass Rate</div>
+      <div class="kpi-value" style="color: var(--accent-green);" id="kpi-pass">0.0%</div>
+      <div class="kpi-sub">10,000 Reshuffled Runs</div>
     </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Median Duration</div>
+      <div class="kpi-value" id="kpi-med">0 sess</div>
+      <div class="kpi-sub" id="kpi-cal-days">0 cal days</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Chrono Pass Rate</div>
+      <div class="kpi-value" style="color: var(--accent-blue);" id="kpi-chrono-rate">0.0%</div>
+      <div class="kpi-sub" id="kpi-chrono-sub">0 of 0 Replay Attempts</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Expected Net Extraction</div>
+      <div class="kpi-value" id="kpi-ev" style="color: var(--accent-green);">$0</div>
+      <div class="kpi-sub">Per $39 Evaluation Fee</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">P90 Duration</div>
+      <div class="kpi-value" id="kpi-p90">0 sess</div>
+      <div class="kpi-sub">90th Percentile Ceiling</div>
+    </div>
+  </div>
 
-    <!-- Dual Interactive Chart -->
-    <div class="chart-box" id="propChart"></div>
+  <div class="chart-box">
+    <div class="chart-title">Evaluation Trajectories Corridor (100 Sample Paths Shown)</div>
+    <div style="height: 400px;">
+      <canvas id="trajChart"></canvas>
+    </div>
+  </div>
 
-    <!-- Section 1: Empirical Duration Percentile Distributions Table -->
-    <div class="section-header">Empirical Duration Percentile Distributions (NO TIME LIMIT • 100% Terminal Resolution)</div>
-    <table class="academic-table mono">
+  <div class="chart-box">
+    <div class="chart-title">Cumulative Target Speed Curve (% Probability Reached vs Exchange Sessions)</div>
+    <div style="height: 240px;">
+      <canvas id="speedChart"></canvas>
+    </div>
+  </div>
+
+  <div class="chart-box">
+    <div class="chart-title">Historical Back-to-Back Evaluation Replay Timeline (2021-2026)</div>
+    <div style="max-height: 400px; overflow-y: auto;">
+      <table>
         <thead>
-            <tr>
-                <th rowspan="2" style="width: 22%; text-align: left;">Percentile Metric</th>
-                <th colspan="3" style="text-align: center; border-bottom: 1px solid #000000; color: #2ca02c;">Passing Accounts ({mc['pass_rate']:.1f}%)</th>
-                <th colspan="3" style="text-align: center; border-bottom: 1px solid #000000; color: #d62728;">Breached Accounts ({mc['fail_rate']:.1f}%)</th>
-            </tr>
-            <tr>
-                <th style="width: 13%;">Trading Days</th>
-                <th style="width: 13%;">Trade Count</th>
-                <th style="width: 13%;">Calendar Time</th>
-                <th style="width: 13%;">Trading Days</th>
-                <th style="width: 13%;">Trade Count</th>
-                <th style="width: 13%;">Calendar Time</th>
-            </tr>
+          <tr>
+            <th>Attempt #</th>
+            <th>Start Date</th>
+            <th>End Date</th>
+            <th>Status</th>
+            <th>Sessions</th>
+            <th>Calendar Days</th>
+          </tr>
         </thead>
-        <tbody>
-            {''.join([f'''<tr {"style='background:#F0F7FF; font-weight:bold;'" if "Median" in p[0] else ""}>
-                <td style="color:{'#1f77b4' if 'Median' in p[0] else '#000000'}; text-align: left;"><strong>{p[0]}</strong></td>
-                <td class="color-pos">{p[1]:.0f} days</td>
-                <td>{p[2]:.0f} trades</td>
-                <td style="color:#555555;">{p[3]}</td>
-                <td class="color-neg">{p[4]:.0f} days</td>
-                <td>{p[5]:.0f} trades</td>
-                <td style="color:#555555;">{p[6]}</td>
-            </tr>''' for p in percentiles])}
-        </tbody>
-    </table>
-
-    <!-- Section 2: Failure Mechanics & Near-Misses Table -->
-    <div class="section-header">Failure Mechanics & Near-Miss Autopsy (Breached Accounts Population: 20.74%)</div>
-    <table class="academic-table mono">
-        <thead>
-            <tr>
-                <th style="text-align: left; width: 30%;">Failure Diagnostic Metric</th>
-                <th style="width: 20%;">Empirical Value</th>
-                <th style="text-align: left; width: 30%;">Operational Interpretation</th>
-                <th style="width: 20%;">Risk Implication</th>
-            </tr>
-        </thead>
-        <tbody>
-            <tr>
-                <td>Median Peak Balance Reached</td>
-                <td class="color-pos">${mc['med_failed_peak']:,.2f}</td>
-                <td>Reached +41.3% of the target before collapsing</td>
-                <td>Edge established early in majority of attempts</td>
-            </tr>
-            <tr>
-                <td>Near-Misses Reaching >= $25,500 (+40% Target)</td>
-                <td class="color-neg">{mc['near_miss_25500_pct']:.1f}%</td>
-                <td>Over half of failed attempts reached within $750 of passing</td>
-                <td>Trailing floor ratchets upward and catches account</td>
-            </tr>
-            <tr>
-                <td>Near-Misses Reaching >= $25,750 (+60% Target)</td>
-                <td class="color-neg">{mc['near_miss_25750_pct']:.1f}%</td>
-                <td>One-third of failed accounts were within $500 of target</td>
-                <td>Slight trade-sizing throttle near peak preserves account</td>
-            </tr>
-            <tr>
-                <td>Heartbreak Near-Misses (>= $26,000 / +80% Target)</td>
-                <td class="color-neg">{mc['near_miss_26000_pct']:.1f}%</td>
-                <td>Accounts reaching within $250 of goal before breach</td>
-                <td>Floor lock at $25,100 triggers once peak hits $26,100</td>
-            </tr>
-            <tr>
-                <td>Mean Cascade Duration from Peak to Floor Hit</td>
-                <td class="color-blue">{mc['mean_cascade_days']:.1f} trading days</td>
-                <td>Failure is a multi-week decay, NOT a single-day blowup</td>
-                <td>Confirms Daily Soft Stop (-$600) prevents sudden death</td>
-            </tr>
-        </tbody>
-    </table>
-
-    <!-- Section 3: Ticket Campaign Economics Table -->
-    <div class="section-header">Lottery Ticket Campaign Economics ($39 / Evaluation Ticket)</div>
-    <table class="academic-table mono">
-        <thead>
-            <tr>
-                <th style="text-align: left; width: 25%;">Campaign Batch</th>
-                <th style="width: 18%;">Total Ticket Cost</th>
-                <th style="width: 18%;">Pass >= 1 Account Prob</th>
-                <th style="width: 20%;">Net Campaign EV</th>
-                <th style="width: 19%;">Campaign ROI</th>
-            </tr>
-        </thead>
-        <tbody>
-            <tr>
-                <td>1 Ticket</td><td>$39</td><td>{mc['pass_rate']:.1f}%</td><td class="color-pos">+${mc['ev_per_ticket']:,.0f}</td><td class="color-pos">+{(mc['ev_per_ticket']/39.0)*100:.0f}%</td>
-            </tr>
-            <tr>
-                <td>3 Tickets</td><td>$117</td><td>{(1-(1-p_single)**3)*100:.1f}%</td><td class="color-pos">+${3*mc['ev_per_ticket']:,.0f}</td><td class="color-pos">+{(mc['ev_per_ticket']/39.0)*100:.0f}%</td>
-            </tr>
-            <tr style="background: #F0F7FF; font-weight: bold;">
-                <td class="color-blue">5 Tickets (Optimal Campaign)</td><td>$195</td><td class="color-pos">{(1-(1-p_single)**5)*100:.1f}%</td><td class="color-blue">+${5*mc['ev_per_ticket']:,.0f}</td><td class="color-blue">+{(mc['ev_per_ticket']/39.0)*100:.0f}%</td>
-            </tr>
-            <tr>
-                <td>10 Tickets</td><td>$390</td><td>{(1-(1-p_single)**10)*100:.1f}%</td><td class="color-pos">+${10*mc['ev_per_ticket']:,.0f}</td><td class="color-pos">+{(mc['ev_per_ticket']/39.0)*100:.0f}%</td>
-            </tr>
-        </tbody>
-    </table>
-
+        <tbody id="chronoBody"></tbody>
+      </table>
+    </div>
+  </div>
 </div>
 
 <script>
-    const propData = {json_str};
+const data = {json_payload};
 
-    function initPropChart() {{
-        const chartDom = document.getElementById('propChart');
-        const myChart = echarts.init(chartDom, null, {{ renderer: 'canvas' }});
+document.getElementById('kpi-pass').innerText = data.pass_rate.toFixed(1) + '%';
+document.getElementById('kpi-med').innerText = data.med_sessions.toFixed(0) + ' sess';
+document.getElementById('kpi-cal-days').innerText = '~' + data.med_cal_days.toFixed(0) + ' calendar days';
+document.getElementById('kpi-p90').innerText = data.p90_sessions.toFixed(0) + ' sess';
+document.getElementById('kpi-ev').innerText = '+$' + data.ev_per_attempt.toFixed(2);
+document.getElementById('kpi-chrono-rate').innerText = data.chrono_rate.toFixed(1) + '%';
+document.getElementById('kpi-chrono-sub').innerText = data.chrono_sub;
 
-        let seriesList = [];
-        propData.trajectories.forEach((trj) => {{
-            seriesList.push({{
-                type: 'line',
-                data: trj.path,
-                lineStyle: {{
-                    color: trj.status === 'pass' ? '#2ca02c' : '#d62728',
-                    width: 0.9,
-                    opacity: 0.35
-                }},
-                showSymbol: false,
-                xAxisIndex: 0,
-                yAxisIndex: 0
-            }});
-        }});
+// Trajectory chart
+const trajDatasets = [];
+data.trajectories.forEach((t, idx) => {{
+  const isPass = t.status === 'pass';
+  trajDatasets.push({{
+    label: isPass ? 'Pass Path' : 'Fail Path',
+    data: t.path,
+    borderColor: isPass ? 'rgba(44, 160, 44, 0.35)' : 'rgba(214, 39, 40, 0.35)',
+    borderWidth: 1.0,
+    pointRadius: 0,
+    fill: false,
+  }});
+}});
 
-        seriesList.push({{
-            name: 'Cumulative Pass %',
-            type: 'line',
-            data: propData.speed_x.map((x, i) => [x, propData.speed_y[i]]),
-            lineStyle: {{ color: '#1f77b4', width: 2.2 }},
-            areaStyle: {{ color: 'rgba(31, 119, 180, 0.15)' }},
-            showSymbol: false,
-            xAxisIndex: 1,
-            yAxisIndex: 1
-        }});
+// Reference lines
+const maxLen = Math.max(...data.trajectories.map(t => t.path.length));
+const labels = Array.from({{ length: maxLen }}, (_, i) => i);
 
-        const option = {{
-            backgroundColor: '#FFFFFF',
-            animation: false,
-            title: {{
-                text: 'Backtest Results - Prop Evaluation Mode',
-                left: 'center',
-                top: 8,
-                textStyle: {{
-                    fontFamily: 'Arial, sans-serif',
-                    fontSize: 16,
-                    fontWeight: 'normal',
-                    color: '#000000'
-                }}
-            }},
-            tooltip: {{
-                trigger: 'axis',
-                backgroundColor: 'rgba(255, 255, 255, 0.96)',
-                borderColor: '#000000',
-                borderWidth: 1,
-                textStyle: {{ color: '#000000', fontSize: 11, fontFamily: 'monospace' }}
-            }},
-            grid: [
-                {{ left: '65px', right: '40px', top: '55px', height: '52%' }},
-                {{ left: '65px', right: '40px', top: '70%', height: '22%' }}
-            ],
-            xAxis: [
-                {{
-                    type: 'value',
-                    gridIndex: 0,
-                    axisLine: {{ lineStyle: {{ color: '#000000', width: 1 }} }},
-                    axisTick: {{ lineStyle: {{ color: '#000000' }} }},
-                    axisLabel: {{ color: '#000000', fontSize: 10 }},
-                    splitLine: {{ show: true, lineStyle: {{ color: '#E5E5E5' }} }}
-                }},
-                {{
-                    type: 'value',
-                    gridIndex: 1,
-                    max: 80,
-                    name: 'Trading Days Elapsed',
-                    nameLocation: 'middle',
-                    nameGap: 25,
-                    axisLine: {{ lineStyle: {{ color: '#000000', width: 1 }} }},
-                    axisTick: {{ lineStyle: {{ color: '#000000' }} }},
-                    axisLabel: {{ color: '#000000', fontSize: 10 }},
-                    splitLine: {{ show: true, lineStyle: {{ color: '#E5E5E5' }} }}
-                }}
-            ],
-            yAxis: [
-                {{
-                    type: 'value',
-                    gridIndex: 0,
-                    min: 23800,
-                    max: 26500,
-                    name: 'Account Balance ($)',
-                    nameLocation: 'middle',
-                    nameGap: 50,
-                    axisLine: {{ show: true, lineStyle: {{ color: '#000000', width: 1 }} }},
-                    axisTick: {{ lineStyle: {{ color: '#000000' }} }},
-                    splitLine: {{ lineStyle: {{ color: '#E5E5E5' }} }},
-                    axisLabel: {{
-                        color: '#000000',
-                        fontSize: 10,
-                        formatter: v => '$' + v.toLocaleString()
-                    }}
-                }},
-                {{
-                    type: 'value',
-                    gridIndex: 1,
-                    min: 0,
-                    max: 100,
-                    name: 'Cum Pass %',
-                    nameLocation: 'middle',
-                    nameGap: 35,
-                    axisLine: {{ show: true, lineStyle: {{ color: '#000000', width: 1 }} }},
-                    axisTick: {{ lineStyle: {{ color: '#000000' }} }},
-                    splitLine: {{ lineStyle: {{ color: '#E5E5E5' }} }},
-                    axisLabel: {{
-                        color: '#1f77b4',
-                        fontSize: 9,
-                        formatter: v => v + '%'
-                    }}
-                }}
-            ],
-            series: seriesList
-        }};
-
-        myChart.setOption(option);
-        window.addEventListener('resize', () => myChart.resize());
+new Chart(document.getElementById('trajChart').getContext('2d'), {{
+  type: 'line',
+  data: {{ labels: labels, datasets: trajDatasets }},
+  options: {{
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {{ legend: {{ display: false }} }},
+    scales: {{
+      x: {{ title: {{ display: true, text: 'Exchange Sessions Elapsed' }}, grid: {{ color: '#E5E5E5' }} }},
+      y: {{ min: 23800, max: 26500, grid: {{ color: '#E5E5E5' }}, ticks: {{ callback: v => '$' + v.toLocaleString() }} }}
     }}
+  }}
+}});
 
-    window.addEventListener('DOMContentLoaded', initPropChart);
+// Speed chart
+new Chart(document.getElementById('speedChart').getContext('2d'), {{
+  type: 'line',
+  data: {{
+    labels: data.speed_x,
+    datasets: [{{
+      label: 'Cumulative Pass Probability (%)',
+      data: data.speed_y,
+      borderColor: '#1f77b4',
+      backgroundColor: 'rgba(31, 119, 180, 0.1)',
+      borderWidth: 2,
+      fill: true,
+      pointRadius: 0,
+    }}]
+  }},
+  options: {{
+    responsive: true,
+    maintainAspectRatio: false,
+    scales: {{
+      x: {{ title: {{ display: true, text: 'Exchange Sessions' }}, grid: {{ color: '#E5E5E5' }} }},
+      y: {{ title: {{ display: true, text: 'Cumulative Pass Rate (%)' }}, min: 0, max: 100, grid: {{ color: '#E5E5E5' }} }}
+    }}
+  }}
+}});
+
+// Chrono table
+let cHtml = '';
+data.chrono.forEach(r => {{
+  const cls = r.status === 'PASS' ? 'num-pos' : (r.status === 'FAIL' ? 'num-neg' : '');
+  cHtml += `<tr>
+    <td><strong>Attempt #${{r.id}}</strong></td>
+    <td>${{r.start}}</td>
+    <td>${{r.end}}</td>
+    <td class="${{cls}}">${{r.status}}</td>
+    <td>${{r.sessions}} sess</td>
+    <td>${{r.cal_days}} days</td>
+  </tr>`;
+}});
+document.getElementById('chronoBody').innerHTML = cHtml;
 </script>
 </body>
-</html>
-"""
+</html>"""
+
     html_path.write_text(html_code, encoding="utf-8")
     return html_path
 
 
 def main():
-    print("Loading active 3-strategy portfolio trades...")
-    trades, daily = load_trades_and_daily()
-
-    print("Running 10,000 Block-Bootstrap Prop Simulation (NO TIME LIMIT)...")
-    mc = run_comprehensive_prop_simulation(trades, daily, n_sims=10_000, block_size=5)
-
-    print("\n" + "=" * 80)
-    print("   LUCIDFLEX 25K INSTITUTIONAL PROP SCORECARD")
     print("=" * 80)
-    print(f"  Pass Rate (+$1,250 Target):       {mc['pass_rate']:5.2f}%")
-    print(f"  Breach Rate (-$1,000 DD):         {mc['fail_rate']:5.2f}%")
-    print(f"  Timeout Rate:                      0.00% (No artificial time limit)")
-    print(f"  Median Days to Pass:              {mc['med_days']:4.0f} days ({mc['med_trades']:4.0f} trades)")
-    print(f"  90% of Passes Complete Within:    {mc['p90_days']:4.0f} days")
-    print(f"  Expected Value (EV) per Ticket:  +${mc['ev_per_ticket']:>6.2f}")
-    print(f"  1-Year Slot Lifecycle Net (xEEP):+${mc['xeep_mean']:>6.2f} / slot / year")
-    print("=" * 80 + "\n")
+    print("INSTITUTIONAL PROP EVALUATION & FUNDED SUITE GENERATOR")
+    print("=" * 80)
+    print(f"Output Directory: {OUT_DIR}")
 
-    print("Rendering Modular Prop Firm Publication PNG Sheets with DISTINCT METRICS...")
-    s1 = render_prop_sheet_01_trajectories(mc)
-    print(f"  Saved Sheet 01 (Trajectories & Corridor): {s1}")
-    s2 = render_prop_sheet_02_failure_mechanics(mc)
-    print(f"  Saved Sheet 02 (Failure Mechanics & Near-Misses): {s2}")
-    s3 = render_prop_sheet_03_rulebook_and_slippage(mc)
-    print(f"  Saved Sheet 03 (Slippage & Rulebook Stress Tests): {s3}")
-    s4 = render_prop_sheet_04_slot_lifecycle(mc)
-    print(f"  Saved Sheet 04 (1-Year Slot Lifecycle & Optionality): {s4}")
-    s5 = render_prop_sheet_05_funded_survival_and_payout_harvest(mc)
-    print(f"  Saved Sheet 05 (Funded Longevity & Payout Harvest): {s5}")
-    s_master = render_prop_poster_master(mc)
-    print(f"  Saved Master Overview Poster: {s_master}")
+    sim = run_full_simulation_suite()
 
-    print("Generating Institutional Interactive Prop Dashboard (HTML with ECharts)...")
-    dashboard_path = generate_prop_html_dashboard(trades, daily, mc)
-    print(f"  Saved Dashboard: {dashboard_path}")
-    print(f"\nTo view in browser:\n  open {dashboard_path}\n")
-    return 0
+    print("\nRendering Publication-Grade Prop PNG Sheets...")
+    p1 = render_prop_sheet_01_trajectories(sim)
+    print(f"  [Sheet 01] Trajectories & Corridor: {p1.name}")
+
+    p2 = render_prop_sheet_02_failure_mechanics(sim)
+    print(f"  [Sheet 02] Failure Mechanics & Cushion Decay: {p2.name}")
+
+    p3 = render_prop_sheet_03_rulebook_and_slippage(sim)
+    print(f"  [Sheet 03] Rulebook & Slippage Stress Test: {p3.name}")
+
+    p4 = render_prop_sheet_04_slot_lifecycle(sim)
+    print(f"  [Sheet 04] Sequential Attempt Economics & History: {p4.name}")
+
+    p5 = render_prop_sheet_05_funded_survival(sim)
+    print(f"  [Sheet 05] Funded Survival & Payout Harvest: {p5.name}")
+
+    p_post = render_prop_poster_master(sim)
+    print(f"  [Poster] Master LucidFlex Prop Mode Report: {p_post.name}")
+
+    print("\nGenerating Interactive HTML Prop Dashboard...")
+    p_html = generate_prop_html_dashboard(sim)
+    print(f"  [HTML] Interactive Dashboard: {p_html.name}")
+
+    print("\nAll prop dashboard artifacts generated successfully.")
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

@@ -129,7 +129,7 @@ def test_journal_account_progression_and_ratchet():
         assert st0.recommended_micros == 2
         assert "Tier 1" in st0.recommended_tier
 
-        # Trade 1: +$400 profit -> profit reaches $400, moves to Tier 2 (3 micros)
+        # Trade 1: +$400 profit -> profit reaches $400 (>= $200), moves to Tier 2 (3 micros)
         t1 = TradeFillRecord(
             date="2026-10-28",
             symbol="MNQ",
@@ -149,7 +149,7 @@ def test_journal_account_progression_and_ratchet():
         assert st1.recommended_micros == 3
         assert "Tier 2" in st1.recommended_tier
 
-        # Trade 2: +$400 more profit -> total profit > $800 -> Tier 3 (4 micros)
+        # Trade 2: +$400 more profit -> total profit > $800 (>= $500) -> Tier 3 (4 micros)
         t2 = TradeFillRecord(
             date="2026-10-29",
             symbol="MNQ",
@@ -163,7 +163,7 @@ def test_journal_account_progression_and_ratchet():
             actual_exit_fill=20520.00,
         )
         st2 = journal.record_trade(t2)
-        assert st2.profit >= 750.0
+        assert st2.profit >= 500.0
         assert st2.recommended_micros == 4
         assert "Tier 3" in st2.recommended_tier
 

@@ -22,7 +22,7 @@ def test_simulate_ratchet_profile_basic():
     prof["max_trading_days"] = 22
     prof["drawdown_mode"] = "eod_trailing"
     
-    ratchet_tiers = [(0.0, 0.2), (350.0, 0.3), (750.0, 0.4)]
+    ratchet_tiers = [(0.0, 0.2), (200.0, 0.3), (500.0, 0.4)]
     
     res = simulate_ratchet_profile(daily_paths, prof, ratchet_tiers=ratchet_tiers, n_sims=100, seed=42)
     assert len(res) == 100
@@ -47,6 +47,6 @@ def test_simulate_ratchet_step_up_and_down():
     prof["daily_loss_limit"] = 1500.0
     prof["max_trading_days"] = 5
     
-    ratchet_tiers = [(0.0, 0.2), (350.0, 0.3), (750.0, 0.4)]
+    ratchet_tiers = [(0.0, 0.2), (200.0, 0.3), (500.0, 0.4)]
     res = simulate_ratchet_profile(daily_paths, prof, ratchet_tiers=ratchet_tiers, n_sims=10, seed=42)
     assert (res["status"] == "pass").all()

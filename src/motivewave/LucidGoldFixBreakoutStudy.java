@@ -5,8 +5,10 @@ import com.motivewave.platform.sdk.common.DataContext;
 import com.motivewave.platform.sdk.common.DataSeries;
 import com.motivewave.platform.sdk.common.Defaults;
 import com.motivewave.platform.sdk.common.Enums$MarkerType;
+import com.motivewave.platform.sdk.common.Enums$OrderAction;
 import com.motivewave.platform.sdk.common.Enums$Position;
 import com.motivewave.platform.sdk.common.Enums$Size;
+import com.motivewave.platform.sdk.common.Enums$TIF;
 import com.motivewave.platform.sdk.common.MarkerInfo;
 import com.motivewave.platform.sdk.common.desc.BooleanDescriptor;
 import com.motivewave.platform.sdk.common.desc.DoubleDescriptor;
@@ -16,6 +18,8 @@ import com.motivewave.platform.sdk.common.desc.SettingTab;
 import com.motivewave.platform.sdk.common.desc.SettingsDescriptor;
 import com.motivewave.platform.sdk.draw.Line;
 import com.motivewave.platform.sdk.draw.Marker;
+import com.motivewave.platform.sdk.order_mgmt.Order;
+import com.motivewave.platform.sdk.order_mgmt.OrderContext;
 import com.motivewave.platform.sdk.study.RuntimeDescriptor;
 import com.motivewave.platform.sdk.study.Study;
 import com.motivewave.platform.sdk.study.StudyHeader;
@@ -23,6 +27,9 @@ import com.motivewave.platform.sdk.study.StudyHeader;
 import java.awt.Color;
 import java.awt.Font;
 import java.awt.Toolkit;
+import java.io.File;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
@@ -31,15 +38,21 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @StudyHeader(
     namespace = "com.motivewave.platform.study.custom",
     id = "GOLD_FIX_BREAKOUT_ALGO_V1",
     name = "Lucid 25K — 3. Gold London Fix (10:15 ET)",
-    desc = "10:15 ET Post-LBMA PM Fix Breakout on Gold (MGC/GC) with 3-Way Barrier (Prior VAH, IB60 High, London High), $250 Risk Budget, 11:00 Exit, and Live Trade Tracker",
+    desc = "10:15 ET Post-LBMA PM Fix Breakout on Gold (MGC/GC) with 3-Way Barrier (Prior VAH, IB60 High, London High), $250 Risk Budget, 11:00 Exit, Live CQG Bracket Execution, and Live Trade Tracker",
     menu = "Custom",
     overlay = true,
-    signals = true
+    signals = true,
+    strategy = true,
+    showTradeOptions = true,
+    supportsTradeLots = true,
+    supportsPosition = true
 )
 public class LucidGoldFixBreakoutStudy extends Study {
 
@@ -58,7 +71,9 @@ public class LucidGoldFixBreakoutStudy extends Study {
     private static final String REQUIRE_OUTSIDE_IB60 = "requireOutsideIB60";
     private static final String ENABLE_SOUND_ALERT = "enableSoundAlert";
     private static final String SHOW_LEVEL_LINES = "showLevelLines";
+    private static final String HIDE_LINES_WHEN_LIVE = "hideLinesWhenLive";
     private static final String SHOW_NO_SETUP_MARKER = "showNoSetupMarker";
+    private static final String ENABLE_LIVE_AUTOTRADE = "enableLiveAutoTrade";
 
     private static final ZoneId NY_ZONE = ZoneId.of("America/New_York");
 
@@ -84,9 +99,63 @@ public class LucidGoldFixBreakoutStudy extends Study {
         String microSym;
         double ptVal;
         boolean closed = false;
+        boolean orderSubmitted = false;
         Line slLine;
         Line tpLine;
         Line entryLine;
+    }
+
+    private static class DaemonRiskState {
+        int recommendedMicros = 2;
+        double trailingCushion = 1000.0;
+        double currentDatePnl = 0.0;
+        boolean circuitBreakerHit = false;
+        boolean emergencyDelever = false;
+        boolean finishLineShield = false;
+        boolean garchDecileHalving = false;
+    }
+
+    private static DaemonRiskState loadDaemonRiskState() {
+        DaemonRiskState state = new DaemonRiskState();
+        File f = new File(System.getProperty("user.home"), "trading_strategy/nq-scalper-backtest/results/forward_test/demo_parity_state.json");
+        if (!f.exists() || !f.canRead()) {
+            return state;
+        }
+        try {
+            String content = new String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8);
+            Matcher mMicros = Pattern.compile("\"recommended_micros\"\\s*:\\s*(\\d+)").matcher(content);
+            if (mMicros.find()) {
+                state.recommendedMicros = Integer.parseInt(mMicros.group(1));
+            }
+            Matcher mCushion = Pattern.compile("\"trailing_cushion\"\\s*:\\s*([-+]?[0-9]*\\.?[0-9]+)").matcher(content);
+            if (mCushion.find()) {
+                state.trailingCushion = Double.parseDouble(mCushion.group(1));
+            }
+            Matcher mPnl = Pattern.compile("\"current_date_pnl\"\\s*:\\s*([-+]?[0-9]*\\.?[0-9]+)").matcher(content);
+            if (mPnl.find()) {
+                state.currentDatePnl = Double.parseDouble(mPnl.group(1));
+            }
+            Matcher mShield = Pattern.compile("\"finish_line_shield\"\\s*:\\s*(true|false)").matcher(content);
+            if (mShield.find()) {
+                state.finishLineShield = Boolean.parseBoolean(mShield.group(1));
+            }
+            Matcher mGarch = Pattern.compile("\"garch_decile_halving\"\\s*:\\s*(true|false)").matcher(content);
+            if (mGarch.find()) {
+                state.garchDecileHalving = Boolean.parseBoolean(mGarch.group(1));
+            }
+            Matcher mDelever = Pattern.compile("\"defensive_delever\"\\s*:\\s*(true|false)").matcher(content);
+            if (mDelever.find()) {
+                state.emergencyDelever = Boolean.parseBoolean(mDelever.group(1));
+            }
+            if (state.currentDatePnl <= -500.0) {
+                state.circuitBreakerHit = true;
+            }
+            if (state.trailingCushion < 500.0 || state.emergencyDelever || state.finishLineShield || state.garchDecileHalving) {
+                state.recommendedMicros = 1;
+            }
+        } catch (Exception ignored) {
+        }
+        return state;
     }
 
     private static class ComexRthProfile {
@@ -209,7 +278,7 @@ public class LucidGoldFixBreakoutStudy extends Study {
         group.addRow(new DoubleDescriptor(MIN_LONG_CLOSE_LOC, "Min Long Close Location (0.70)", 0.70, 0.50, 0.95, 0.05));
         group.addRow(new DoubleDescriptor(REWARD_RISK_RATIO, "Target Reward / Risk Ratio (1.50x)", 1.5, 0.5, 3.0, 0.1));
         group.addRow(new DoubleDescriptor(RISK_BUDGET_DOLLARS, "Risk Budget / Trade ($250 for Lucid 25K)", 250.0, 50.0, 500.0, 10.0));
-        group.addRow(new IntegerDescriptor(RATCHET_TIER_OVERRIDE, "Ratchet Sizing Override (0=Auto, 2/3/4 Micros)", 0, 0, 4, 1));
+        group.addRow(new IntegerDescriptor(RATCHET_TIER_OVERRIDE, "Ratchet Sizing Override (0=Auto-Sync Daemon State, 1/2/3/4 Micros)", 0, 0, 4, 1));
         group.addRow(new DoubleDescriptor(MIN_STOP_POINTS, "Min Stop Distance Points (Gold 3.0)", 3.0, 1.0, 10.0, 0.5));
         group.addRow(new DoubleDescriptor(MAX_STOP_POINTS, "Max Stop Distance Points (Gold 18.0)", 18.0, 10.0, 35.0, 1.0));
         group.addRow(new BooleanDescriptor(REQUIRE_OUTSIDE_PRIOR_VA, "Require Breakout Above Prior Day VAH", true));
@@ -217,7 +286,9 @@ public class LucidGoldFixBreakoutStudy extends Study {
         group.addRow(new BooleanDescriptor(REQUIRE_OUTSIDE_IB60, "Require Breakout Above COMEX IB60 High", true));
         group.addRow(new BooleanDescriptor(ENABLE_SOUND_ALERT, "Enable Sound Alert & Notification", true));
         group.addRow(new BooleanDescriptor(SHOW_LEVEL_LINES, "Show SL / TP / Entry / 11:00 Exit Lines", true));
-        group.addRow(new BooleanDescriptor(SHOW_NO_SETUP_MARKER, "Show 'No Setup' Reason Marker at 10:15", true));
+        group.addRow(new BooleanDescriptor(HIDE_LINES_WHEN_LIVE, "Hide Custom Lines When Live Auto-Trade Active (Use Native Orders)", true));
+        group.addRow(new BooleanDescriptor(SHOW_NO_SETUP_MARKER, "Show 'No Setup' Reason Marker at 10:15", false));
+        group.addRow(new BooleanDescriptor(ENABLE_LIVE_AUTOTRADE, "Enable Live Auto-Trading (CQG Execution)", false));
 
         setSettingsDescriptor(sd);
 
@@ -329,6 +400,11 @@ public class LucidGoldFixBreakoutStudy extends Study {
                 boolean reqIB = getSettings().getBoolean(REQUIRE_OUTSIDE_IB60, true);
                 boolean soundAlert = getSettings().getBoolean(ENABLE_SOUND_ALERT, true);
                 boolean showLines = getSettings().getBoolean(SHOW_LEVEL_LINES, true);
+                boolean hideWhenLive = getSettings().getBoolean(HIDE_LINES_WHEN_LIVE, true);
+                boolean isLive = getSettings().getBoolean(ENABLE_LIVE_AUTOTRADE, false);
+                if (hideWhenLive && isLive) {
+                    showLines = false;
+                }
 
                 double priorVah = (priorProf != null && !Double.isNaN(priorProf.vah)) ? priorProf.vah : Double.NaN;
                 double lonHigh = (lon != null && !Double.isInfinite(lon.high)) ? lon.high : Double.NaN;
@@ -348,12 +424,23 @@ public class LucidGoldFixBreakoutStudy extends Study {
                 if (isLong) {
                     double stopPts = Math.min(maxStopPts, Math.max(minStopPts, fixRange));
 
-                    int contracts;
+                    // 1. Enforce Daily Loss Circuit Breaker (-$500 Soft Stop)
+                    DaemonRiskState riskState = loadDaemonRiskState();
+                    if (riskState.circuitBreakerHit) {
+                        if (getSettings().getBoolean(SHOW_NO_SETUP_MARKER, true)) {
+                            Coordinate coord = new Coordinate(barStartTime, high + (tickSize * 4));
+                            MarkerInfo info = new MarkerInfo(Enums$MarkerType.CIRCLE, Enums$Size.MEDIUM, new Color(220, 20, 60), Color.WHITE, Color.PINK, true);
+                            Marker marker = new Marker(coord, Enums$Position.TOP, info);
+                            marker.setTextValue(String.format("NO TRADE: Daily Loss Circuit Breaker Active (Today: -$%.0f <= -$500)", Math.abs(riskState.currentDatePnl)));
+                            addFigure(marker);
+                        }
+                        return;
+                    }
+
+                    // 2. Dynamic Contract Sizing with Cushion De-leveraging
+                    int contracts = riskState.recommendedMicros;
                     if (ratchetOverride >= 1 && ratchetOverride <= 4) {
                         contracts = ratchetOverride;
-                    } else {
-                        contracts = (int) Math.round(riskBudget / (stopPts * ptVal));
-                        contracts = Math.max(1, Math.min(4, contracts));
                     }
 
                     double entryPrice = open;
@@ -378,35 +465,52 @@ public class LucidGoldFixBreakoutStudy extends Study {
                     trade.ptVal = ptVal;
                     trade.closed = false;
 
-                    Coordinate coord = new Coordinate(entryTime, low - (stopPts * 0.15));
-                    MarkerInfo info = new MarkerInfo(Enums$MarkerType.ARROW, Enums$Size.LARGE, Color.GREEN, Color.GREEN, true);
+                    Coordinate coord = new Coordinate(entryTime, low - (stopPts * 0.10));
+                    MarkerInfo info = new MarkerInfo(Enums$MarkerType.ARROW, Enums$Size.MEDIUM, new Color(0, 204, 102), new Color(0, 204, 102), true);
                     Marker marker = new Marker(coord, Enums$Position.BOTTOM, info);
-                    marker.setTextValue(String.format("GOLD FIX BUY %dx %s @ %.2f | SL: %.2f (-$%.0f) | TP: %.2f (+$%.0f, 1.5R) | MAX: 11:00",
-                        contracts, microSym, entryPrice, stopPrice, actualRiskDollars, targetPrice, actualRewardDollars));
+                    marker.setTextValue(String.format("GOLD BUY %dx %s @ %.2f", contracts, microSym, entryPrice));
                     addFigure(marker);
 
                     if (showLines) {
                         Line slLine = new Line(entryTime, stopPrice, exitTime, stopPrice);
-                        slLine.setColor(Color.RED);
-                        slLine.setText(String.format("STOP LOSS: %.2f (-$%.0f)", stopPrice, actualRiskDollars), LINE_FONT);
+                        slLine.setColor(new Color(220, 20, 60));
+                        slLine.setText(String.format("SL: %.2f (-$%.0f)", stopPrice, actualRiskDollars), LINE_FONT);
+                        if (slLine.getText() != null) {
+                            slLine.getText().setShowBorder(false);
+                            slLine.getText().setBackground(null);
+                        }
                         addFigure(slLine);
                         trade.slLine = slLine;
 
                         Line tpLine = new Line(entryTime, targetPrice, exitTime, targetPrice);
-                        tpLine.setColor(Color.GREEN);
-                        tpLine.setText(String.format("PROFIT TARGET 1.5R: %.2f (+$%.0f)", targetPrice, actualRewardDollars), LINE_FONT);
+                        tpLine.setColor(new Color(0, 204, 102));
+                        tpLine.setText(String.format("TP (1.5R): %.2f (+$%.0f)", targetPrice, actualRewardDollars), LINE_FONT);
+                        if (tpLine.getText() != null) {
+                            tpLine.getText().setShowBorder(false);
+                            tpLine.getText().setBackground(null);
+                        }
                         addFigure(tpLine);
                         trade.tpLine = tpLine;
 
                         Line entryLine = new Line(entryTime, entryPrice, exitTime, entryPrice);
-                        entryLine.setColor(Color.WHITE);
+                        entryLine.setColor(new Color(200, 200, 200, 180));
+                        entryLine.setStroke(new java.awt.BasicStroke(1.0f, java.awt.BasicStroke.CAP_BUTT, java.awt.BasicStroke.JOIN_MITER, 10.0f, new float[]{4.0f, 4.0f}, 0.0f));
                         entryLine.setText(String.format("ENTRY: %.2f (%dx %s)", entryPrice, contracts, microSym), LINE_FONT);
+                        if (entryLine.getText() != null) {
+                            entryLine.getText().setShowBorder(false);
+                            entryLine.getText().setBackground(null);
+                        }
                         addFigure(entryLine);
                         trade.entryLine = entryLine;
 
                         Line exitLine = new Line(exitTime, stopPrice, exitTime, targetPrice);
-                        exitLine.setColor(Color.CYAN);
-                        exitLine.setText("11:00 MAX TIME EXIT", LINE_FONT);
+                        exitLine.setColor(new Color(0, 206, 209, 180));
+                        exitLine.setStroke(new java.awt.BasicStroke(1.0f, java.awt.BasicStroke.CAP_BUTT, java.awt.BasicStroke.JOIN_MITER, 10.0f, new float[]{3.0f, 3.0f}, 0.0f));
+                        exitLine.setText("11:00 FLATTEN", LINE_FONT);
+                        if (exitLine.getText() != null) {
+                            exitLine.getText().setShowBorder(false);
+                            exitLine.getText().setBackground(null);
+                        }
                         addFigure(exitLine);
                     }
 
@@ -487,8 +591,104 @@ public class LucidGoldFixBreakoutStudy extends Study {
                 MarkerInfo info = new MarkerInfo(Enums$MarkerType.CIRCLE, Enums$Size.LARGE, outcomeColor, outcomeColor, true);
                 Marker marker = new Marker(coord, Enums$Position.TOP, info);
                 marker.setTextValue(outcomeText);
+                if (marker.getText() != null) {
+                    marker.getText().setShowBorder(false);
+                    marker.getText().setBackground(null);
+                }
                 addFigure(marker);
             }
+        }
+    }
+
+    // =========================================================================
+    // MOTIVEWAVE STRATEGY & AUTOMATED ORDER EXECUTION LIFECYCLE (CQG / RITHMIC)
+    // =========================================================================
+
+    @Override
+    public void onActivate(OrderContext ctx) {
+        // Armed on strategy activation
+    }
+
+    @Override
+    public void onSignal(OrderContext ctx, Object signal) {
+        if (ctx == null) return;
+        if (!getSettings().getBoolean(ENABLE_LIVE_AUTOTRADE, false)) return;
+        executeAutoTradeIfArmed(ctx, signal);
+    }
+
+    @Override
+    public void onBarClose(OrderContext ctx) {
+        if (ctx == null) return;
+        if (!getSettings().getBoolean(ENABLE_LIVE_AUTOTRADE, false)) return;
+
+        // 1. If flat, check if an unsubmitted trade signal exists for today
+        if (ctx.getPosition() == 0) {
+            long now = ctx.getCurrentTime();
+            LocalDate today = Instant.ofEpochMilli(now).atZone(NY_ZONE).toLocalDate();
+            ActiveTrade trade = tradesByDate.get(today);
+            if (trade != null && !trade.orderSubmitted && !trade.closed && now >= trade.entryTime) {
+                executeAutoTradeIfArmed(ctx, SIGNAL_BUY);
+            }
+        }
+
+        // 2. Automated Hard Session Close Flatten at 11:00 ET
+        if (ctx.getPosition() != 0) {
+            long barTime = ctx.getCurrentTime();
+            ZonedDateTime zdt = Instant.ofEpochMilli(barTime).atZone(NY_ZONE);
+            int hour = zdt.getHour();
+            int min = zdt.getMinute();
+
+            if (hour > 11 || (hour == 11 && min >= 0)) {
+                ctx.cancelOrders();
+                ctx.closeAtMarket();
+            }
+        }
+    }
+
+    private synchronized void executeAutoTradeIfArmed(OrderContext ctx, Object signal) {
+        if (ctx.getPosition() != 0) return; // Prevent double-entry / pyramiding
+
+        // Gateway-level circuit breaker check
+        DaemonRiskState riskState = loadDaemonRiskState();
+        if (riskState.circuitBreakerHit) return;
+
+        long now = ctx.getCurrentTime();
+        LocalDate today = Instant.ofEpochMilli(now).atZone(NY_ZONE).toLocalDate();
+        ActiveTrade trade = tradesByDate.get(today);
+        if (trade == null || trade.orderSubmitted || trade.closed) return;
+
+        int contracts = trade.contracts;
+        if (contracts <= 0) contracts = 1;
+
+        float stopPrice = ctx.getInstrument().round((float) trade.stopPrice);
+        float targetPrice = ctx.getInstrument().round((float) trade.targetPrice);
+
+        // Gold London Fix is a Long Breakout strategy
+        Order entry = ctx.createMarketOrder(Enums$OrderAction.BUY, contracts);
+        Order sl = ctx.createStopOrder(Enums$OrderAction.SELL, Enums$TIF.GTC, contracts, stopPrice);
+        Order tp = ctx.createLimitOrder(Enums$OrderAction.SELL, Enums$TIF.GTC, contracts, targetPrice);
+        ctx.submitOrders(entry, sl, tp);
+        trade.orderSubmitted = true;
+    }
+
+    @Override
+    public void onPositionClosed(OrderContext ctx) {
+        if (ctx != null) {
+            ctx.cancelOrders();
+        }
+    }
+
+    @Override
+    public void onOrderFilled(OrderContext ctx, Order order) {
+        if (ctx != null && ctx.getPosition() == 0) {
+            ctx.cancelOrders();
+        }
+    }
+
+    @Override
+    public void onDeactivate(OrderContext ctx) {
+        if (ctx != null) {
+            ctx.cancelOrders();
         }
     }
 }

@@ -1,0 +1,254 @@
+# Failed Ideas & Invalidated Hypotheses Ledger
+
+This ledger is an append-only record of all research hypotheses, sizing policies, and execution ideas that have been empirically tested and falsified.
+
+> [!IMPORTANT]
+> **MANDATORY STANDING ORDER FOR ALL AGENTS & RESEARCHERS**  
+> Before formulating or testing any new strategy, signal filter, or sizing scheme, consult this document. **Never re-test an idea that has been ruled out** unless you have identified a fundamental bug in the prior evaluation code or have fresh, out-of-sample data with a pre-registered structural modification.
+
+---
+
+## Table of Ruled-Out Concepts
+
+1. [Sizing: The 1-Micro Funded Infant Mortality Trap](#1-sizing-the-1-micro-funded-infant-mortality-trap-2026-11-03)
+2. [Sizing: Fixed 1-Micro Sizing Benchmark](#2-sizing-fixed-1-micro-sizing-benchmark-2026-11-03)
+3. [Strategy 3: High-Volatility Stop Widening](#3-strategy-3-high-volatility-stop-widening-2026-11-01)
+4. [H20: Opposing Macro Shock Pruning on Strategy 1](#4-h20-opposing-macro-shock-pruning-on-strategy-1-2026-11-01)
+5. [H13: Late-Day VX Crush Power-Hour Long Drive](#5-h13-late-day-vx-crush-power-hour-long-drive-2026-10-30)
+6. [H11: Late-Day Cross-Asset MOC Institutional Drive](#6-h11-late-day-cross-asset-moc-institutional-drive-2026-10-30)
+7. [H12: ES vs NQ SMT Divergence + TICK Exhaustion Reversal](#7-h12-es-vs-nq-smt-divergence-tick-exhaustion-reversal-2026-10-30)
+8. [H10: Cross-Asset Institutional Program Thrust](#8-h10-cross-asset-institutional-program-thrust-2026-10-30)
+9. [H9: Delayed Value-Area Macro Breakout (10:04 ET)](#9-h9-delayed-value-area-macro-breakout-1004-et-2026-10-30)
+10. [H8: Afternoon VWAP Pullback Continuation Scalp](#10-h8-afternoon-vwap-pullback-continuation-scalp-2026-10-30)
+11. [H5 & H5-OOS: Prior Session Value Area Responsive Rotation Scalp](#11-h5-h5-oos-prior-session-value-area-responsive-rotation-scalp-2026-10-29-2026-10-30)
+12. [H7: Overnight High/Low Liquidity Sweep Scalp](#12-h7-overnight-highlow-liquidity-sweep-scalp-2026-10-29)
+13. [H6: Mid-Day VWAP Mean Reversion Scalp](#13-h6-mid-day-vwap-mean-reversion-scalp-2026-10-29)
+14. [L2: Aggressive Flow Location Shelf Breakout](#14-l2-aggressive-flow-location-shelf-breakout-2026-10-22)
+15. [H3: Prior Session POC/VAH/VAL Rejection Scalp](#15-h3-prior-session-pocvahval-rejection-scalp-2026-10-22)
+16. [H2: Overnight Gap Fade (09:31–10:00 ET)](#16-h2-overnight-gap-fade-09311000-et-2026-10-22)
+17. [Options: Options Gamma Wall Pinning-Reversion Scalp](#17-options-options-gamma-wall-pinning-reversion-scalp-2026-05-25)
+18. [Memory: Market Memory Impulse Continuation](#18-memory-market-memory-impulse-continuation-2026-05-24)
+19. [Trend: Power-Hour Accepted-Trend Continuation Gate](#19-trend-power-hour-accepted-trend-continuation-gate-2026-05-22)
+20. [Liquidity: Liquidity Absorption & Failed Continuation](#20-liquidity-liquidity-absorption-failed-continuation-2026-05-21)
+21. [Breakout: RTH Gap-and-Go Signal Gate](#21-breakout-rth-gap-and-go-signal-gate-2026-05-21)
+22. [Breakout: Opening Range Compression Breakout Gate](#22-breakout-opening-range-compression-breakout-gate-2026-05-21)
+23. [Microstructure: Liquidity-Taking Trend Probe](#23-microstructure-liquidity-taking-trend-probe-2026-05-20)
+24. [Volume Profile: Failed-Auction Quality Branch](#24-volume-profile-failed-auction-quality-branch-2026-05-20)
+
+---
+
+### 1. Sizing: The 1-Micro Funded Infant Mortality Trap (2026-11-03)
+- **Evaluation Date**: 2026-11-03
+- **Author / Agent**: Quantitative Research Team
+- **Core Premise**: Downscaling contract sizing to 1 micro upon passing evaluation ("conservative staging until a +$500 cushion is built") to protect the funded account.
+- **Sample/Artifact**: 5,000 CRN block-bootstrap trajectories over a 252-session horizon (`results/sizing_cushion_optimization/sizing_cushion_optimization_report.md`).
+- **Empirical Failure Evidence**: Zero-payout infant mortality **increased from 13.94% up to 21.34%** (+7.41 pp). Mean lifetime payout dropped by -$167.14 (from $847.04 to $679.91), and net EV per ticket fell from $599.16 to $473.24.
+- **Structural Root Cause**: LucidFlex funded rules require 3 profit days ($\ge +\$50$) and accumulated net profit $\ge +\$600$ to request a $300 minimum withdrawal. At 1 micro, winning trades generate only +$20 to +$45, requiring over 45 calendar sessions to qualify for a payout. This protracted exposure to time decay and adverse variance causes accounts to hit the $1,000 trailing drawdown before their first harvest.
+- **Standing Rule**: Never downscale to 1 micro upon entering funded mode. Deploy **Safe CPPI**: trade normal ratchet sizing (2 micros base) from Day 1, and de-lever to 1 micro only if the distance to the liquidation floor ($bal - floor$) drops below **$400.00**.
+
+### 2. Sizing: Fixed 1-Micro Sizing Benchmark (2026-11-03)
+- **Evaluation Date**: 2026-11-03
+- **Author / Agent**: Quantitative Research Team
+- **Core Premise**: Trading a constant, static 1-micro contract across all evaluation and funded phases.
+- **Sample/Artifact**: `results/sizing_cushion_optimization/funded_transition_policy_comparison.csv`
+- **Empirical Failure Evidence**: Lifetime net EV per ticket collapsed from $599.16 (dynamic ratchet) down to **$399.39** (-$199.78 / -33.3%). Zero-payout infant mortality remained elevated at 17.39%.
+- **Structural Root Cause**: Inability to compound positive variance in favorable regimes leaves capital vulnerable to fixed commission drag ($1.40/RT) and slow equity progression.
+- **Standing Rule**: Fixed 1-micro sizing is rejected for live deployment.
+
+### 3. Strategy 3: High-Volatility Stop Widening (2026-11-01)
+- **Evaluation Date**: 2026-11-01
+- **Author / Agent**: Strategy 3 Macro Research Team
+- **Core Premise**: Widening stop-loss brackets on Strategy 3 (08:35 ET Macro Momentum) up to 90 points during high-volatility Markov regimes to accommodate large pre-market candles.
+- **Sample/Artifact**: 42 high-volatility Strategy 3 trades (2021–2026) in `docs/research_hypotheses/2026-11-01_markov_regimes_h19.md`.
+- **Empirical Failure Evidence**: Best widened stop configuration yielded only +$46.21 net profit at a 1.01 Profit Factor (effectively breakeven with substantial tail risk).
+- **Structural Root Cause**: High-volatility pre-market conditions suffer from wide bid-ask spreads, orderbook voids, and violent whipsaws. The issue is not stop tightness, but erratic price action lacking directional persistence.
+- **Standing Rule**: Do not widen stops in high-volatility regimes. Mitigate risk via **Markov Adaptive Sizing** (Option 2: halve contract size to 0.5x on Strategy 3 during `high_vol` regimes).
+
+### 4. H20: Opposing Macro Shock Pruning on Strategy 1 (2026-11-01)
+- **Evaluation Date**: 2026-11-01
+- **Author / Agent**: Strategy 1 Quant Team
+- **Core Premise**: Artificial filter dropping Strategy 1 (09:45 ET VA Breakout) trades that oppose the directional spike of an 08:30 AM macro release.
+- **Sample/Artifact**: 543 trades across 2021–2026 (`docs/research_hypotheses/2026-11-01_macro_830_conditioning_h20.md`).
+- **Empirical Failure Evidence**: Dropping opposing trades reduced 5.8-year net profit by -$10.02 ($14,916.04 down to $14,906.02) while cutting trade frequency.
+- **Structural Root Cause**: Opposing 09:45 breakouts were statistically breakeven (1.01 PF, +$10.02 net), but the 09:30 cash equity open establishes its own institutional orderflow that is independent of pre-market shocks.
+- **Standing Rule**: In accordance with the *AntiAchismo* philosophy, never prune trades when net statistical benefit is zero. Surface 08:30 macro status as telemetry without hard blocking trades.
+
+### 5. H13: Late-Day VX Crush Power-Hour Long Drive (2026-10-30)
+- **Evaluation Date**: 2026-10-30
+- **Author / Agent**: Quantitative Research Team
+- **Core Premise**: Long-only 14:45–15:30 ET trend continuation when NQ and ES are at session highs and VIX futures (`VX`) are compressing.
+- **Sample/Artifact**: 416 events across 2016–2024 (`docs/research_postmortems/2026-10-30_late_day_vx_crush_power_hour_long_h13_signal_gate_rejection.md`).
+- **Empirical Failure Evidence**: Failed 2016–2020 transition era (-1.14 pts net at 30 bars). In 2021–2024, trades suffered an immediate 6–12 minute pullback (-2.44 pts net at 6 bars, -1.46 pts at 12 bars); applying a protective barrier cut 30-bar net returns to +0.55 pts with only 43.8% positive quarters.
+- **Structural Root Cause**: Buying at session highs (`close_location >= 0.78`) after an extended 30-minute run triggers immediate mean-reversion pullbacks before any late-day continuation locks in.
+- **Standing Rule**: Do not initiate market orders at extreme session highs during late RTH without a pre-existing pullback.
+
+### 6. H11: Late-Day Cross-Asset MOC Institutional Drive (2026-10-30)
+- **Evaluation Date**: 2026-10-30
+- **Author / Agent**: Quantitative Research Team
+- **Core Premise**: Intraday trend continuation during 14:00–15:30 ET confirmed by ES, NYSE $TICK, and VX.
+- **Sample/Artifact**: 1,063 signals across 2016–2024 (`docs/research_postmortems/2026-10-30_late_day_cross_asset_moc_drive_h11_signal_gate_rejection.md`).
+- **Empirical Failure Evidence**: Falsified across both eras (-2.69 pts net at 30 bars in transition; +0.19 pts net in development). 81.4% of signals fired prematurely at 14:00 ET before MOC flows locked in. Shorting NQ at the bottom 20% of the day's range lost -3.97 pts net due to dealer short-gamma covering and Vanna/charm hedging flows.
+- **Structural Root Cause**: Premature execution prior to 15:00 ET market-on-close auctions and severe short-gamma squeezes against late intraday shorts.
+- **Standing Rule**: Late-day trend signals must not fire before 15:00 ET and must avoid late-day shorting into dealer gamma pins.
+
+### 7. H12: ES vs NQ SMT Divergence + TICK Exhaustion Reversal (2026-10-30)
+- **Evaluation Date**: 2026-10-30
+- **Author / Agent**: Quantitative Research Team
+- **Core Premise**: Fading 45-minute rolling boundary sweeps where one index sweeps while the other holds, accompanied by non-confirming NYSE $TICK.
+- **Sample/Artifact**: 1,923 signals across 2016–2024 (`docs/research_postmortems/2026-10-30_es_nq_smt_tick_divergence_h12_signal_gate_rejection.md`).
+- **Empirical Failure Evidence**: Fired on 85% of all trading sessions (ubiquitous intraday noise). Fading NQ when ES swept resulted in -3.09 pts net loss at 6 bars and -4.40 pts at 30 bars because ES was leading a genuine breakout that NQ subsequently followed.
+- **Structural Root Cause**: Rolling 45-minute boundary divergences represent normal intermarket lead-lag oscillation between tech and financials, not structural institutional exhaustion.
+- **Standing Rule**: Do not treat intermarket high/low divergence as an exhaustion fade signal.
+
+### 8. H10: Cross-Asset Institutional Program Thrust (2026-10-30)
+- **Evaluation Date**: 2026-10-30
+- **Author / Agent**: Quantitative Research Team
+- **Core Premise**: Lockstep 15-minute breakouts across NQ and ES confirmed by extreme NYSE $TICK ($\ge +500 / \le -500$) and VX during 10:09–14:29 ET.
+- **Sample/Artifact**: 1,435 signals across 2016–2024 (`docs/research_postmortems/2026-10-30_cross_asset_program_thrust_h10_signal_gate_rejection.md`).
+- **Empirical Failure Evidence**: Gross forward return after the signal was literally zero (+0.01 pts at 6 bars, -0.39 pts at 24 bars), resulting in net losses of -1.49 to -1.89 pts after 1.50pt friction.
+- **Structural Root Cause**: By the time price has displaced 15 minutes, broken 30-minute extremes, and pushed 5-minute $TICK past +500, the institutional program basket has finished executing its burst. Chasing at this point buys the exact point of short-term exhaustion.
+- **Standing Rule**: Extreme NYSE $TICK ($\ge +500 / \le -500$) paired with completed 15-minute breakouts denotes exhaustion, not entry initiation.
+
+### 9. H9: Delayed Value-Area Macro Breakout (10:04 ET) (2026-10-30)
+- **Evaluation Date**: 2026-10-30
+- **Author / Agent**: Quantitative Research Team
+- **Core Premise**: Breakout of Value Area at 10:04 ET on sessions where the 09:30–09:44 Opening Range closed inside the Value Area.
+- **Sample/Artifact**: 384 signals across 2016–2024 (`docs/research_postmortems/2026-10-30_delayed_va_macro_breakout_h9_signal_gate_rejection.md`).
+- **Empirical Failure Evidence**: Breakouts followed through for only 6 minutes (+2.12 pts net, 61.6% hit rate), then violently reversed back inside the Value Area by minute 24–30 (-8.76 pts net at 30 bars in 2021–2024).
+- **Structural Root Cause**: In post-2021 markets dominated by 0DTE options dealer gamma hedging, sessions opening inside value remain pinned to fair value. Probes outside VAH/VAL around 10:00 AM face aggressive gamma pinning, snapping price back to POC.
+- **Standing Rule**: Do not trade breakouts of the prior Value Area after 10:00 AM on sessions that opened inside value.
+
+### 10. H8: Afternoon VWAP Pullback Continuation Scalp (2026-10-30)
+- **Evaluation Date**: 2026-10-30
+- **Author / Agent**: Quantitative Research Team
+- **Core Premise**: Entering trend continuation on pullbacks to session VWAP ($-0.50\sigma$ to $+0.75\sigma$) between 13:30 and 15:15 ET.
+- **Sample/Artifact**: 1,403 signals across 2016–2024 (`docs/research_postmortems/2026-10-30_afternoon_vwap_pullback_continuation_h8_signal_gate_rejection.md`).
+- **Empirical Failure Evidence**: Fired on 62% of days; net returns negative across both eras (-1.19 pts in 2021–2024, -0.76 pts in 2016–2020 after 1.5pt friction).
+- **Structural Root Cause**: On genuine trend days, price remains separated above $+1.0\sigma$ VWAP all afternoon. When price retraces all the way back to VWAP at 13:30–15:15 ET, the morning trend has decayed into two-sided rotational chop.
+- **Standing Rule**: Do not buy/short afternoon retracements to VWAP expecting trend resumption.
+
+### 11. H5 & H5-OOS: Prior Session Value Area Responsive Rotation Scalp (2026-10-29 & 2026-10-30)
+- **Evaluation Date**: 2026-10-30
+- **Author / Agent**: Quantitative Research Team
+- **Core Premise**: Fading probes toward VAH or VAL back toward POC between 10:00 and 11:30 ET on days opening inside the Value Area.
+- **Sample/Artifact**: 259 signals in 2021–2024, 301 in 2016–2020, and 76 in 2025–2026 OOS holdout (`docs/research_postmortems/2026-10-30_va_responsive_rotation_h5_oos_2025_2026_rejection.md`).
+- **Empirical Failure Evidence**: While positive in 2021–2024 (+3.90 pts net), the setup collapsed in 2016–2020 (-1.25 pts net across all horizons) and 2025–2026 OOS (-4.53 pts net at 24 bars, with a -43.28 pt crash in 2026Q1). Profitable direction flipped violently between eras (VAL Long carried 2021–2024 at +5.89 pts but crashed to -25.66 pts in 2025–2026).
+- **Structural Root Cause**: Un-stopped mean-reversion fades are catastrophically vulnerable to directional liquidation runs when inside-VA sessions transition into trend extensions.
+- **Standing Rule**: Fading Value Area extremes without strict structural regime conditioning is permanently rejected.
+
+### 12. H7: Overnight High/Low Liquidity Sweep Scalp (2026-10-29)
+- **Evaluation Date**: 2026-10-29
+- **Author / Agent**: Quantitative Research Team
+- **Core Premise**: Fading 1–25 pt probes beyond Overnight High/Low during 09:35–10:30 ET that close back inside with an exhaustion wick.
+- **Sample/Artifact**: 626 signals in 2021–2024, 729 in 2016–2020 (`docs/research_postmortems/2026-10-29_overnight_liquidity_sweep_h7_signal_gate_rejection.md`).
+- **Empirical Failure Evidence**: Negative net returns across all multi-bar horizons in both eras (-0.10 pts at 24 bars in development, -0.33 pts in transition).
+- **Structural Root Cause**: On NQ, testing overnight extremes during the cash open initiates institutional momentum runs rather than clean retail stop sweeps. Single-bar rejection wicks are routinely overwhelmed by momentum orderflow on subsequent bars.
+- **Standing Rule**: Do not fade overnight high/low breaks during the morning cash open.
+
+### 13. H6: Mid-Day VWAP Mean Reversion Scalp (2026-10-29)
+- **Evaluation Date**: 2026-10-29
+- **Author / Agent**: Quantitative Research Team
+- **Core Premise**: Fading $\pm 2.0\sigma$ VWAP deviations during the European close and NY lunch lull (11:30–13:30 ET).
+- **Sample/Artifact**: 547 signals in 2021–2024, 475 in 2016–2020 (`docs/research_postmortems/2026-10-29_midday_vwap_mean_reversion_h6_signal_gate_rejection.md`).
+- **Empirical Failure Evidence**: Negative net expectancy across every horizon in both eras (-2.09 pts at 24 bars in development, -1.15 pts in transition).
+- **Structural Root Cause**: Thin liquidity during the mid-day lull facilitates persistent algorithmic program drift. Without two-sided institutional volume to absorb these programs, price drifts extended rather than snapping back to VWAP. Gross movements are too small to survive 1.50pt round-trip friction.
+- **Standing Rule**: Mid-day VWAP band extension fading is decisively rejected.
+
+### 14. L2: Aggressive Flow Location Shelf Breakout (2026-10-22)
+- **Evaluation Date**: 2026-10-22
+- **Author / Agent**: Microstructure Alpha Team
+- **Core Premise**: Minute-bar Level 2 aggressor buy/sell trade volume breaking away from prior-day volume profile shelves during 09:35–10:30 ET.
+- **Sample/Artifact**: 1,742 signals, 344,792 bars (2024–2025) (`docs/research_postmortems/2026-10-22_aggressive_flow_location_l2_signal_gate_rejection.md`).
+- **Empirical Failure Evidence**: Full IC only 0.0096 (< 0.020 gate threshold); bootstrap CI lower bounds negative (-0.90 pts); severe quarterly instability (2024Q2: -12.3 pts vs 2024Q4: +24.0 pts); high infrastructure complexity for marginal edge.
+- **Structural Root Cause**: Minute-aggregated aggressive flow mirrors discretionary tape reading rather than a stable, repeatable statistical distribution.
+- **Standing Rule**: L2 aggressive orderflow stats are restricted to execution realism audits (TBBO slippage/fill analysis); they must not be mined for directional alpha filters.
+
+### 15. H3: Prior Session POC/VAH/VAL Rejection Scalp (2026-10-22)
+- **Evaluation Date**: 2026-10-22
+- **Author / Agent**: Quantitative Research Team
+- **Core Premise**: Fading touches of prior session POC, VAH, or VAL within 8 points during 09:31–10:15 ET.
+- **Sample/Artifact**: 678 events (2021–2024) (`docs/research_postmortems/2026-10-22_poc_rejection_scalp_h3_signal_gate_rejection.md`).
+- **Empirical Failure Evidence**: Negative net returns across all horizons 3–45 bars (-4.54 pts at 45 bars, active IC -0.0500). Gross 3-bar bounce (+0.84 pts) was smaller than 1.50pt transaction cost.
+- **Structural Root Cause**: Morning opening orderflow breaks directly through prior-session reference levels.
+- **Standing Rule**: Do not fade touches of prior session profile levels in the opening 45 minutes of RTH.
+
+### 16. H2: Overnight Gap Fade (09:31–10:00 ET) (2026-10-22)
+- **Evaluation Date**: 2026-10-22
+- **Author / Agent**: Quantitative Research Team
+- **Core Premise**: Fading overnight gaps $> 0.50\%$ and $> 0.20\times$ 20-day ATR during the first 30 minutes of RTH.
+- **Sample/Artifact**: 405 qualifying gap sessions (2021–2024) (`docs/research_postmortems/2026-10-22_gap_fade_overnight_h2_signal_gate_rejection.md`).
+- **Empirical Failure Evidence**: Negative net expectancy across 3–30 min horizons (-6.66 pts net at 30 bars, 46.2% hit rate, active IC -0.0708). Underperformed clock-matched random open entries by -5.17 pts ($p = 1.000$).
+- **Structural Root Cause**: In modern NQ, large overnight gaps reflect institutional fundamental repricing that **continues** over the first 30 minutes rather than reverting.
+- **Standing Rule**: Fading large overnight gaps at the cash open is prohibited.
+
+### 17. Options: Options Gamma Wall Pinning-Reversion Scalp (2026-05-25)
+- **Evaluation Date**: 2026-05-25
+- **Author / Agent**: Derivatives Quantitative Research
+- **Core Premise**: Fading price deviations around daily positive gamma pinning strike walls.
+- **Sample/Artifact**: 75,744 active events across 2010–2024 (`docs/research_postmortems/2026-05-25_options_gamma_wall_signal_gate_rejection.md`).
+- **Empirical Failure Evidence**: Active IC was effectively zero (+0.000416). Gross return before friction was only +0.02 pts, resulting in net returns of -1.48 pts after 1.5pt cost.
+- **Structural Root Cause**: Coarse daily options open interest and strike-level gamma do not provide sufficient intraday resolution to time 1-minute futures reversions.
+- **Standing Rule**: Daily options open interest and strike levels are restricted to macro regime tags; do not mine them for intraday entry timing.
+
+### 18. Memory: Market Memory Impulse Continuation (2026-05-24)
+- **Evaluation Date**: 2026-05-24
+- **Author / Agent**: Signal Research Team
+- **Core Premise**: CUSUM impulse continuation conditioned on low Hurst exponent and low Lempel-Ziv complexity.
+- **Sample/Artifact**: `docs/research_postmortems/2026-05-24_memory_impulse_signal_gate_rejection.md`
+- **Empirical Failure Evidence**: Recent sample size was only 28 active rows (< 30 row floor); transition era was deeply negative (-4.49 pts at 6 bars, -8.71 pts at 24 bars).
+- **Structural Root Cause**: Extreme feature sparsity and severe historical instability.
+- **Standing Rule**: Candidate ideas with fewer than 30 independent trade events per era are rejected for lack of statistical power.
+
+### 19. Trend: Power-Hour Accepted-Trend Continuation Gate (2026-05-22)
+- **Evaluation Date**: 2026-05-22
+- **Author / Agent**: Intraday Momentum Team
+- **Core Premise**: Late-RTH trend continuation following accepted trend flow into the close.
+- **Sample/Artifact**: `docs/research_postmortems/2026-05-22_power_hour_signal_gate_rejection.md`
+- **Empirical Failure Evidence**: Failed temporal event gate. Transition era mean return was only +0.085 pts, with median -0.500 pts and negative bootstrap CI lower bounds.
+- **Structural Root Cause**: Late-day price continuation is heavily regime-dependent and fails across multi-era transition samples without active VIX futures crush conditioning.
+- **Standing Rule**: Late-day trend models must survive transition-era validation.
+
+### 20. Liquidity: Liquidity Absorption & Failed Continuation (2026-05-21)
+- **Evaluation Date**: 2026-05-21
+- **Author / Agent**: Microstructure Research
+- **Core Premise**: Sweep and absorption continuation following a failed liquidity expansion.
+- **Sample/Artifact**: `docs/research_postmortems/2026-05-21_liquidity_absorption_signal_gate_rejection.md`
+- **Empirical Failure Evidence**: Aggregate net return negative at every horizon (1-bar return: -1.38 pts after cost, 49.6% hit rate, IC 0.0007).
+- **Structural Root Cause**: The apparent edge was an isolated post-hoc context slice (hour 11 at 24 bars) that failed when aggregated.
+- **Standing Rule**: Do not mine isolated hour/slice parameters after seeing aggregate failure.
+
+### 21. Breakout: RTH Gap-and-Go Signal Gate (2026-05-21)
+- **Evaluation Date**: 2026-05-21
+- **Author / Agent**: Breakout Strategies Group
+- **Core Premise**: Entering in the direction of the overnight gap when the opening range breaks with gap direction.
+- **Sample/Artifact**: `docs/research_postmortems/2026-05-21_gap_go_signal_gate_rejection.md`
+- **Empirical Failure Evidence**: Aggregate recent 24-bar return was only +0.22 pts net (IC 0.0011); transition era was negative across all horizons (-1.57 pts at 24 bars).
+- **Structural Root Cause**: Unconditional gap-and-go lacks sufficient institutional volume confirmation.
+- **Standing Rule**: Pure price-breakout gap continuation without Value Area structural acceptance is rejected.
+
+### 22. Breakout: Opening Range Compression Breakout Gate (2026-05-21)
+- **Evaluation Date**: 2026-05-21
+- **Author / Agent**: Breakout Strategies Group
+- **Core Premise**: Directional breakout following tight opening range compression.
+- **Sample/Artifact**: `docs/research_postmortems/2026-05-21_compression_breakout_signal_gate_rejection.md`
+- **Empirical Failure Evidence**: Aggregate active sample had only 195 rows, 49.7% hit rate, and IC 0.0009.
+- **Structural Root Cause**: Insufficient event density and lack of statistical significance.
+- **Standing Rule**: Opening range compression without volume profile context is rejected.
+
+### 23. Microstructure: Liquidity-Taking Trend Probe (2026-05-20)
+- **Evaluation Date**: 2026-05-20
+- **Author / Agent**: Execution Realism Team
+- **Core Premise**: Aggressive market order trend probing into book depth imbalances.
+- **Sample/Artifact**: `results/runs/20260520_190728_edge_microstructure_liquidity_taking_trend_probe_long_short_next_bar_open_hybrid`
+- **Empirical Failure Evidence**: Prop eval pass probability was 0.0%, extension threshold failure 99.34%, median trade -$92.50, and sign-flip p-value 0.34.
+- **Structural Root Cause**: Aggressive liquidity taking captures the bid-ask spread against the trader; edge is consumed by immediate adverse selection.
+- **Standing Rule**: Pure liquidity-taking market order strategies without resting structural limit orders or high-conviction macro catalysts are prohibited.
+
+### 24. Volume Profile: Failed-Auction Quality Branch (2026-05-20)
+- **Evaluation Date**: 2026-05-20
+- **Author / Agent**: Volume Profile Working Group
+- **Core Premise**: Fading failed auctions identified via volume profile market structure.
+- **Sample/Artifact**: `results/runs/20260520_152332_edge_vp_mr_trend_failed_auction_quality_no_mr_long_ib_cusum_wf_stable_managed_stop_next_bar_long_short_next_bar_open_hybrid`
+- **Empirical Failure Evidence**: 157 trades, Profit Factor 0.85, Net PnL -$2,757.99, Win Rate 37.58%, daily Sharpe -1.30. Prop eval pass probability 0.0%. All setups failed: `mr_short` (0.55 PF), `trend_long` (0.89 PF), `trend_short` (0.82 PF).
+- **Structural Root Cause**: Failed auctions frequently transition into violent secondary expansion drives that blow through stops.
+- **Standing Rule**: The failed-auction quality family is permanently archived in `rejected_research_families`.
