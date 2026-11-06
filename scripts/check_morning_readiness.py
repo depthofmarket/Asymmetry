@@ -26,10 +26,11 @@ from backtest.demo_parity_engine import (
 )
 
 ET_TZ = ZoneInfo("America/New_York")
-PLIST_LABEL = "com.lucidflex.morningwatcher"
+WATCHER_LABEL = "com.lucidflex.morningwatcher"
+SENTINEL_LABEL = "com.lucidflex.lifecycle_sentinel"
 
 
-def check_daemon() -> tuple[bool, int | None, str]:
+def check_daemon(label: str = WATCHER_LABEL) -> tuple[bool, int | None, str]:
     """Checks whether the launchd daemon is running."""
     try:
         proc = subprocess.run(
@@ -39,7 +40,7 @@ def check_daemon() -> tuple[bool, int | None, str]:
             check=True,
         )
         for line in proc.stdout.splitlines():
-            if PLIST_LABEL in line:
+            if label in line:
                 parts = line.split()
                 pid_str = parts[0]
                 if pid_str != "-" and pid_str.isdigit():
@@ -161,13 +162,14 @@ def run_diagnostics(verbose: bool = True, send_alert: bool = False) -> int:
     now_et = datetime.now(ET_TZ)
     now_local = datetime.now()
 
-    daemon_ok, pid, daemon_msg = check_daemon()
+    watcher_ok, w_pid, watcher_msg = check_daemon(WATCHER_LABEL)
+    sentinel_ok, s_pid, sentinel_msg = check_daemon(SENTINEL_LABEL)
     feeds = check_csv_feeds()
     jars = check_motivewave_jars()
     acct = check_account_state()
 
-    critical_ok = daemon_ok and all(f["exists"] for f in feeds) and acct.get("valid", False)
-    all_ok = critical_ok and all(j["exists"] for j in jars)
+    critical_ok = watcher_ok and all(f["exists"] for f in feeds) and acct.get("valid", False)
+    all_ok = critical_ok and sentinel_ok and all(j["exists"] for j in jars)
 
     if verbose:
         print("=" * 76)
@@ -177,9 +179,11 @@ def run_diagnostics(verbose: bool = True, send_alert: bool = False) -> int:
         print(f" Local Time       : {now_local.strftime('%Y-%m-%d %H:%M:%S')}")
         print("-" * 76)
 
-        # Daemon
-        d_icon = "🟢" if daemon_ok else "🔴"
-        print(f" [{d_icon}] Morning Watcher Daemon : {daemon_msg}")
+        # Daemons
+        w_icon = "🟢" if watcher_ok else "🔴"
+        print(f" [{w_icon}] Morning Watcher Daemon : {watcher_msg}")
+        s_icon = "🟢" if sentinel_ok else "🔴"
+        print(f" [{s_icon}] Lifecycle Sentinel Daemon : {sentinel_msg}")
 
         # Account & Sizing
         if acct.get("valid"):
@@ -217,9 +221,9 @@ def run_diagnostics(verbose: bool = True, send_alert: bool = False) -> int:
     if send_alert:
         status_sub = "100% READY" if all_ok else "ATTENTION NEEDED"
         msg = (
-            f"Daemon active (PID {pid}). Sizing: {acct.get('tier_contracts', 2)} Micros. "
+            f"Daemons active (Watcher PID {w_pid}, Sentinel PID {s_pid}). Sizing: {acct.get('tier_contracts', 2)} Micros. "
             f"Balance: ${acct.get('balance', 25000):,.2f}. Macro window at 08:35 ET."
-            if all_ok else f"Pre-market warning: Daemon={daemon_ok}, Feeds={all(f['exists'] for f in feeds)}"
+            if all_ok else f"Pre-market warning: Watcher={watcher_ok}, Feeds={all(f['exists'] for f in feeds)}"
         )
         send_macos_alert(
             title=f"LucidFlex 25K Pre-Market Status",
@@ -238,17 +242,19 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.json:
-        daemon_ok, pid, daemon_msg = check_daemon()
+        watcher_ok, w_pid, watcher_msg = check_daemon(WATCHER_LABEL)
+        sentinel_ok, s_pid, sentinel_msg = check_daemon(SENTINEL_LABEL)
         feeds = check_csv_feeds()
         jars = check_motivewave_jars()
         acct = check_account_state()
         data = {
             "timestamp_et": datetime.now(ET_TZ).isoformat(),
-            "daemon": {"ok": daemon_ok, "pid": pid, "message": daemon_msg},
+            "morning_watcher": {"ok": watcher_ok, "pid": w_pid, "message": watcher_msg},
+            "lifecycle_sentinel": {"ok": sentinel_ok, "pid": s_pid, "message": sentinel_msg},
             "feeds": feeds,
             "extensions": jars,
             "account": acct,
-            "ready": daemon_ok and all(f["exists"] for f in feeds) and acct.get("valid", False),
+            "ready": watcher_ok and sentinel_ok and all(f["exists"] for f in feeds) and acct.get("valid", False),
         }
         print(json.dumps(data, indent=2))
         return 0 if data["ready"] else 1

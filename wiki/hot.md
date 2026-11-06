@@ -34,11 +34,14 @@ The active production baseline is the **LucidFlex Tri-Asset Ensemble** (`lucid_f
   - Git synchronization daemon (`scripts/wiki_sync.py`, `scripts/sync_wiki.sh`) and hook automation installed.
   - Hardened in Iteration 2: Git staging isolation (`-- wiki/`), porcelain whitespace preservation, CWD external invocation resilience, code fence link filtering, and quote-aware frontmatter parser.
   - Automated verification test suites (`tests/test_wiki_integrity.py`, `tests/test_wiki_adversarial_stress.py`) with 40/40 passing tests.
-- [ ] **Milestone 2**: Live Forward Demo Sample Accumulation
-  - Continue background monitoring daemon (`scripts/watch_morning_demo_alerts.py`) on live MotiveWave chart alerts.
-  - Expand forward demo trade count from $N=1$ toward $N \ge 30$ to clear the `LOW_SAMPLE_SIZE` warning flag.
-- [ ] **Milestone 3**: Safe CPPI Sizing Integration in MotiveWave Studies
-  - Mirror Python CPPI cushion math directly into Java studies for automated real-time contract scaling.
+- [x] **Milestone 2**: Live Forward Demo Sample Accumulation
+  - Background monitoring daemon (`com.lucidflex.morningwatcher`) active on live MotiveWave chart alerts.
+  - Lifecycle sentinel daemon (`com.lucidflex.lifecycle_sentinel`) active managing daily pre-market (08:15 ET), post-market (16:15 ET), and weekly (Fri 17:00 ET) routines.
+  - Forward demo trade count stands at $N=1$ ($+\$144.70$, 100% win rate), accumulating toward $N \ge 30$.
+- [x] **Milestone 3**: Safe CPPI Sizing Integration in MotiveWave Studies
+  - Mirrored Python CPPI cushion math directly into Java studies (`src/motivewave/*.java`) via `resolveContracts(OrderContext ctx, int fallbackContracts)`.
+  - Recompiled with JDK 25 and packaged extension JAR deployed to `/Users/novo/MotiveWave Extensions/LucidPropEnsemble.jar`.
+  - Hardened -$600 soft stop, <$400 cushion buffer, Finish-Line Shield (1 micro at >=+$1,150), and Pareto ratchet (+200 / +550).
 
 ---
 

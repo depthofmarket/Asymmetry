@@ -7,7 +7,7 @@ tags:
   - cqg
   - broker-bridge
 created: "2026-11-05"
-updated: "2026-11-05"
+updated: "2026-11-06"
 status: active
 strategies:
   - morning_va_breakout_s1
@@ -37,14 +37,28 @@ To bridge the gap between high-level Python econometric research and real-time e
    - Computes rolling 70% Value Area (VAH/VAL) from prior RTH session.
    - Overlays GARCH(1,1) Model Volatility Target (MVT 0) and standard deviation envelope bands.
    - Evaluates opening range breakout acceptance at 09:45:00 ET.
+   - Dynamic sizing via `resolveContracts(OrderContext ctx, int fallbackContracts)`.
    - Emits non-repainting live entry, stop loss, and profit target markers.
 2. **`LucidMacroMomentumStudy.java`** (56 KB):
    - Monitors 08:30:00 ET economic release displacement.
    - Evaluates 5-minute displacement bar at 08:35:00 ET.
    - Incorporates Markov regime indicator to signal high-volatility sizing reductions.
+   - Dynamic sizing via `resolveContracts(OrderContext ctx, int fallbackContracts)`.
 3. **`LucidGoldFixBreakoutStudy.java`** (33 KB):
    - Calculates 10:00–10:15 ET LBMA PM fixing price range on COMEX `MGC`.
    - Triggers long-only structural breakout signals upon 10:15:00 ET auction resolution.
+   - Dynamic sizing via `resolveContracts(OrderContext ctx, int fallbackContracts)`.
+
+### Safe CPPI & Dynamic Account Sizing Resolution (`resolveContracts`)
+All three Java studies integrate native dynamic contract resolution pulling real-time account equity (`cash + realizedPnL + unrealizedPnL`) directly from the MotiveWave `OrderContext`:
+- **Balance & Floor Calculation**: High-water mark trailing floor ($hwm - \$1,000$, locked at $\$25,100$ when $hwm \ge \$26,100$).
+- **Trailing Cushion**: $\text{cushion} = \text{balance} - \text{floor}$.
+- **Finish-Line Shield**: If net profit $\ge +\$1,150.00$, lock to **1 micro** to guarantee passing evaluation.
+- **Floor Buffer De-lever**: If trailing cushion $<\$400.00$, de-lever to **1 micro** (infant mortality avoidance).
+- **Compounding Tier 3**: If net profit $\ge +\$550.00$, size **4 micros**.
+- **Compounding Tier 2**: If net profit $\ge +\$200.00$, size **3 micros**.
+- **Base Tier 1**: Size **2 micros**.
+- **Daily Loss Circuit Breaker**: Hard-coded soft stop updated to **-\$600.00** daily PnL threshold.
 
 ### Real-Time Alert & File Export Protocol
 - Each Java study formats triggered trades and bracket orders into structured alert lines written to a local export directory (`results/forward_test/motivewave_alerts.log`).

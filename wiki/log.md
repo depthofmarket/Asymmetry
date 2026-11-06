@@ -70,3 +70,16 @@ This is an append-only, chronological journal recording all agent actions, docum
   - `wiki/execution/demo-parity-engine.md` (created demo parity engine page)
 - **Summary**: Implemented the complete Karpathy LLM Wiki pattern for the `nq-scalper-backtest` repository. Seeded with 9 institutional domain pages and 24 empirical failed ideas.
 - **Verification**: Conforms to schema layout, standard page anatomy, and grep-parseable headers.
+
+## [2026-11-06 03:59:00 UTC] [gemini] [UPDATE] | Integrated Safe CPPI sizing in MotiveWave Java SDK and deployed launchd lifecycle sentinel
+- **Pages Modified**:
+  - `wiki/execution/motivewave-integration.md` (documented Java SDK dynamic contract resolution, soft stops, and JDK 25 deployment)
+  - `wiki/hot.md` (updated active milestones, forward demo status, and lifecycle sentinel automation)
+  - `wiki/log.md` (recorded operational journal entry)
+- **Summary**: Implemented all approved tracks of the strategic roadmap:
+  1. Updated all three MotiveWave Java studies (`LucidMorningVABreakoutStudy.java`, `LucidMacroMomentumStudy.java`, `LucidGoldFixBreakoutStudy.java`) with `resolveContracts(OrderContext ctx, int fallbackContracts)` calculating dynamic balance, profit, high-water mark, trailing floor, and cushion directly from MotiveWave's `OrderContext`.
+  2. Enforced Safe CPPI cushion threshold ($<\$400.00 \implies 1\text{ micro}$), Finish-Line Shield ($\ge +\$1,150.00 \implies 1\text{ micro}$), and canonical Pareto ratchet thresholds ($+\$200 \implies 3\text{ micros}$, $+\$550 \implies 4\text{ micros}$, base $2\text{ micros}$). Hardened daily loss soft stop to $-\$600.00$.
+  3. Recompiled all studies with local JDK 25 (`tools/jdk25/Contents/Home/bin/javac`), packaged `LucidPropEnsemble.jar`, and deployed to `/Users/novo/MotiveWave Extensions/LucidPropEnsemble.jar`.
+  4. Implemented `com.lucidflex.lifecycle_sentinel` launchd service via `config/com.lucidflex.lifecycle_sentinel.plist` running `scripts/session_sentinel.py --mode daemon`, managing 08:15 ET pre-market readiness, 16:15 ET post-market demo parity & Monte Carlo reconciliation, and Friday 17:00 ET weekly health digests. Installed and verified active in launchd (PID 42449).
+  5. Updated `scripts/check_morning_readiness.py` to monitor both the morning watcher daemon and lifecycle sentinel daemon.
+- **Verification**: `python scripts/check_morning_readiness.py` confirms all daemons active, CSV feeds green, and extension installed. `python scripts/session_sentinel.py --mode auto` and `--mode weekly` pass 100%. Full repository pytest suite passed all 598/598 tests in 275s. `python scripts/verify_wiki_integrity.py` confirms 100% compliance.

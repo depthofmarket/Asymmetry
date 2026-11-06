@@ -17,13 +17,17 @@ import json
 import os
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict
+from zoneinfo import ZoneInfo
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+ET_TZ = ZoneInfo("America/New_York")
 
 from backtest.provenance import ProvenanceStore, default_store
 from backtest.demo_parity_engine import DemoParityJournal
@@ -159,11 +163,85 @@ def run_weekly_digest() -> int:
     return 0
 
 
+def run_daemon(poll_seconds: int = 15) -> int:
+    """Continuously monitors ET wall-clock time and triggers scheduled sentinel routines."""
+    print("=" * 76)
+    print(" 🛡️ LUCIDFLEX LIFECYCLE SENTINEL DAEMON INITIALIZED")
+    print(" Active Schedules (America/New_York):")
+    print("   • 08:15 ET (Mon-Fri) : Pre-Market Readiness Diagnostic")
+    print("   • 16:15 ET (Mon-Fri) : Post-Market Demo Parity & Monte Carlo Reconciliation")
+    print("   • 17:00 ET (Friday)  : Weekly Quantitative Health Digest")
+    print("=" * 76)
+
+    fired_events: set[str] = set()
+    current_date: str = ""
+
+    try:
+        while True:
+            now_et = datetime.now(ET_TZ)
+            today_str = now_et.strftime("%Y-%m-%d")
+            hhmmss = now_et.strftime("%H:%M:%S")
+            weekday = now_et.weekday()  # 0=Mon, 4=Fri, 5=Sat, 6=Sun
+
+            # Reset daily event cache at midnight ET
+            if today_str != current_date:
+                fired_events.clear()
+                current_date = today_str
+
+            # Weekday routines (Mon-Fri: weekday 0-4)
+            if weekday < 5:
+                # 08:15:00 ET: Pre-Market Readiness
+                event_key_pre = f"{today_str}_premarket"
+                if "08:15:00" <= hhmmss < "08:25:00" and event_key_pre not in fired_events:
+                    fired_events.add(event_key_pre)
+                    print(f"\n[Sentinel Daemon] Triggering 08:15 ET Pre-Market Diagnostic ({now_et.isoformat()})...")
+                    run_premarket_readiness()
+
+                # 16:15:00 ET: Post-Market Reconciliation
+                event_key_post = f"{today_str}_postmarket"
+                if "16:15:00" <= hhmmss < "16:30:00" and event_key_post not in fired_events:
+                    fired_events.add(event_key_post)
+                    print(f"\n[Sentinel Daemon] Triggering 16:15 ET Post-Market Reconciliation ({now_et.isoformat()})...")
+                    run_postmarket_reconcile()
+
+                # Friday 17:00:00 ET: Weekly Health Digest
+                if weekday == 4:
+                    event_key_weekly = f"{today_str}_weekly"
+                    if "17:00:00" <= hhmmss < "17:15:00" and event_key_weekly not in fired_events:
+                        fired_events.add(event_key_weekly)
+                        print(f"\n[Sentinel Daemon] Triggering Friday 17:00 ET Weekly Health Digest ({now_et.isoformat()})...")
+                        run_weekly_digest()
+
+            time.sleep(poll_seconds)
+    except KeyboardInterrupt:
+        print("\n[Sentinel Daemon] Stopped by signal.")
+    return 0
+
+
+def run_auto() -> int:
+    """Detects current ET time and runs the appropriate sentinel routine."""
+    now_et = datetime.now(ET_TZ)
+    hhmm = now_et.strftime("%H:%M")
+    weekday = now_et.weekday()
+
+    if weekday < 5:
+        if "08:00" <= hhmm <= "09:30":
+            return run_premarket_readiness()
+        elif "16:00" <= hhmm <= "16:45":
+            return run_postmarket_reconcile()
+        elif weekday == 4 and "16:50" <= hhmm <= "18:00":
+            return run_weekly_digest()
+
+    print(f"[Sentinel Auto] Current ET: {now_et.strftime('%Y-%m-%d %H:%M:%S %Z')}. No routine scheduled for this window.")
+    print("Schedules: 08:15 ET (Pre-Market), 16:15 ET (Post-Market), Fri 17:00 ET (Weekly Digest).")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="LucidFlex Session Lifecycle Sentinel")
     parser.add_argument(
         "--mode",
-        choices=["premarket", "postmarket", "weekly", "all"],
+        choices=["premarket", "postmarket", "weekly", "all", "daemon", "auto"],
         default="all",
         help="Operational routine to execute",
     )
@@ -175,6 +253,10 @@ def main() -> int:
         return run_postmarket_reconcile()
     elif args.mode == "weekly":
         return run_weekly_digest()
+    elif args.mode == "daemon":
+        return run_daemon()
+    elif args.mode == "auto":
+        return run_auto()
     elif args.mode == "all":
         code_pre = run_premarket_readiness()
         code_post = run_postmarket_reconcile()

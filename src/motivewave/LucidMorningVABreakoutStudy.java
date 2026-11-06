@@ -184,15 +184,42 @@ public class LucidMorningVABreakoutStudy extends Study {
             if (mDelever.find()) {
                 state.emergencyDelever = Boolean.parseBoolean(mDelever.group(1));
             }
-            if (state.currentDatePnl <= -500.0) {
+            if (state.currentDatePnl <= -600.0) {
                 state.circuitBreakerHit = true;
             }
-            if (state.trailingCushion < 500.0 || state.emergencyDelever || state.finishLineShield || state.garchDecileHalving) {
+            if (state.trailingCushion < 400.0 || state.emergencyDelever || state.finishLineShield || state.garchDecileHalving) {
                 state.recommendedMicros = 1;
             }
         } catch (Exception ignored) {
         }
         return state;
+    }
+
+    public static int resolveContracts(OrderContext ctx, int fallbackContracts) {
+        if (ctx == null) return fallbackContracts;
+        try {
+            double cash = ctx.getCashBalance();
+            double real = ctx.getRealizedPnL();
+            double unreal = ctx.getUnrealizedPnL();
+            double balance = cash + real + unreal;
+            if (balance > 15000.0) {
+                double profit = balance - 25000.00;
+                double hwm = Math.max(25000.00, balance);
+                double floor = Math.max(24000.00, hwm - 1000.00);
+                if (hwm >= 26100.00) {
+                    floor = 25100.00;
+                }
+                double cushion = balance - floor;
+
+                if (profit >= 1150.00) return 1;
+                if (cushion < 400.00) return 1;
+                if (profit >= 550.00) return 4;
+                if (profit >= 200.00) return 3;
+                return 2;
+            }
+        } catch (Exception ignored) {
+        }
+        return fallbackContracts;
     }
 
     private static class SessionProfile {
@@ -924,7 +951,7 @@ public class LucidMorningVABreakoutStudy extends Study {
         ActiveTrade trade = tradesByDate.get(today);
         if (trade == null || trade.orderSubmitted || trade.closed) return;
 
-        int contracts = trade.contracts;
+        int contracts = resolveContracts(ctx, trade.contracts);
         if (contracts <= 0) contracts = 1;
 
         float stopPrice = ctx.getInstrument().round((float) trade.stopPrice);
