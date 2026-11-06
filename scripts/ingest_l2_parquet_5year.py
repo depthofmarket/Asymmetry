@@ -16,11 +16,12 @@ from typing import Sequence
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def run_command(cmd: list[str], check: bool = True, **kwargs) -> int:
+def run_command(cmd: list[str], check: bool = True, timeout: int = 600, **kwargs) -> int:
     """Run a CLI command and return exit code."""
     print(f"\n{'='*80}")
     print(f"Running: {' '.join(cmd)}")
     print(f"{'='*80}")
+    kwargs.setdefault("timeout", timeout)
     result = subprocess.run(cmd, check=False, **kwargs)
     if check and result.returncode != 0:
         print(f"Error: Command failed with exit code {result.returncode}")

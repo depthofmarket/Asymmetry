@@ -61,9 +61,31 @@ All three Java studies integrate native dynamic contract resolution pulling real
 - **Daily Loss Circuit Breaker**: Hard-coded soft stop updated to **-\$600.00** daily PnL threshold.
 
 ### Real-Time Alert & File Export Protocol
-- Each Java study formats triggered trades and bracket orders into structured alert lines written to a local export directory (`results/forward_test/motivewave_alerts.log`).
+- Each Java study formats triggered trades, order lifecycle events, and bracket orders into structured alert lines written to a local export directory (`results/forward_test/motivewave_alerts.log`).
 - Alerts include: `TIMESTAMP`, `STUDY_ID`, `SYMBOL`, `ACTION`, `PRICE`, `STOP_LOSS`, `TAKE_PROFIT`, `CONTRACTS`, `REASON`.
 - Python monitoring daemons parse this log in real time to reconcile MotiveWave study intent against CQG broker order receipts.
+
+### MotiveWave Java SDK Automated Order Execution Invariants (CQG Routing)
+Deep forensic bytecode analysis of MotiveWave runtime (`MotiveWave.jar`, `mwave_sdk.jar`) identified five critical architectural requirements for live automated trading:
+1. **`autoEntry = true` in `@StudyHeader`**:
+   - MotiveWave SDK defaults `autoEntry` to `false`. Without explicit `autoEntry = true` and `manualEntry = false`, MotiveWave treats the strategy as manual-entry only and suppresses automated order generation.
+2. **Strategy Activation State Guard (`study.getState() == ACTIVE`)**:
+   - `bo.am.onBarClose` and `bo.am.onBarOpen` check `if (!this.N()) { this.K(); return; }`, where `N()` verifies `study.getState() == Enums$StrategyState.ACTIVE`. If inactive, MotiveWave purges all pending signals and returns.
+   - The strategy must be added via the **Strategies** panel (or tab) and activated, setting `study.setState(ACTIVE)`.
+3. **Sequential Bracket Execution for CQG Brokers**:
+   - Submitting simultaneous raw `[entry, sl, tp]` orders while flat causes CQG to reject Stop/Limit orders (no open position / margin check failure).
+   - The verified execution sequence is:
+     1. Submit market entry (`ctx.createMarketOrder(action, contracts)`).
+     2. Wait for fill confirmation in `onOrderFilled(ctx, order)`.
+     3. Once the position is confirmed open (`ctx.getPosition() != 0`), submit linked Stop Loss (`createStopOrder`) and Profit Target (`createLimitOrder`).
+     4. When position returns to flat (`ctx.getPosition() == 0`), cancel remaining bracket orders (`ctx.cancelOrders()`).
+4. **Time & News Guard Flattens**:
+   - Managed automatically in `onBarClose(OrderContext ctx)`:
+     - Strategy 1: Hard max exit at 10:15 ET; 09:59 ET flatten on red-folder news days.
+     - Strategy 2: Pre-cash flatten at 09:25 ET (or 10:35 ET for 10am window).
+     - Strategy 3: Post-fix session boundary flatten at 11:00 ET.
+5. **No Illegal String Format Specifiers**:
+   - `%+$%.2f` is illegal in `java.util.Formatter` and throws `UnknownFormatConversionException`, crashing MotiveWave's chart calculation thread. All dollar displays use `(pts >= 0 ? "+$" : "-$") + String.format("%.2f", Math.abs(netDollars))`.
 
 ## Empirical Evidence & Provenance
 Verified against MotiveWave trade exports reconciled into `results/backtest_provenance.db`:

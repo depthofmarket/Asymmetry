@@ -8,6 +8,7 @@ import unittest
 import pandas as pd
 
 from backtest.research_protocol import (
+    DEFAULT_BLOCKED_AGENT_COMMANDS,
     append_research_audit_event,
     export_research_protocol_report,
     fingerprint_file,
@@ -365,5 +366,75 @@ class ResearchProtocolTests(unittest.TestCase):
             self.assertEqual(rows[0]["outputs"]["sha256"], fingerprint["sha256"])
 
 
+    def test_protocol_fails_when_blocked_agent_commands_omitted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest_path = root / "research_protocol.json"
+            write_research_protocol_manifest(
+                manifest_path,
+                experiment_id="omitted_blocked_commands",
+                objective="Verify that omitting blocked agent commands fails the hard gate.",
+                hypothesis="Agent guardrails must fail hard when blocked commands are omitted from manifest.",
+                edge_thesis=EXECUTION_REALISM_EDGE_THESIS,
+                blocked_agent_commands=[],
+            )
+
+            report = verify_research_protocol(manifest_path)
+
+            self.assertFalse(report.passed, "Report must fail when blocked commands are omitted")
+            failed_checks = [c for c in report.checks if c.section == "agent_contract" and not c.passed]
+            self.assertEqual(len(failed_checks), len(DEFAULT_BLOCKED_AGENT_COMMANDS))
+            for check in failed_checks:
+                self.assertEqual(check.severity, "hard")
+                self.assertEqual(check.status, "FAIL")
+
+    def test_protocol_validates_all_default_blocked_commands_as_hard(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest_path = root / "research_protocol.json"
+            write_research_protocol_manifest(
+                manifest_path,
+                experiment_id="default_blocked_commands",
+                objective="Verify that all default blocked commands pass with hard severity.",
+                hypothesis="Default research protocol manifest must include all blocked commands.",
+                edge_thesis=EXECUTION_REALISM_EDGE_THESIS,
+            )
+
+            report = verify_research_protocol(manifest_path)
+
+            self.assertTrue(report.passed, report.summary())
+            blocked_checks = [c for c in report.checks if c.check.startswith("blocked_for_agent:")]
+            self.assertEqual(len(blocked_checks), len(DEFAULT_BLOCKED_AGENT_COMMANDS))
+            for check in blocked_checks:
+                self.assertEqual(check.severity, "hard")
+                self.assertEqual(check.status, "PASS")
+
+    def test_protocol_fails_when_partial_blocked_commands_omitted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest_path = root / "research_protocol.json"
+            # Keep only 2 of the 5 blocked commands
+            partial_commands = ["main_backtest.py", "scripts/probe_candidate_frequency.py"]
+            write_research_protocol_manifest(
+                manifest_path,
+                experiment_id="partial_blocked_commands",
+                objective="Verify that omitting any blocked script fails validation gate.",
+                hypothesis="Omitting batch scripts must trigger a hard failure.",
+                edge_thesis=EXECUTION_REALISM_EDGE_THESIS,
+                blocked_agent_commands=partial_commands,
+            )
+
+            report = verify_research_protocol(manifest_path)
+
+            self.assertFalse(report.passed, "Report must fail when batch scripts are omitted")
+            failed_cmd_checks = [
+                c.check for c in report.checks if c.check.startswith("blocked_for_agent:") and not c.passed
+            ]
+            self.assertIn("blocked_for_agent:scripts/run_edge_candidates_batch.sh", failed_cmd_checks)
+            self.assertIn("blocked_for_agent:scripts/run_next_vp_candidates_batch.sh", failed_cmd_checks)
+            self.assertIn("blocked_for_agent:scripts/run_2021_frequency_candidates_batch.sh", failed_cmd_checks)
+
+
 if __name__ == "__main__":
     unittest.main()
+

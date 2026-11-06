@@ -213,20 +213,20 @@ def interactive_menu(journal: DemoParityJournal) -> None:
 
         if choice == "1":
             print("\nStarting Continuous Morning Watcher Daemon...")
-            subprocess.run([sys.executable, str(REPO_ROOT / "scripts/watch_morning_demo_alerts.py")])
+            subprocess.run([sys.executable, str(REPO_ROOT / "scripts/watch_morning_demo_alerts.py")], timeout=300)
             break
         elif choice == "2":
             print("\nRunning single immediate scan across all 3 windows...")
-            subprocess.run([sys.executable, str(REPO_ROOT / "scripts/watch_morning_demo_alerts.py"), "--once"])
+            subprocess.run([sys.executable, str(REPO_ROOT / "scripts/watch_morning_demo_alerts.py"), "--once"], timeout=300)
         elif choice == "3":
             print("\nLaunching Interactive Trade Fill Logger...")
-            subprocess.run([sys.executable, str(REPO_ROOT / "scripts/run_demo_forward_test.py"), "--interactive"])
+            subprocess.run([sys.executable, str(REPO_ROOT / "scripts/run_demo_forward_test.py"), "--interactive"], timeout=300)
         elif choice == "4":
             print(f"\nOpening dashboard: {DASHBOARD_HTML_PATH}")
             if sys.platform == "darwin":
-                subprocess.run(["open", str(DASHBOARD_HTML_PATH)])
+                subprocess.run(["open", str(DASHBOARD_HTML_PATH)], timeout=300)
             elif sys.platform.startswith("linux"):
-                subprocess.run(["xdg-open", str(DASHBOARD_HTML_PATH)])
+                subprocess.run(["xdg-open", str(DASHBOARD_HTML_PATH)], timeout=300)
             else:
                 os.startfile(str(DASHBOARD_HTML_PATH))  # type: ignore
         elif choice == "5":
@@ -255,7 +255,7 @@ def main() -> int:
 
     if args.arm:
         print("\nDirectly arming Continuous Morning Watcher Daemon...")
-        subprocess.run([sys.executable, str(REPO_ROOT / "scripts/watch_morning_demo_alerts.py")])
+        subprocess.run([sys.executable, str(REPO_ROOT / "scripts/watch_morning_demo_alerts.py")], timeout=300)
         return 0
 
     interactive_menu(journal)

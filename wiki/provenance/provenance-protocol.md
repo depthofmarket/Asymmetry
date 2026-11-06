@@ -7,7 +7,7 @@ tags:
   - sqlite
   - governance
 created: "2026-11-05"
-updated: "2026-11-05"
+updated: "2026-11-06"
 status: active
 strategies:
   - morning_va_breakout_s1
@@ -103,15 +103,17 @@ Warning Flags: LOW_SAMPLE_SIZE, OUTLIER_DOMINANCE, SHORT_EVALUATION_WINDOW
 
 ## Implementation & File Map
 - **Query CLI**: `scripts/query_provenance.py`
-- **Database Engine**: `backtest/provenance.py` (Peewee ORM SQLite schema)
+- **Database Engine**: `backtest/provenance.py` (ACID SQLite schema + JSONL mirror)
+- **Autonomous Alpha Factory**: `scripts/alpha_factory.py` (gated `--record`, dynamic Git commit, dynamic dates, true `gross_profit`, and empirical DSR trials)
 - **Primary Store**: `results/backtest_provenance.db`
 - **Audit Mirror**: `results/backtest_provenance.jsonl`
-- **Unit Tests**: `tests/test_provenance_system.py`
+- **Unit & Regression Tests**: `tests/test_provenance_system.py`, `tests/test_alpha_factory_provenance.py`
 
 ## Invariant Rules & Failure Modes
 1. **Rule 1: Never Fabricate Numbers**: If a strategy is not recorded in `results/backtest_provenance.db`, refuse to guess.
 2. **Rule 2: Mandatory Inline Warnings**: Any stat carrying a warning flag must display the warning inline with the number.
 3. **Rule 3: Dual-Write Audit Mirror**: Every database transaction must simultaneously write an un-indexed append-only JSONL record to `results/backtest_provenance.jsonl` to safeguard against SQLite corruption.
+4. **Rule 4: Alpha Factory Provenance Gating**: `scripts/alpha_factory.py` executes dry-run evaluations without database mutation unless explicitly invoked with `--record`. All persistent records must bind actual Git HEAD commits, exact trade-derived date boundaries, authentic gross profit (`wins.sum()`), and empirical DSR trials ($N \ge 25$).
 
 ## Cross References
 - [Tri-Asset Ensemble Architecture](../strategies/lucid-flex-ensemble.md)

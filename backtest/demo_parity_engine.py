@@ -298,7 +298,10 @@ class DemoParityJournal:
         if not self.sessions_ledger_path.exists():
             return pd.DataFrame()
         try:
-            return pd.read_csv(self.sessions_ledger_path)
+            return pd.read_csv(
+                self.sessions_ledger_path,
+                dtype={"direction": "object", "notes": "object", "diagnostic_reason": "object"},
+            )
         except Exception:
             return pd.DataFrame()
 
@@ -600,7 +603,10 @@ class DemoParityJournal:
                     row_dict["day_net_pnl"] = round(df_sessions.at[idx, "day_net_pnl"] + session.day_net_pnl, 2)
                     row_dict["trades_count"] = int(df_sessions.at[idx, "trades_count"] + session.trades_count)
                 for k, v in row_dict.items():
-                    df_sessions.at[idx, k] = v
+                    if k in df_sessions.columns:
+                        if df_sessions[k].dtype != object and isinstance(v, str):
+                            df_sessions[k] = df_sessions[k].astype(object)
+                        df_sessions.at[idx, k] = v
                 df_sessions.to_csv(self.sessions_ledger_path, index=False)
             else:
                 df_row = pd.DataFrame([row_dict])

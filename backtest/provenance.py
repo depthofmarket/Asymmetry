@@ -22,6 +22,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from config.strategy_registry import (
+    StrategyTier,
+    get_authorized_baseline_ids,
+    get_strategy_tier,
+    is_production_baseline,
+    is_valid_strategy_id_format,
+    register_candidate,
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RESULTS_DIR = REPO_ROOT / "results"
 DB_PATH = RESULTS_DIR / "backtest_provenance.db"
@@ -53,6 +62,7 @@ class ProvenanceRecord:
     sharpe_ratio: float
     largest_win: float
     largest_win_pct_of_net: float
+    strategy_tier: str = "BASELINE"
     warnings: list[str] = field(default_factory=list)
     params: dict[str, Any] = field(default_factory=dict)
     notes: str = ""
@@ -111,12 +121,22 @@ class ProvenanceStore:
                     sharpe_ratio REAL NOT NULL,
                     largest_win REAL NOT NULL,
                     largest_win_pct_of_net REAL NOT NULL,
+                    strategy_tier TEXT DEFAULT 'BASELINE',
                     warnings_json TEXT NOT NULL,
                     params_json TEXT NOT NULL,
                     notes TEXT
                 )
             """)
+            # Migration check: Ensure strategy_tier column exists for backwards compatibility
+            cur = conn.execute("PRAGMA table_info(backtest_runs)")
+            existing_cols = {row["name"] for row in cur.fetchall()}
+            if "strategy_tier" not in existing_cols:
+                conn.execute("ALTER TABLE backtest_runs ADD COLUMN strategy_tier TEXT DEFAULT 'BASELINE'")
+                conn.execute(
+                    "UPDATE backtest_runs SET strategy_tier = 'FORWARD_DEMO' WHERE strategy_id = 'lucid_flex_forward_demo'"
+                )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_strategy ON backtest_runs(strategy_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_strategy_tier ON backtest_runs(strategy_tier)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_timestamp ON backtest_runs(timestamp)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_data_hash ON backtest_runs(data_hash)")
             conn.commit()
@@ -240,6 +260,7 @@ class ProvenanceStore:
         max_drawdown: float,
         sharpe_ratio: float,
         largest_win: float,
+        strategy_tier: Optional[StrategyTier | str] = None,
         slippage_model: str = "CQG Realized Parity",
         commission_model: str = "$0.70/micro side ($1.40 RT)",
         is_net: bool = True,
@@ -252,13 +273,38 @@ class ProvenanceStore:
     ) -> ProvenanceRecord:
         """
         Fail-safe automatic backtest recording (Rule 5).
-        Calculates cryptographic hash, flags warnings, persists to SQLite and mirrors to JSONL.
+        Calculates cryptographic hash, flags warnings, validates strategy identity & tier,
+        persists to SQLite and mirrors to JSONL.
         """
+        if not strategy_id or not isinstance(strategy_id, str) or not is_valid_strategy_id_format(strategy_id):
+            raise ValueError(f"Invalid strategy_id: '{strategy_id}'. Must be a non-empty alphanumeric slug.")
+
+        clean_strat_id = strategy_id.strip()
+        known_tier = get_strategy_tier(clean_strat_id)
+
+        # Tier resolution & baseline protection
+        if strategy_tier is not None:
+            resolved_tier = StrategyTier.from_str(strategy_tier)
+            if resolved_tier == StrategyTier.BASELINE and not is_production_baseline(clean_strat_id):
+                raise ValueError(
+                    f"Strategy '{clean_strat_id}' is not an authorized production baseline and cannot be "
+                    f"recorded with tier 'BASELINE'. Authorized baselines: {get_authorized_baseline_ids()}."
+                )
+        else:
+            if known_tier is not None:
+                resolved_tier = known_tier
+            else:
+                # Unregistered strategies default to CANDIDATE tier to prevent baseline contamination
+                resolved_tier = StrategyTier.CANDIDATE
+                register_candidate(clean_strat_id, name=strategy_name)
+
+        strategy_tier_str = resolved_tier.value
+
         now = datetime.now(timezone.utc)
         timestamp_str = now.isoformat()
 
         if not run_id:
-            slug = strategy_id.lower().replace(" ", "_")
+            slug = clean_strat_id.lower().replace(" ", "_")
             run_id = f"run_{now.strftime('%Y%m%d_%H%M%S')}_{slug}"
 
         if not git_commit:
@@ -291,7 +337,7 @@ class ProvenanceStore:
         record = ProvenanceRecord(
             run_id=run_id,
             timestamp=timestamp_str,
-            strategy_id=strategy_id,
+            strategy_id=clean_strat_id,
             strategy_name=strategy_name,
             methodology=methodology,
             date_start=str(date_start)[:10],
@@ -312,6 +358,7 @@ class ProvenanceStore:
             sharpe_ratio=round(sharpe_ratio, 2),
             largest_win=round(largest_win, 2),
             largest_win_pct_of_net=round(largest_win_pct, 1),
+            strategy_tier=strategy_tier_str,
             warnings=all_warnings,
             params=params or {},
             notes=notes,
@@ -326,8 +373,8 @@ class ProvenanceStore:
                     date_start, date_end, days_count, data_path, data_hash, git_commit,
                     slippage_model, commission_model, is_net, total_trades, win_rate,
                     profit_factor, gross_profit, net_profit, max_drawdown, sharpe_ratio,
-                    largest_win, largest_win_pct_of_net, warnings_json, params_json, notes
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    largest_win, largest_win_pct_of_net, strategy_tier, warnings_json, params_json, notes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(run_id) DO UPDATE SET
                     timestamp = excluded.timestamp,
                     strategy_id = excluded.strategy_id,
@@ -351,6 +398,7 @@ class ProvenanceStore:
                     sharpe_ratio = excluded.sharpe_ratio,
                     largest_win = excluded.largest_win,
                     largest_win_pct_of_net = excluded.largest_win_pct_of_net,
+                    strategy_tier = excluded.strategy_tier,
                     warnings_json = excluded.warnings_json,
                     params_json = excluded.params_json,
                     notes = excluded.notes
@@ -379,6 +427,7 @@ class ProvenanceStore:
                     record.sharpe_ratio,
                     record.largest_win,
                     record.largest_win_pct_of_net,
+                    record.strategy_tier,
                     json.dumps(record.warnings),
                     json.dumps(record.params),
                     record.notes,
@@ -400,6 +449,14 @@ class ProvenanceStore:
                 f.write(json.dumps(r.to_dict()) + "\n")
 
     def _row_to_record(self, row: sqlite3.Row) -> ProvenanceRecord:
+        tier_val = "BASELINE"
+        if "strategy_tier" in row.keys() and row["strategy_tier"]:
+            tier_val = row["strategy_tier"]
+        else:
+            known = get_strategy_tier(row["strategy_id"])
+            if known:
+                tier_val = known.value
+
         return ProvenanceRecord(
             run_id=row["run_id"],
             timestamp=row["timestamp"],
@@ -424,6 +481,7 @@ class ProvenanceStore:
             sharpe_ratio=row["sharpe_ratio"],
             largest_win=row["largest_win"],
             largest_win_pct_of_net=row["largest_win_pct_of_net"],
+            strategy_tier=tier_val,
             warnings=json.loads(row["warnings_json"]) if row["warnings_json"] else [],
             params=json.loads(row["params_json"]) if row["params_json"] else {},
             notes=row["notes"] or "",
@@ -447,18 +505,28 @@ class ProvenanceStore:
                 ).fetchone()
             return self._row_to_record(row) if row else None
 
-    def list_runs(self, strategy_id: Optional[str] = None, limit: int = 50) -> list[ProvenanceRecord]:
+    def list_runs(
+        self,
+        strategy_id: Optional[str] = None,
+        tier: Optional[StrategyTier | str] = None,
+        limit: int = 50,
+    ) -> list[ProvenanceRecord]:
+        conditions = []
+        params_list: list[Any] = []
+        if strategy_id:
+            conditions.append("strategy_id = ?")
+            params_list.append(strategy_id.strip())
+        if tier:
+            target_tier = StrategyTier.from_str(tier).value
+            conditions.append("strategy_tier = ?")
+            params_list.append(target_tier)
+
+        where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        query = f"SELECT * FROM backtest_runs {where_clause} ORDER BY timestamp DESC LIMIT ?"
+        params_list.append(limit)
+
         with self._get_connection() as conn:
-            if strategy_id:
-                rows = conn.execute(
-                    "SELECT * FROM backtest_runs WHERE strategy_id = ? ORDER BY timestamp DESC LIMIT ?",
-                    (strategy_id, limit),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT * FROM backtest_runs ORDER BY timestamp DESC LIMIT ?",
-                    (limit,),
-                ).fetchall()
+            rows = conn.execute(query, tuple(params_list)).fetchall()
             return [self._row_to_record(r) for r in rows]
 
     @staticmethod
@@ -476,6 +544,7 @@ PROVENANCE VERIFICATION FOOTER (Rule 2 & 3)
 ────────────────────────────────────────────────────────────────────────────
 Run ID       : {record.run_id}
 Strategy     : {record.strategy_id} — {record.strategy_name}
+Strategy Tier: {record.strategy_tier}
 Methodology  : {record.methodology.upper()}
 Date Range   : {record.date_start} to {record.date_end} ({record.days_count} days)
 Data File    : {record.data_path}

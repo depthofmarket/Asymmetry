@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import sys
 from datetime import datetime, timezone
@@ -31,10 +32,23 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from backtest import dashboard_analytics as da
-from backtest.provenance import ProvenanceStore, default_store
+from backtest.provenance import ProvenanceRecord, ProvenanceStore, default_store
 
 DATA_PATH = REPO_ROOT / "data/processed/unified_three_strategy_markov_portfolio_trades_2021_2026.parquet"
 FAILED_IDEAS_PATH = REPO_ROOT / "wiki/failed_ideas.md"
+
+
+def get_baseline_trial_count() -> int:
+    """Returns baseline trial count dynamically parsed from wiki/failed_ideas.md (minimum 25)."""
+    count = 25
+    if FAILED_IDEAS_PATH.exists():
+        try:
+            with open(FAILED_IDEAS_PATH, "r", encoding="utf-8") as f:
+                headers = re.findall(r"### \d+\.\s+", f.read())
+                count = max(count, len(headers))
+        except Exception:
+            pass
+    return count
 
 
 def screen_dead_ends(concept_text: str) -> List[str]:
@@ -63,15 +77,17 @@ def evaluate_candidate_trades(
     df_trades: pd.DataFrame,
     strategy_id: str,
     strategy_name: str,
-    trials: int = 20,
+    trials: Optional[int] = None,
     var_sharpe: float = 0.5,
 ) -> Dict[str, Any]:
     """Applies the Adversarial Red-Team evaluation battery to candidate trade returns."""
+    effective_trials = trials if (trials is not None and trials > 0) else get_baseline_trial_count()
     calendar = da.load_session_calendar()
-    m = da.performance_metrics(df_trades, calendar, "research_pnl", n_trials=trials, var_sharpe=var_sharpe)
+    m = da.performance_metrics(df_trades, calendar, "research_pnl", n_trials=effective_trials, var_sharpe=var_sharpe)
 
     trades_count = int(m["trades"])
     net_pnl = float(m["net"])
+    gross_profit = float(m.get("gross_profit", 0.0))
     pf = float(m["pf"])
     wr = float(m["win_rate"])
     max_dd = float(m["max_dd"])
@@ -112,12 +128,14 @@ def evaluate_candidate_trades(
         "strategy_name": strategy_name,
         "trades": trades_count,
         "net_pnl": net_pnl,
+        "gross_profit": gross_profit,
         "pf": pf,
         "win_rate": wr,
         "max_dd": max_dd,
         "sharpe": sharpe,
         "sr_star": sr_star,
         "dsr": dsr,
+        "trials": effective_trials,
         "largest_win": largest_win,
         "outlier_ratio": outlier_ratio,
         "warnings": warnings,
@@ -129,8 +147,20 @@ def evaluate_candidate_trades(
 def main() -> int:
     parser = argparse.ArgumentParser(description="LucidFlex Autonomous Alpha Factory")
     parser.add_argument("--theme", type=str, help="Theme or hypothesis description to screen and research")
-    parser.add_argument("--evaluate", type=str, choices=["S1", "S2", "S3", "ensemble"], help="Evaluate canonical or candidate strategy")
-    parser.add_argument("--trials", type=int, default=20, help="Number of historical trials tested for DSR adjustment")
+    parser.add_argument(
+        "--evaluate",
+        "--strategy",
+        dest="evaluate",
+        type=str,
+        choices=["S1", "S2", "S3", "ensemble"],
+        help="Evaluate canonical or candidate strategy",
+    )
+    parser.add_argument(
+        "--trials",
+        type=int,
+        default=None,
+        help="Number of historical trials tested for DSR adjustment (default: dynamic from wiki/failed_ideas.md, min 25)",
+    )
     parser.add_argument("--record", action="store_true", help="Record verified passing run into results/backtest_provenance.db")
     args = parser.parse_args()
 
@@ -179,12 +209,13 @@ def main() -> int:
         return 1
 
     strat_id, strat_name, sub_df = strat_map[strat_key]
+    trials = args.trials if args.trials is not None else get_baseline_trial_count()
 
     print(f"\n [Stage 3 & 4] Running Adversarial Red-Team Battery on: {strat_id}")
     print(f"      Sample Size : {len(sub_df)} trades")
-    print(f"      DSR Trials  : N = {args.trials}")
+    print(f"      DSR Trials  : N = {trials}")
 
-    audit = evaluate_candidate_trades(sub_df, strat_id, strat_name, trials=args.trials)
+    audit = evaluate_candidate_trades(sub_df, strat_id, strat_name, trials=trials)
 
     print("\n" + "-" * 80)
     print(" ADVERSARIAL AUDIT REPORT")
@@ -211,33 +242,95 @@ def main() -> int:
     print("\n [🟢] ALL ADVERSARIAL HURDLES PASSED.")
 
     # 4. Standardized Provenance Record & Footer
-    run_id = f"run_alpha_factory_{strat_id}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
-    rec = store.record_run(
-        run_id=run_id,
-        strategy_id=audit["strategy_id"],
-        strategy_name=audit["strategy_name"],
-        methodology="alpha_factory_adversarial_walkforward",
-        date_start="2021-01-07",
-        date_end="2026-10-30",
-        data_path=DATA_PATH,
-        git_commit="8cb04d68a9",
-        slippage_model="Adverse 1-Tick Parity",
-        commission_model="$1.40/RT Micro",
-        is_net=True,
-        total_trades=audit["trades"],
-        win_rate=audit["win_rate"],
-        profit_factor=audit["pf"],
-        gross_profit=audit["net_pnl"] + 1000.0,
-        net_profit=audit["net_pnl"],
-        max_drawdown=audit["max_dd"],
-        sharpe_ratio=audit["sharpe"],
-        largest_win=audit["largest_win"],
-        explicit_warnings=audit["warnings"],
-        notes=f"Alpha Factory evaluation | DSR: {audit['dsr']:.4f} | EVT SR*: {audit['sr_star']:.2f}",
-    )
+    if not sub_df.empty and "date" in sub_df:
+        d_min = sub_df["date"].min()
+        d_max = sub_df["date"].max()
+        date_start = str(d_min.date() if hasattr(d_min, "date") else str(d_min)[:10])
+        date_end = str(d_max.date() if hasattr(d_max, "date") else str(d_max)[:10])
+    else:
+        date_start = "2021-01-01"
+        date_end = "2026-12-31"
 
-    print(ProvenanceStore.format_footer(rec))
-    print(f"\n [🟢] Run successfully registered in results/backtest_provenance.db as {run_id}")
+    git_commit = store.get_git_commit()
+    gross_profit = float(audit["gross_profit"])
+    run_id = f"run_alpha_factory_{strat_id}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+
+    if args.record:
+        rec = store.record_run(
+            run_id=run_id,
+            strategy_id=audit["strategy_id"],
+            strategy_name=audit["strategy_name"],
+            methodology="alpha_factory_adversarial_walkforward",
+            date_start=date_start,
+            date_end=date_end,
+            data_path=DATA_PATH,
+            git_commit=git_commit,
+            slippage_model="Adverse 1-Tick Parity",
+            commission_model="$1.40/RT Micro",
+            is_net=True,
+            total_trades=audit["trades"],
+            win_rate=audit["win_rate"],
+            profit_factor=audit["pf"],
+            gross_profit=gross_profit,
+            net_profit=audit["net_pnl"],
+            max_drawdown=audit["max_dd"],
+            sharpe_ratio=audit["sharpe"],
+            largest_win=audit["largest_win"],
+            explicit_warnings=audit["warnings"],
+            notes=f"Alpha Factory evaluation | DSR: {audit['dsr']:.4f} | EVT SR*: {audit['sr_star']:.2f} | Trials: {trials}",
+        )
+        print(ProvenanceStore.format_footer(rec))
+        print(f"\n [🟢] Run successfully registered in results/backtest_provenance.db as {run_id}")
+    else:
+        try:
+            d1 = datetime.strptime(str(date_start)[:10], "%Y-%m-%d")
+            d2 = datetime.strptime(str(date_end)[:10], "%Y-%m-%d")
+            days_count = max(1, (d2 - d1).days + 1)
+        except Exception:
+            days_count = 1
+
+        largest_win_pct = (audit["largest_win"] / audit["net_pnl"] * 100.0) if (audit["net_pnl"] > 0 and audit["largest_win"] > 0) else 0.0
+        auto_warnings = store.evaluate_warnings(
+            total_trades=audit["trades"],
+            is_net=True,
+            slippage_model="Adverse 1-Tick Parity",
+            commission_model="$1.40/RT Micro",
+            largest_win=audit["largest_win"],
+            net_profit=audit["net_pnl"],
+            days_count=days_count,
+        )
+        all_warnings = list(dict.fromkeys(auto_warnings + audit["warnings"]))
+
+        rec = ProvenanceRecord(
+            run_id=run_id,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            strategy_id=audit["strategy_id"],
+            strategy_name=audit["strategy_name"],
+            methodology="alpha_factory_adversarial_walkforward",
+            date_start=str(date_start)[:10],
+            date_end=str(date_end)[:10],
+            days_count=days_count,
+            data_path=str(DATA_PATH),
+            data_hash=sha256,
+            git_commit=git_commit,
+            slippage_model="Adverse 1-Tick Parity",
+            commission_model="$1.40/RT Micro",
+            is_net=True,
+            total_trades=audit["trades"],
+            win_rate=round(audit["win_rate"], 2),
+            profit_factor=round(audit["pf"], 2) if not math.isinf(audit["pf"]) else 999.0,
+            gross_profit=round(gross_profit, 2),
+            net_profit=round(audit["net_pnl"], 2),
+            max_drawdown=round(audit["max_dd"], 2),
+            sharpe_ratio=round(audit["sharpe"], 2),
+            largest_win=round(audit["largest_win"], 2),
+            largest_win_pct_of_net=round(largest_win_pct, 1),
+            warnings=all_warnings,
+            params={},
+            notes=f"Alpha Factory evaluation | DSR: {audit['dsr']:.4f} | EVT SR*: {audit['sr_star']:.2f} | Trials: {trials} | DRY RUN (not recorded to database; pass --record to persist)",
+        )
+        print(ProvenanceStore.format_footer(rec))
+        print("\n [INFO] DRY RUN (not recorded to database; pass --record to persist)")
     print("=" * 80)
     return 0
 

@@ -26,6 +26,7 @@ from backtest.provenance import ProvenanceStore, default_store
 def main():
     parser = argparse.ArgumentParser(description="Query verified backtest provenance records.")
     parser.add_argument("--strategy", type=str, help="Strategy ID (e.g., morning_va_breakout_s1, macro_momentum_s2, gold_london_fix_s3, lucid_flex_ensemble)")
+    parser.add_argument("--tier", type=str, help="Filter runs by strategy tier (BASELINE, FORWARD_DEMO, CANDIDATE, REJECTED)")
     parser.add_argument("--latest", action="store_true", help="Fetch the latest recorded backtest run")
     parser.add_argument("--list", action="store_true", help="List all verified backtest runs in the database")
     parser.add_argument("--run-id", type=str, help="Fetch a specific backtest run by ID")
@@ -45,23 +46,25 @@ def main():
 
     # 2. List all runs
     if args.list:
-        runs = store.list_runs(strategy_id=args.strategy, limit=100)
+        runs = store.list_runs(strategy_id=args.strategy, tier=args.tier, limit=100)
         if not runs:
-            print("No verified backtest runs found in results/backtest_provenance.db.")
+            tier_msg = f" with tier '{args.tier}'" if args.tier else ""
+            print(f"No verified backtest runs found{tier_msg} in results/backtest_provenance.db.")
             return
 
         if args.json:
             print(json.dumps([r.to_dict() for r in runs], indent=2))
             return
 
-        print("=" * 90)
-        print(f"{'RUN ID':<32} | {'STRATEGY':<22} | {'METHOD':<12} | {'PF':<6} | {'WIN%':<6} | {'NET PNL':<10} | {'WARN':<5}")
-        print("=" * 90)
+        print("=" * 105)
+        print(f"{'RUN ID':<32} | {'STRATEGY':<22} | {'TIER':<12} | {'METHOD':<12} | {'PF':<6} | {'WIN%':<6} | {'NET PNL':<10} | {'WARN':<5}")
+        print("=" * 105)
         for r in runs:
             warn_badge = "⚠️ " if r.warnings else "✅ "
             pnl_str = f"${r.net_profit:,.0f}"
-            print(f"{r.run_id:<32} | {r.strategy_id:<22} | {r.methodology:<12} | {r.profit_factor:<6.2f} | {r.win_rate:<5.1f}% | {pnl_str:<10} | {warn_badge}")
-        print("=" * 90)
+            tier_str = getattr(r, "strategy_tier", "BASELINE") or "BASELINE"
+            print(f"{r.run_id:<32} | {r.strategy_id:<22} | {tier_str:<12} | {r.methodology:<12} | {r.profit_factor:<6.2f} | {r.win_rate:<5.1f}% | {pnl_str:<10} | {warn_badge}")
+        print("=" * 105)
         print(f"Total verified runs: {len(runs)} (Store: {store.db_path})")
         return
 

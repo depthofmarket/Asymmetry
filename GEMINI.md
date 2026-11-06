@@ -14,6 +14,13 @@ Every backtest auto-records into a single store (`results/backtest_provenance.db
   ```bash
   python scripts/query_provenance.py --strategy <strategy_id> --stat <metric_name>
   ```
+- Valid authorized strategy IDs governed by `config/strategy_registry.py`:
+  - `morning_va_breakout_s1` (Strategy 1: Morning VA Breakout 09:45 ET; MNQ/MES) [BASELINE]
+  - `macro_momentum_s2` (Strategy 2: Pre-Market Macro Momentum 08:35 ET; MNQ) [BASELINE]
+  - `gold_london_fix_s3` (Strategy 3: Gold London Fix Breakout 10:15 ET; MGC) [BASELINE]
+  - `lucid_flex_ensemble` (Composite Multi-Strategy Portfolio) [BASELINE]
+  - `lucid_flex_forward_demo` (Live Demo Parity Ledger) [FORWARD_DEMO]
+  - Research candidates must be registered with `StrategyTier.CANDIDATE`. Unvetted candidates are prohibited from recording under production baseline IDs or claiming `BASELINE` tier.
 - If a strategy or backtest has not been recorded into `results/backtest_provenance.db`, the agent **must refuse** to invent or guess numbers, stating: *"No verified backtest run found in `results/backtest_provenance.db`. Run the backtest engine first to record verified metrics."*
 
 ### Rule 2: No Naked Numbers

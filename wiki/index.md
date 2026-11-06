@@ -20,6 +20,7 @@ Welcome to the `nq-scalper-backtest` persistent knowledge base. This wiki serves
 - [Strategy 1: Morning VA Breakout (09:45 ET)](strategies/morning-va-breakout.md) — Dual-asset (MNQ/MES) opening range acceptance outside prior session Value Area with GARCH MVT exhaustion filter. `[active]`
 - [Strategy 2: Pre-Market Macro Momentum (08:35 ET)](strategies/macro-momentum.md) — MNQ pre-market directional momentum following 08:30 Tier-1 macro releases with Markov high-vol adaptive sizing. `[active]`
 - [Strategy 3: Gold London Fix Breakout (10:15 ET)](strategies/gold-london-fix.md) — Long-only COMEX MGC structural breakout following LBMA PM bullion fixing auction clearing. `[active]`
+- [Candidate Incubation Lifecycle & Strategy Governance](strategies/candidate-incubation-lifecycle.md) — Strategy tier governance (BASELINE, FORWARD_DEMO, CANDIDATE, REJECTED), 6-stage incubation gates, and provenance store segregation. `[active]`
 
 ---
 
@@ -41,3 +42,4 @@ Welcome to the `nq-scalper-backtest` persistent knowledge base. This wiki serves
 ## 6. Execution Architecture & Broker Integration
 - [MotiveWave Custom Studies & Java Execution Integration](execution/motivewave-integration.md) — Java custom studies SDK, non-repainting execution tags, trailing floor tracking, and CQG feed routing. `[active]`
 - [Live Demo Parity Engine & Execution Auditing](execution/demo-parity-engine.md) — Real-time demo parity tracking, slippage drag calculation, morning watcher daemon, and order intent auditing. `[active]`
+- [Agent Execution Guardrails & Subprocess Security](execution/agent-execution-guardrails.md) — Runtime command validation, dangerous binary blocking, exploratory backtest gates, and safe subprocess execution. `[active]`

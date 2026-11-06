@@ -38,6 +38,7 @@ def check_daemon(label: str = WATCHER_LABEL) -> tuple[bool, int | None, str]:
             capture_output=True,
             text=True,
             check=True,
+            timeout=30,
         )
         for line in proc.stdout.splitlines():
             if label in line:
@@ -152,7 +153,7 @@ def send_macos_alert(title: str, subtitle: str, message: str) -> None:
     safe_msg = message.replace('"', '\\"')
     script = f'display notification "{safe_msg}" with title "{safe_title}" subtitle "{safe_sub}"'
     try:
-        subprocess.run(["osascript", "-e", script], check=False)
+        subprocess.run(["osascript", "-e", script], check=False, timeout=30)
     except Exception:
         pass
 

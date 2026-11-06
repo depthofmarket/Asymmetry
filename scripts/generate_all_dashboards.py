@@ -17,7 +17,7 @@ def run_script(script_path: Path):
     print("=" * 80)
     print(f"  RUNNING: {script_path.name}")
     print("=" * 80)
-    res = subprocess.run([sys.executable, str(script_path)], cwd=str(REPO_ROOT))
+    res = subprocess.run([sys.executable, str(script_path)], cwd=str(REPO_ROOT), timeout=300)
     if res.returncode != 0:
         print(f"ERROR: {script_path.name} failed with return code {res.returncode}")
         sys.exit(res.returncode)

@@ -106,7 +106,7 @@ class ExecutionMixin:
         return managed_levels
 
     def managed_stop_activation_mode(self) -> str:
-        mode = str(self.strategy_params.get('managed_stop_activation_mode', 'same_bar') or 'same_bar')
+        mode = str(self.strategy_params.get('managed_stop_activation_mode', 'next_bar') or 'next_bar')
         mode = mode.lower().strip()
         if mode in {'next_bar', 'prior_bar', 'delayed'}:
             return 'next_bar'
@@ -466,6 +466,21 @@ class ExecutionMixin:
 
         return levels
 
+    def get_fill_mode(self, order_type: str = 'target') -> str:
+        p = self.strategy_params
+        specific_key = 'target_fill_mode' if order_type == 'target' else 'stop_fill_mode'
+        val = p.get(specific_key)
+        if val is not None:
+            val_str = str(val).lower().strip()
+            if val_str and val_str != 'none':
+                return val_str
+        top_fill = p.get('fill_mode')
+        if top_fill is not None:
+            top_str = str(top_fill).lower().strip()
+            if top_str and top_str != 'none':
+                return top_str
+        return 'touch'
+
     def target_trade_through_points(self) -> float:
         p = self.strategy_params
         explicit = p.get('target_fill_trade_through_points')
@@ -474,7 +489,19 @@ class ExecutionMixin:
                 return max(0.0, float(explicit))
             except (TypeError, ValueError):
                 return 0.0
-        ticks = max(0.0, float(p.get('target_fill_trade_through_ticks', 0) or 0))
+        ticks = max(0.0, float(p.get('target_fill_trade_through_ticks', 1) if p.get('target_fill_trade_through_ticks') is not None else 1))
+        tick_size = float(p.get('vp_tick_size', p.get('tick_size', 0.25)) or 0.25)
+        return ticks * tick_size
+
+    def stop_trade_through_points(self) -> float:
+        p = self.strategy_params
+        explicit = p.get('stop_fill_trade_through_points')
+        if explicit is not None:
+            try:
+                return max(0.0, float(explicit))
+            except (TypeError, ValueError):
+                return 0.0
+        ticks = max(0.0, float(p.get('stop_fill_trade_through_ticks', 1) if p.get('stop_fill_trade_through_ticks') is not None else 1))
         tick_size = float(p.get('vp_tick_size', p.get('tick_size', 0.25)) or 0.25)
         return ticks * tick_size
 
@@ -485,22 +512,45 @@ class ExecutionMixin:
         high_price: float,
         low_price: float,
     ) -> bool:
-        mode = str(self.strategy_params.get('target_fill_mode', 'touch') or 'touch').lower()
+        mode = self.get_fill_mode('target')
         through = self.target_trade_through_points() if mode == 'trade_through' else 0.0
         if direction == 'long':
             return high_price >= float(price) + through
         return low_price <= float(price) - through
 
+    def adverse_stop_hit(
+        self,
+        direction: str,
+        price: float,
+        high_price: float,
+        low_price: float,
+    ) -> bool:
+        mode = self.get_fill_mode('stop')
+        through = self.stop_trade_through_points() if mode == 'trade_through' else 0.0
+        if direction == 'long':
+            return low_price <= float(price) - through
+        return high_price >= float(price) + through
+
     def resolve_intrabar_exit(
         self,
         direction: str,
-        bar_open: float,
-        high_price: float,
-        low_price: float,
-        levels: dict,
+        bar_open: float = None,
+        high_price: float = None,
+        low_price: float = None,
+        levels: dict = None,
+        open_price: float = None,
+        **kwargs,
     ):
+        if bar_open is None and open_price is not None:
+            bar_open = open_price
+        elif bar_open is None and 'open' in kwargs:
+            bar_open = kwargs['open']
+        if levels is None:
+            levels = kwargs.get('exit_levels', {})
+
         p = self.strategy_params
         assumption = p.get('intrabar_exit_assumption', 'conservative')
+        gap_stop_mode = str(p.get('gap_stop_fill_mode', 'open') or 'open').lower().strip()
 
         adverse_hits = []
         favorable_hits = []
@@ -508,7 +558,7 @@ class ExecutionMixin:
         if direction == 'long':
             for reason in ('managed_stop', 'hard_stop', 'stop_loss'):
                 price = levels.get(reason)
-                if price is not None and low_price <= price:
+                if price is not None and self.adverse_stop_hit(direction, price, high_price, low_price):
                     adverse_hits.append((reason, price))
             for reason in ('profit_target', 'hard_target'):
                 price = levels.get(reason)
@@ -520,7 +570,7 @@ class ExecutionMixin:
         else:
             for reason in ('managed_stop', 'hard_stop', 'stop_loss'):
                 price = levels.get(reason)
-                if price is not None and high_price >= price:
+                if price is not None and self.adverse_stop_hit(direction, price, high_price, low_price):
                     adverse_hits.append((reason, price))
             for reason in ('profit_target', 'hard_target'):
                 price = levels.get(reason)
@@ -530,19 +580,31 @@ class ExecutionMixin:
             adverse_hit = min(adverse_hits, key=lambda item: item[1]) if adverse_hits else None
             favorable_hit = max(favorable_hits, key=lambda item: item[1]) if favorable_hits else None
 
+        # Resolve adverse stop exit price according to gap_stop_fill_mode
+        resolved_adverse_price = None
+        if adverse_hit is not None:
+            stop_price = float(adverse_hit[1])
+            if gap_stop_mode == 'open' and bar_open is not None:
+                if direction == 'long':
+                    resolved_adverse_price = min(stop_price, float(bar_open))
+                else:
+                    resolved_adverse_price = max(stop_price, float(bar_open))
+            else:
+                resolved_adverse_price = stop_price
+
         if adverse_hit and favorable_hit:
             if assumption == 'optimistic':
                 return True, favorable_hit[0], favorable_hit[1]
             if assumption == 'proximity':
-                adverse_distance = abs(bar_open - adverse_hit[1])
-                favorable_distance = abs(bar_open - favorable_hit[1])
+                adverse_distance = abs(bar_open - adverse_hit[1]) if bar_open is not None else 0.0
+                favorable_distance = abs(bar_open - favorable_hit[1]) if bar_open is not None else 0.0
                 if favorable_distance < adverse_distance:
                     return True, favorable_hit[0], favorable_hit[1]
-                return True, adverse_hit[0], adverse_hit[1]
-            return True, adverse_hit[0], adverse_hit[1]
+                return True, adverse_hit[0], resolved_adverse_price
+            return True, adverse_hit[0], resolved_adverse_price
 
         if adverse_hit:
-            return True, adverse_hit[0], adverse_hit[1]
+            return True, adverse_hit[0], resolved_adverse_price
         if favorable_hit:
             return True, favorable_hit[0], favorable_hit[1]
 

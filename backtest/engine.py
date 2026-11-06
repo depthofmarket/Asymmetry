@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import ta
 from datetime import datetime
+import weakref
 
 from backtest.auction_context import add_futures_auction_context
 from backtest.cross_asset_context import (
@@ -24,7 +25,7 @@ from backtest.execution import ExecutionMixin
 from backtest.indicators import IndicatorMixin
 from backtest.signals import SignalMixin
 
-_EXECUTION_1M_CACHE: dict[tuple[int, int], tuple[pd.DataFrame, np.ndarray, bool]] = {}
+_EXECUTION_1M_CACHE: dict[tuple[int, int], tuple[weakref.ref, pd.DataFrame, np.ndarray, bool]] = {}
 
 
 class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
@@ -1005,8 +1006,8 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
 
         cache_key = (id(self.data), len(self.data))
         cached = _EXECUTION_1M_CACHE.get(cache_key)
-        if cached is not None:
-            base_df, base_times, _ = cached
+        if cached is not None and cached[0]() is self.data:
+            _, base_df, base_times, _ = cached
         else:
             cols = ['time', 'open', 'high', 'low', 'close']
             base_df = self.data[cols].copy()
@@ -1021,7 +1022,11 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
                     is_1m = bool(diffs.mode().iloc[0] <= pd.Timedelta(minutes=1))
             if len(_EXECUTION_1M_CACHE) >= 4:
                 _EXECUTION_1M_CACHE.clear()
-            _EXECUTION_1M_CACHE[cache_key] = (base_df, base_times, is_1m)
+            try:
+                ref_obj = weakref.ref(self.data)
+            except TypeError:
+                ref_obj = lambda: None
+            _EXECUTION_1M_CACHE[cache_key] = (ref_obj, base_df, base_times, is_1m)
 
         df = base_df
         times_arr = base_times
@@ -1049,8 +1054,8 @@ class BacktestEngine(ExecutionMixin, IndicatorMixin, SignalMixin):
 
         cache_key = (id(self.data), len(self.data))
         cached = _EXECUTION_1M_CACHE.get(cache_key)
-        if cached is not None:
-            return cached[2]
+        if cached is not None and cached[0]() is self.data:
+            return cached[3]
 
         diffs = exec_df['time'].diff().dropna()
         if diffs.empty:

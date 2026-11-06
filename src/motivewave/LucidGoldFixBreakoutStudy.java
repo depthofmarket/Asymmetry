@@ -8,6 +8,7 @@ import com.motivewave.platform.sdk.common.Enums$MarkerType;
 import com.motivewave.platform.sdk.common.Enums$OrderAction;
 import com.motivewave.platform.sdk.common.Enums$Position;
 import com.motivewave.platform.sdk.common.Enums$Size;
+import com.motivewave.platform.sdk.common.Enums$StrategyState;
 import com.motivewave.platform.sdk.common.Enums$TIF;
 import com.motivewave.platform.sdk.common.MarkerInfo;
 import com.motivewave.platform.sdk.common.desc.BooleanDescriptor;
@@ -50,6 +51,12 @@ import java.util.regex.Pattern;
     overlay = true,
     signals = true,
     strategy = true,
+    autoEntry = true,
+    manualEntry = false,
+    supportsEnterOnActivate = false,
+    supportsUnrealizedPL = true,
+    supportsRealizedPL = true,
+    supportsTotalPL = true,
     showTradeOptions = true,
     supportsTradeLots = true,
     supportsPosition = true
@@ -100,6 +107,11 @@ public class LucidGoldFixBreakoutStudy extends Study {
         double ptVal;
         boolean closed = false;
         boolean orderSubmitted = false;
+        boolean entryFilled = false;
+        boolean bracketsSubmitted = false;
+        String entryOrderId;
+        String slOrderId;
+        String tpOrderId;
         Line slLine;
         Line tpLine;
         Line entryLine;
@@ -315,7 +327,7 @@ public class LucidGoldFixBreakoutStudy extends Study {
         group.addRow(new BooleanDescriptor(SHOW_LEVEL_LINES, "Show SL / TP / Entry / 11:00 Exit Lines", true));
         group.addRow(new BooleanDescriptor(HIDE_LINES_WHEN_LIVE, "Hide Custom Lines When Live Auto-Trade Active (Use Native Orders)", true));
         group.addRow(new BooleanDescriptor(SHOW_NO_SETUP_MARKER, "Show 'No Setup' Reason Marker at 10:15", false));
-        group.addRow(new BooleanDescriptor(ENABLE_LIVE_AUTOTRADE, "Enable Live Auto-Trading (CQG Execution)", false));
+        group.addRow(new BooleanDescriptor(ENABLE_LIVE_AUTOTRADE, "Enable Live Auto-Trading (CQG Execution)", true));
 
         setSettingsDescriptor(sd);
 
@@ -602,8 +614,8 @@ public class LucidGoldFixBreakoutStudy extends Study {
                 exitPrice = close;
                 double pts = exitPrice - activeTrade.entryPrice;
                 double netDollars = pts * activeTrade.ptVal * activeTrade.contracts;
-                outcomeText = String.format("TIME EXIT (11:00): %.2f (%+.2f pts | %+$%.2f)",
-                    exitPrice, pts, netDollars);
+                outcomeText = String.format("TIME EXIT (11:00): %.2f (%+.2f pts | %s$%.2f)",
+                    exitPrice, pts, netDollars >= 0 ? "+" : "-", Math.abs(netDollars));
                 outcomeColor = Color.CYAN;
             }
 
@@ -633,27 +645,30 @@ public class LucidGoldFixBreakoutStudy extends Study {
 
     @Override
     public void onActivate(OrderContext ctx) {
-        // Armed on strategy activation
+        setState(Enums$StrategyState.ACTIVE);
+        logExecutionEvent("STRATEGY_ACTIVATED", "LucidGoldFixBreakout",
+            ctx != null ? ctx.getInstrument().getSymbol() : "MGC",
+            "ACTIVE", 0.0, 0.0, 0.0, 0, "Strategy armed by user in MotiveWave");
     }
 
     @Override
     public void onSignal(OrderContext ctx, Object signal) {
         if (ctx == null) return;
-        if (!getSettings().getBoolean(ENABLE_LIVE_AUTOTRADE, false)) return;
+        if (!getSettings().getBoolean(ENABLE_LIVE_AUTOTRADE, true)) return;
         executeAutoTradeIfArmed(ctx, signal);
     }
 
     @Override
     public void onBarClose(OrderContext ctx) {
         if (ctx == null) return;
-        if (!getSettings().getBoolean(ENABLE_LIVE_AUTOTRADE, false)) return;
+        if (!getSettings().getBoolean(ENABLE_LIVE_AUTOTRADE, true)) return;
 
         // 1. If flat, check if an unsubmitted trade signal exists for today
         if (ctx.getPosition() == 0) {
             long now = ctx.getCurrentTime();
             LocalDate today = Instant.ofEpochMilli(now).atZone(NY_ZONE).toLocalDate();
             ActiveTrade trade = tradesByDate.get(today);
-            if (trade != null && !trade.orderSubmitted && !trade.closed && now >= trade.entryTime) {
+            if (trade != null && !trade.orderSubmitted && !trade.closed && now >= trade.entryTime && now < trade.maxExitTime) {
                 executeAutoTradeIfArmed(ctx, SIGNAL_BUY);
             }
         }
@@ -668,6 +683,8 @@ public class LucidGoldFixBreakoutStudy extends Study {
             if (hour > 11 || (hour == 11 && min >= 0)) {
                 ctx.cancelOrders();
                 ctx.closeAtMarket();
+                logExecutionEvent("TIME_EXIT_FLATTEN", "LucidGoldFixBreakout", ctx.getInstrument().getSymbol(),
+                    "FLAT", 0.0, 0.0, 0.0, 0, "11:00 ET session close boundary reached, position flattened.");
             }
         }
     }
@@ -677,7 +694,11 @@ public class LucidGoldFixBreakoutStudy extends Study {
 
         // Gateway-level circuit breaker check
         DaemonRiskState riskState = loadDaemonRiskState();
-        if (riskState.circuitBreakerHit) return;
+        if (riskState.circuitBreakerHit) {
+            logExecutionEvent("CIRCUIT_BREAKER_BLOCKED", "LucidGoldFixBreakout", ctx.getInstrument().getSymbol(),
+                "BLOCKED", 0.0, 0.0, 0.0, 0, "Daily soft-stop -$600 reached in demo parity state");
+            return;
+        }
 
         long now = ctx.getCurrentTime();
         LocalDate today = Instant.ofEpochMilli(now).atZone(NY_ZONE).toLocalDate();
@@ -686,16 +707,76 @@ public class LucidGoldFixBreakoutStudy extends Study {
 
         int contracts = resolveContracts(ctx, trade.contracts);
         if (contracts <= 0) contracts = 1;
+        trade.contracts = contracts;
 
         float stopPrice = ctx.getInstrument().round((float) trade.stopPrice);
         float targetPrice = ctx.getInstrument().round((float) trade.targetPrice);
 
+        setStopPrice(stopPrice);
+        setTargetPrice(targetPrice);
+
         // Gold London Fix is a Long Breakout strategy
         Order entry = ctx.createMarketOrder(Enums$OrderAction.BUY, contracts);
-        Order sl = ctx.createStopOrder(Enums$OrderAction.SELL, Enums$TIF.GTC, contracts, stopPrice);
-        Order tp = ctx.createLimitOrder(Enums$OrderAction.SELL, Enums$TIF.GTC, contracts, targetPrice);
-        ctx.submitOrders(entry, sl, tp);
+        ctx.submitOrders(entry);
         trade.orderSubmitted = true;
+        trade.entryOrderId = entry != null ? entry.getOrderId() : null;
+
+        logExecutionEvent("ORDER_SUBMITTED", "LucidGoldFixBreakout", ctx.getInstrument().getSymbol(),
+            "BUY", trade.entryPrice, stopPrice, targetPrice, contracts,
+            "Market entry submitted. Brackets pending fill confirmation.");
+    }
+
+    @Override
+    public void onOrderFilled(OrderContext ctx, Order order) {
+        if (ctx == null || order == null) return;
+        long now = ctx.getCurrentTime();
+        LocalDate today = Instant.ofEpochMilli(now).atZone(NY_ZONE).toLocalDate();
+        ActiveTrade trade = tradesByDate.get(today);
+
+        logExecutionEvent("ORDER_FILLED", "LucidGoldFixBreakout", ctx.getInstrument().getSymbol(),
+            order.getAction().toString(), order.getAvgFillPrice(), 0.0, 0.0, order.getQuantity(),
+            "Order filled: id=" + order.getOrderId() + " pos=" + ctx.getPosition());
+
+        if (ctx.getPosition() != 0 && trade != null && !trade.bracketsSubmitted) {
+            trade.entryFilled = true;
+            int contracts = Math.abs(ctx.getPosition());
+            float stopPrice = ctx.getInstrument().round((float) trade.stopPrice);
+            float targetPrice = ctx.getInstrument().round((float) trade.targetPrice);
+
+            Order sl = ctx.createStopOrder(Enums$OrderAction.SELL, Enums$TIF.GTC, contracts, stopPrice);
+            Order tp = ctx.createLimitOrder(Enums$OrderAction.SELL, Enums$TIF.GTC, contracts, targetPrice);
+            ctx.submitOrders(sl, tp);
+            trade.bracketsSubmitted = true;
+            trade.slOrderId = sl != null ? sl.getOrderId() : null;
+            trade.tpOrderId = tp != null ? tp.getOrderId() : null;
+
+            logExecutionEvent("BRACKETS_SUBMITTED", "LucidGoldFixBreakout", ctx.getInstrument().getSymbol(),
+                "SELL", 0.0, stopPrice, targetPrice, contracts,
+                "Attached Stop (" + stopPrice + ") and Target (" + targetPrice + ") submitted to broker.");
+        } else if (ctx.getPosition() == 0) {
+            ctx.cancelOrders();
+            if (trade != null) trade.closed = true;
+            logExecutionEvent("POSITION_FLAT", "LucidGoldFixBreakout", ctx.getInstrument().getSymbol(),
+                "FLAT", 0.0, 0.0, 0.0, 0, "Position closed, unfulfilled bracket orders cancelled.");
+        }
+    }
+
+    @Override
+    public void onOrderRejected(OrderContext ctx, Order order) {
+        if (order == null) return;
+        logExecutionEvent("ORDER_REJECTED", "LucidGoldFixBreakout",
+            ctx != null ? ctx.getInstrument().getSymbol() : "UNKNOWN",
+            order.getAction().toString(), 0.0, 0.0, 0.0, order.getQuantity(),
+            "Order REJECTED by broker: id=" + order.getOrderId() + " type=" + order.getType());
+    }
+
+    @Override
+    public void onOrderCancelled(OrderContext ctx, Order order) {
+        if (order == null) return;
+        logExecutionEvent("ORDER_CANCELLED", "LucidGoldFixBreakout",
+            ctx != null ? ctx.getInstrument().getSymbol() : "UNKNOWN",
+            order.getAction().toString(), 0.0, 0.0, 0.0, order.getQuantity(),
+            "Order cancelled: id=" + order.getOrderId());
     }
 
     @Override
@@ -706,16 +787,29 @@ public class LucidGoldFixBreakoutStudy extends Study {
     }
 
     @Override
-    public void onOrderFilled(OrderContext ctx, Order order) {
-        if (ctx != null && ctx.getPosition() == 0) {
-            ctx.cancelOrders();
-        }
-    }
-
-    @Override
     public void onDeactivate(OrderContext ctx) {
+        setState(Enums$StrategyState.INACTIVE);
         if (ctx != null) {
             ctx.cancelOrders();
+        }
+        logExecutionEvent("STRATEGY_DEACTIVATED", "LucidGoldFixBreakout",
+            ctx != null ? ctx.getInstrument().getSymbol() : "MGC",
+            "INACTIVE", 0.0, 0.0, 0.0, 0, "Strategy deactivated by user");
+    }
+
+    private static synchronized void logExecutionEvent(String event, String studyId, String symbol,
+        String action, double price, double sl, double tp, int contracts, String reason) {
+        try {
+            String home = System.getProperty("user.home");
+            File dir = new File(home, "trading_strategy/nq-scalper-backtest/results/forward_test");
+            if (!dir.exists()) dir.mkdirs();
+            File alertLog = new File(dir, "motivewave_alerts.log");
+            String isoNow = Instant.now().toString();
+            String alertLine = String.format("%s,%s,%s,%s,%.2f,%.2f,%.2f,%d,%s%n",
+                isoNow, studyId, symbol, action, price, sl, tp, contracts, reason.replace(',', ';'));
+            Files.write(alertLog.toPath(), alertLine.getBytes(StandardCharsets.UTF_8),
+                java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+        } catch (Exception ignored) {
         }
     }
 }

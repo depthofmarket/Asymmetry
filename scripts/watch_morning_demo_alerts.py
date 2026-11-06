@@ -43,6 +43,12 @@ from backtest.demo_parity_engine import (
     WindowEvaluationRecord,
     resolve_instrument,
 )
+from scripts.sync_cqg_executions import (
+    DEFAULT_JOURNAL_PATH,
+    parse_cqg_fills_from_journal,
+    reconstruct_trades_fifo,
+    sync_broker_trades_to_ledger,
+)
 from scripts.run_demo_forward_test import (
     compute_prior_va_for_latest_session,
     evaluate_gold_h14_signal,
@@ -364,8 +370,24 @@ def auto_log_session_and_trades(
         b_day = bars[bars["time"].dt.strftime("%Y-%m-%d") == session_date]
         w_bars = b_day[b_day["time"].dt.strftime("%H:%M").between(start_hhmm, end_hhmm)].copy()
 
-        # If window is complete (at least 15 bars), simulate order execution & auto-record
-        if len(w_bars) >= 15:
+        # Check if real broker executions exist in MotiveWave CQG journal first
+        real_broker_synced = False
+        if DEFAULT_JOURNAL_PATH.exists():
+            try:
+                broker_fills = parse_cqg_fills_from_journal(
+                    DEFAULT_JOURNAL_PATH, exact_date=session_date, allowed_symbols={sym}
+                )
+                if broker_fills:
+                    reconstructed = reconstruct_trades_fifo(broker_fills)
+                    if reconstructed:
+                        sync_broker_trades_to_ledger(reconstructed, journal=journal)
+                        real_broker_synced = True
+                        print(f"  [AUTO-LOGGER] Synchronized real CQG broker executions from MotiveWave for {sym} on {session_date}.")
+            except Exception as e:
+                print(f"  [AUTO-LOGGER] Notice on CQG journal sync: {e} (falling back to simulated bar fill)")
+
+        # If window is complete (at least 15 bars) and not already synced from broker, simulate order execution & auto-record
+        if not real_broker_synced and len(w_bars) >= 15:
             d = 1 if sig["direction"] == "long" else -1
             entry_p = float(sig["entry_price"])
             stop_p = float(sig["stop_price"])

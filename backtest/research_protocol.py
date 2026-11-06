@@ -200,7 +200,9 @@ def build_research_protocol_manifest(
                 "LLMs may propose hypotheses and inspect approved research artifacts, but deterministic "
                 "code owns features, fills, costs, labels, metrics, and promotion gates."
             ),
-            "blocked_commands_for_agent": list(blocked_agent_commands or DEFAULT_BLOCKED_AGENT_COMMANDS),
+            "blocked_commands_for_agent": list(
+                DEFAULT_BLOCKED_AGENT_COMMANDS if blocked_agent_commands is None else blocked_agent_commands
+            ),
             "backtest_execution_owner": "user_terminal",
         },
         "llm_visibility": {
@@ -315,7 +317,7 @@ def verify_research_protocol(
         path,
         "The research agent may prepare commands, but should not own historical execution.",
     )
-    for command in ["main_backtest.py", "scripts/probe_candidate_frequency.py"]:
+    for command in DEFAULT_BLOCKED_AGENT_COMMANDS:
         add(
             "agent_contract",
             f"blocked_for_agent:{command}",
@@ -323,7 +325,7 @@ def verify_research_protocol(
             "true",
             command in blocked_commands,
             path,
-            severity="warning",
+            severity="hard",
         )
 
     visibility = manifest.get("llm_visibility", {}) if isinstance(manifest.get("llm_visibility"), dict) else {}

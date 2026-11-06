@@ -172,21 +172,32 @@ STRATEGY_PARAMS = {
     'entry_delay_bars': 0,
     'exit_mode': 'hybrid',
     'intrabar_exit_assumption': 'proximity',
-    # Target fills are a major scalping-backtest failure mode.  The default
-    # preserves legacy behavior; validation candidates can require price to
-    # trade through targets before assuming the resting limit was filled.
-    'target_fill_mode': 'touch',  # touch | trade_through
+    # Execution realism & fill modes:
+    # fill_mode acts as top-level default for both targets and stops ('touch' | 'trade_through').
+    'fill_mode': 'touch',  # touch | trade_through
+    # Target fills: 'touch' assumes resting limit fills on touch;
+    # 'trade_through' requires price to trade through by ticks/points.
+    'target_fill_mode': None,  # None inherits fill_mode, or 'touch' | 'trade_through'
     'target_fill_trade_through_ticks': 1,
     'target_fill_trade_through_points': None,
+    # Stop order fill mode: 'touch' triggers on price touch;
+    # 'trade_through' requires price to penetrate beyond the stop level.
+    'stop_fill_mode': None,  # None inherits fill_mode, or 'touch' | 'trade_through'
+    'stop_fill_trade_through_ticks': 1,
+    'stop_fill_trade_through_points': None,
+    # Gap-through stop loss fill resolution:
+    # 'open' fills at bar open when market gaps beyond stop price (authentic market order behavior).
+    # 'stop_price' preserves legacy backtest behavior of filling at static stop price.
+    'gap_stop_fill_mode': 'open',  # open | stop_price
     'breakeven_trigger_dollars': 0,
     'breakeven_offset_points': 0.0,
     'breakeven_min_hold_bars': 1,
     'trail_trigger_dollars': 160,
     'trail_distance_points': 3.5,
-    # same_bar preserves legacy behavior: current bar MFE can activate a
-    # managed stop that is also fillable on that bar. next_bar only lets prior
-    # completed-bar MFE activate managed stops for the current execution bar.
-    'managed_stop_activation_mode': 'same_bar',  # same_bar | next_bar
+    # Stop activation timing:
+    # 'next_bar' only lets prior completed-bar MFE activate managed stops for the current execution bar.
+    # 'same_bar' preserves legacy behavior where current bar MFE can activate a stop fillable on that bar.
+    'managed_stop_activation_mode': 'next_bar',  # next_bar | same_bar
 
     # Day regime classifier:
     # keep ambiguous sessions neutral, confirm trend after acceptance + follow-through,
@@ -2282,3 +2293,24 @@ VALIDATION_CONFIG = {
     'max_in_sample_to_walk_forward_profit_factor_ratio': 2.5,
     'min_execution_realism_profit_factor': 1.0,
 }
+
+EXECUTION_PRESETS = {
+    'institutional_realistic': {
+        'fill_mode': 'trade_through',
+        'target_fill_mode': 'trade_through',
+        'target_fill_trade_through_ticks': 1,
+        'stop_fill_mode': 'touch',
+        'gap_stop_fill_mode': 'open',
+        'managed_stop_activation_mode': 'next_bar',
+        'intrabar_exit_assumption': 'conservative',
+    },
+    'legacy_baseline': {
+        'fill_mode': 'touch',
+        'target_fill_mode': 'touch',
+        'stop_fill_mode': 'touch',
+        'gap_stop_fill_mode': 'stop_price',
+        'managed_stop_activation_mode': 'same_bar',
+        'intrabar_exit_assumption': 'proximity',
+    },
+}
+

@@ -42,11 +42,77 @@ The active production baseline is the **LucidFlex Tri-Asset Ensemble** (`lucid_f
   - Mirrored Python CPPI cushion math directly into Java studies (`src/motivewave/*.java`) via `resolveContracts(OrderContext ctx, int fallbackContracts)`.
   - Recompiled with JDK 25 and packaged extension JAR deployed to `/Users/novo/MotiveWave Extensions/LucidPropEnsemble.jar`.
   - Hardened -$600 soft stop, <$400 cushion buffer, Finish-Line Shield (1 micro at >=+$1,150), and Pareto ratchet (+200 / +550).
+- [x] **Milestone 4**: Live Execution Hardening & MotiveWave CQG Auto-Order Entry Resolution
+  - Fixed missing `autoEntry = true` and `manualEntry = false` in `@StudyHeader` across all three studies.
+  - Resolved `java.util.UnknownFormatConversionException: Conversion = '+'` crash caused by illegal `%+$%.2f` specifier in MotiveWave log (`StudyWrapper::setData()`).
+  - Switched default `ENABLE_LIVE_AUTOTRADE` descriptor to `true` across all studies.
+  - Implemented sequential bracket execution for CQG broker routing (Market entry submitted first; Stop Loss and Profit Target brackets submitted upon fill confirmation in `onOrderFilled`).
+  - Implemented real-time order intent and lifecycle logging to `results/forward_test/motivewave_alerts.log`.
+  - Recompiled with JDK 25 and hot-deployed packaged extension JAR to `/Users/novo/MotiveWave Extensions/LucidPropEnsemble.jar`.
+- [x] **Milestone 5**: Strategy Registry, Provenance Tiers & Governance Sync (Audit Remediation Priority 4)
+  - Implemented `config/strategy_registry.py` with `StrategyTier` enum (`BASELINE`, `FORWARD_DEMO`, `CANDIDATE`, `REJECTED`) and canonical production baseline registration.
+  - Hardened `backtest/provenance.py` with `strategy_tier` column, index, backward compatibility migration, and strict rejection of unauthorized baseline registration.
+  - Updated `scripts/query_provenance.py` displaying strategy tiers in `--list` output and supporting `--tier` filtering.
+  - Synchronized root agent instructions (`AGENTS.md`, `GEMINI.md`, `CLAUDE.md`) enumerating authorized baseline strategy IDs and tiers.
+  - Created candidate incubation documentation at `wiki/strategies/candidate-incubation-lifecycle.md` and cataloged in `wiki/index.md`.
+- [x] **Milestone 6**: CQG Broker Execution Synchronizer & Real Trade Ledger Ingestion
+  - Discovered MotiveWave's persistent CQG WebAPI journal at `~/Library/MotiveWave/workspaces/Mota/config/journal.csv`.
+  - Built `scripts/sync_cqg_executions.py` with FIFO lot matching, symbol mapping (`MES`, `MNQ`, `MGC`, `ENQ`), window classification, and ledger deduplication.
+  - Integrated anti-selection-bias model gate: detects and excludes manual/gated fills from contaminating the systematic baseline.
+  - Integrated into `scripts/watch_morning_demo_alerts.py` and `scripts/session_sentinel.py`.
+  - Built unit test battery in `tests/test_cqg_execution_sync.py` (6/6 passing).
+- [x] **Milestone 7**: Repository Audit Verification & Production-Grade Remediation (Priorities 1–4)
+  - **Priority 1 (Alpha Factory Provenance)**: Fixed `--record` flag handling, dynamic Git commit resolution, dynamic trade date ranges, authentic `gross_profit` ($41,432.71 vs fabricated $15,916.04), and dynamic DSR trial accounting. Cleansed tainted database record `run_alpha_factory_lucid_flex_ensemble_20261105_200901` from `results/backtest_provenance.db`.
+  - **Priority 2 (Execution Realism Engine)**: Implemented gap-through stop resolution (`min`/`max` with `bar_open`), next-bar stop activation default, clean 3-tier fill mode hierarchy (`specific -> top-level -> touch`) without private scaffolding flags, and engine cache hardening (`weakref.ref(self.data)`).
+  - **Priority 3 (Agent Permissions & Guardrails)**: Promoted blocked commands check in `backtest/research_protocol.py` to `severity="hard"`, created `backtest/agent_guardrails.py` with runtime command validation and safe subprocess execution with mandatory 300s timeout, and added explicit timeouts to operational scripts.
+  - **Priority 4 (Research Governance & Strategy Registry)**: Created `config/strategy_registry.py` formalizing strategy tiers (`BASELINE`, `FORWARD_DEMO`, `CANDIDATE`, `REJECTED`), guarded baseline provenance in `backtest/provenance.py`, synchronized `AGENTS.md` and `GEMINI.md`, and documented candidate lifecycle at `wiki/strategies/candidate-incubation-lifecycle.md`.
+  - **Verification**: 162/162 priority & regression tests passed, 731/731 full test suite passed with 0 errors, and unanimous gate approval achieved.
 
 ---
 
 ## Recent Changes (Last 3–5 Sessions)
 
+- **2026-11-06 (Session M5 - CQG Broker Execution Synchronizer & Real Trade Ingestion)**:
+  - Built `scripts/sync_cqg_executions.py`:
+    1. Ingests millisecond-accurate CQG order fills from `~/Library/MotiveWave/workspaces/Mota/config/journal.csv`.
+    2. Reconstructs multi-lot round-turn trades using chronological FIFO lot matching.
+    3. Infers systematic strategy windows (`Macro Momentum 08:35`, `VA Breakout v2.0 09:45`, `Gold London Fix 10:15`) and exit types (`STP`, `LMT`, `TIME_EXIT`).
+    4. Reconciles with theoretical signals, computes slippage drag, updates running balance and trailing floor, and deduplicates against `results/forward_test/demo_trades_ledger.csv`.
+    5. Supported CLI modes: `--list`, `--sync`, `--watch` (real-time tail daemon), `--since`, `--date`, `--systematic-only`, `--symbols`.
+  - Validated anti-selection-bias model gate against 2026-11-04 MES broker fill (BUY 2 @ 7731.00 -> 7736.00): correctly detected that the strategy model had gated this setup (GARCH exhaustion 2.62 SD > 2.50 SD) and prevented the false-positive study bracket fill from contaminating the systematic baseline ($N=1$ trade preserved at +$144.70).
+  - Wired CQG sync into `scripts/watch_morning_demo_alerts.py` (prioritizes real CQG broker fills over synthetic bar simulation) and `scripts/session_sentinel.py` (16:15 ET post-market broker sync).
+  - Implemented unit tests in `tests/test_cqg_execution_sync.py` (6/6 passing). Updated `wiki/execution/demo-parity-engine.md`.
+
+- **2026-11-06 (Session M4 - Priority 4 Strategy Registry & Provenance Tiers)**:
+  - Created `config/strategy_registry.py`:
+    1. Defined `StrategyTier` enum (`BASELINE`, `FORWARD_DEMO`, `CANDIDATE`, `REJECTED`).
+    2. Registered production baselines: `morning_va_breakout_s1` (BASELINE), `macro_momentum_s2` (BASELINE), `gold_london_fix_s3` (BASELINE), `lucid_flex_ensemble` (BASELINE), `lucid_flex_forward_demo` (FORWARD_DEMO).
+    3. Provided utility functions: `get_strategy_tier()`, `is_production_baseline()`, `validate_strategy_id()`, `list_strategies_by_tier()`, `register_candidate()`.
+  - Integrated into `backtest/provenance.py`:
+    1. Added `strategy_tier` column to SQLite `backtest_runs` table with automatic migration and backward compatibility for all 9 verified runs.
+    2. Enforced strategy identity validation in `record_run()`.
+    3. Blocked research candidates from masquerading as production baselines (`BASELINE` tier).
+  - Updated `scripts/query_provenance.py`: displayed `TIER` column in `--list` output and added `--tier` filter.
+  - Synchronized `AGENTS.md` and `GEMINI.md` with `CLAUDE.md` to enumerate authorized baseline strategy IDs and tiers.
+  - Authored `wiki/strategies/candidate-incubation-lifecycle.md` documenting the 6-stage candidate gate and provenance segregation.
+- **2026-11-06 (Session M3 - Priority 3 Execution Security & Agent Guardrails)**:
+  - Hardened `backtest/research_protocol.py`: promoted `blocked_commands_for_agent` check from `severity="warning"` to `severity="hard"` and expanded verification to all 5 `DEFAULT_BLOCKED_AGENT_COMMANDS`. Fixed empty-list parameter fallback bug.
+  - Implemented `backtest/agent_guardrails.py`:
+    1. `validate_command()` runtime command validator blocking dangerous binaries (`rm`, `sudo`, `curl`, `wget`, `chmod`, `chown`, `kill`, etc.), unauthorized exploratory backtests (`main_backtest.py`, `probe_candidate_frequency.py`, batch shell runners), and shell injection/chaining attempts (`&&`, `;`, `|`, `$(`, `` ` ``, `||`).
+    2. `safe_subprocess_run()` enforcing pre-execution validation, mandatory wall-clock timeouts (default 300s), structured error logging, and clean exception handling.
+  - Hardened subprocess invocations with explicit timeouts in `scripts/generate_all_dashboards.py` (300s), `scripts/session_sentinel.py` (60s), `scripts/check_morning_readiness.py` (30s), `scripts/ingest_l2_parquet_5year.py` (600s), and `scripts/launch_monday_forward_test.py` (300s).
+  - Authored comprehensive test suites in `tests/test_agent_guardrails.py` (15 tests) and `tests/test_research_protocol.py` (13 tests) (28/28 passing).
+  - Created wiki documentation at `wiki/execution/agent-execution-guardrails.md`.
+- **2026-11-06 (Session M1 - Priority 1 Alpha Factory Provenance Remediation)**:
+  - Remediated all 5 confirmed Priority 1 flaws in `scripts/alpha_factory.py`:
+    1. Gated database persistence behind `--record`; dry-run default prints standardized verification footer and dry-run notice without writing to SQLite or JSONL.
+    2. Dynamically resolved Git commit hash from current HEAD via `store.get_git_commit()`, removing hardcoded `"8cb04d68a9"`.
+    3. Derived date boundaries (`date_start`, `date_end`) dynamically from trade dataframe min/max timestamps.
+    4. Replaced fabricated gross profit formula (`net_pnl + 1000.0`) with authentic sum of winning trades (`m["gross_profit"]` = $41,432.71).
+    5. Dynamically accounted for Deflated Sharpe Ratio (DSR) trials ($N \ge 25$, loaded from `wiki/failed_ideas.md`).
+  - Cleansed corrupted run `run_alpha_factory_lucid_flex_ensemble_20261105_200901` from `results/backtest_provenance.db` and synchronized `results/backtest_provenance.jsonl`.
+  - Recorded verified authentic run `run_alpha_factory_lucid_flex_ensemble_20261106_043319` with true gross profit ($41,432.71), current HEAD commit, and exact date span.
+  - Implemented comprehensive regression test suite in `tests/test_alpha_factory_provenance.py` covering all 5 remediated flaws (11/11 passing).
 - **2026-11-05 (Session M4 - Iteration 2 Wiki Hardening & Safety Invariants)**:
   - Enforced Git staging isolation in `scripts/wiki_sync.py:cmd_stop()` using `["--", "wiki/"]`, preventing uncommitted or staged production code from being swept into automated wiki commits.
   - Fixed Git porcelain path truncation by changing `run_git` to `rstrip("\r\n")` and adding defensive prefix parsing in `get_wiki_changes()`.

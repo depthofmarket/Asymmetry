@@ -7,7 +7,7 @@ tags:
   - slippage
   - cqg
 created: "2026-11-05"
-updated: "2026-11-05"
+updated: "2026-11-06"
 status: active
 strategies:
   - lucid_flex_forward_demo
@@ -23,14 +23,48 @@ related_pages:
 # Live Demo Parity Engine & Execution Auditing
 
 ## Executive Summary
-The Demo Parity Engine (`backtest/demo_parity_engine.py`) is the real-time operational bridge between simulation assumptions and live broker execution. While backtests typically assume idealized fills or fixed slippage constants, live trading via CQG and MotiveWave encounters queue latency, orderbook voids, and partial fills.
+The Demo Parity Engine (`backtest/demo_parity_engine.py`) and CQG Broker Execution Synchronizer (`scripts/sync_cqg_executions.py`) form the real-time operational bridge between theoretical strategy models and live broker execution. While backtests assume idealized fills or fixed slippage constants, live trading via CQG and MotiveWave encounters queue latency, orderbook voids, and partial fills.
 
-The parity engine ingests live trade signals from MotiveWave alerts and matches them against CQG fill confirmations. It computes tick-level slippage drag, updates the active LucidFlex account balance and trailing floor, evaluates compliance shields, and records trades to the audited demo ledger (`results/forward_test/demo_trades_ledger.csv`).
+The parity pipeline supports two complementary ingestion pathways:
+1. **Real-Time Study Logging**: MotiveWave Java studies stream order lifecycle tags (`ORDER_SUBMITTED`, `ORDER_FILLED`) into `results/forward_test/motivewave_alerts.log`.
+2. **Broker-Authoritative Journal Ingestion**: The CQG WebAPI execution audit trail is ingested directly from MotiveWave's persistent journal (`~/Library/MotiveWave/workspaces/Mota/config/journal.csv`), reconstructed using FIFO lot-matching, reconciled with theoretical signals, and committed to `results/forward_test/demo_trades_ledger.csv`.
 
 ## Technical Specification
 - **Engine Core**: `backtest/demo_parity_engine.py`
+- **Execution Synchronizer**: `scripts/sync_cqg_executions.py`
+- **Broker Journal Source**: `~/Library/MotiveWave/workspaces/Mota/config/journal.csv` (CQG WebAPI persistent ledger)
+- **Trade History Map**: `~/Library/MotiveWave/workspaces/Mota/config/trade_history.csv`
 - **Audit Ledger**: `results/forward_test/demo_trades_ledger.csv`
-- **Signal Ingestion**: Real-time tailing of MotiveWave export alerts.
+- **Session Ledger**: `results/forward_test/demo_sessions_ledger.csv`
+- **State Store**: `results/forward_test/demo_parity_state.json`
+- **HTML Dashboard**: `results/forward_test/demo_parity_dashboard.html`
+
+### Broker Journal Ingestion & FIFO Lot-Matching
+`scripts/sync_cqg_executions.py` provides automated ingestion with the following architecture:
+- **Filtering**: Filters journal records where `Record Type == 'ORDER'` and `Action == 'ORDER_FILLED'`.
+- **Symbol Normalization**: Maps CQG contract tickers (e.g. `MESZ26.CQG` -> `MES`, `MNQZ26.CQG` -> `MNQ`, `MGCZ26.CQG` -> `MGC`).
+- **FIFO Multi-Lot Queue**: Matches opposite-side orders (BUY vs SELL) chronologically per instrument, accurately handling multi-contract brackets, scale-outs, and partial fills.
+- **Strategy & Exit Classification**:
+  - `08:30–09:25 ET` on MNQ: `Macro Momentum (08:35)`
+  - `09:44–10:15 ET` on MNQ/MES: `VA Breakout (v2.0)`
+  - `10:14–11:00 ET` on MGC: `Gold London Fix (H14)`
+  - Order type `STP` -> `STOP_LOSS`, `LMT` -> `PROFIT_TARGET`, window close -> `TIME_EXIT`.
+- **Deduplication Engine**: Reconstructs trades and verifies against existing entries in `demo_trades_ledger.csv` by date, symbol, direction, entry time, and fill prices.
+
+### Operational CLI Modes
+```bash
+# List all reconstructed CQG broker trades in terminal table
+python scripts/sync_cqg_executions.py --list
+
+# Filter for systematic ensemble strategies only (MES, MNQ, MGC)
+python scripts/sync_cqg_executions.py --list --systematic-only --symbols MES,MNQ,MGC
+
+# Sync completed trades into demo_trades_ledger.csv and update dashboard
+python scripts/sync_cqg_executions.py --sync --systematic-only --symbols MES,MNQ,MGC
+
+# Real-time watcher daemon tailing journal.csv for instant fill notifications
+python scripts/sync_cqg_executions.py --watch
+```
 - **Slippage Reconciliation**:
   $$\text{Slippage (ticks)} = \frac{|\text{Fill Price} - \text{Signal Price}|}{\text{Tick Size}}$$
   $$\text{Adverse Drag (\%)} = \frac{\text{Actual PnL} - \text{Theoretical PnL}}{\text{Theoretical PnL}}$$
@@ -67,10 +101,11 @@ Warning Flags: LOW_SAMPLE_SIZE, OUTLIER_DOMINANCE, SHORT_EVALUATION_WINDOW
 
 ## Implementation & File Map
 - **Parity Engine**: `backtest/demo_parity_engine.py`
+- **CQG Execution Synchronizer**: `scripts/sync_cqg_executions.py`
 - **Alert Watcher**: `scripts/watch_morning_demo_alerts.py`
 - **Process Manager**: `scripts/start_morning_watcher.sh`, `scripts/stop_morning_watcher.sh`
 - **Output Ledger**: `results/forward_test/demo_trades_ledger.csv`
-- **Unit Tests**: `tests/test_provenance_system.py`, `tests/test_prop_firm_ratchet.py`
+- **Unit Tests**: `tests/test_cqg_execution_sync.py`, `tests/test_provenance_system.py`, `tests/test_prop_firm_ratchet.py`
 
 ## Invariant Rules & Failure Modes
 1. **Rule 1: Fail-Safe Ledger Persistence**: Every completed trade fill must be immediately appended to `results/forward_test/demo_trades_ledger.csv` and auto-recorded into `results/backtest_provenance.db`.

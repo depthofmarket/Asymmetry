@@ -188,8 +188,12 @@
       "bases:Create new base": false
     }
   },
-  "active": "bde5769e50f47803",
+  "active": "72e074b5bc178160",
   "lastOpenFiles": [
+    "Untitled.md",
+    "execution/motivewave-integration.md",
+    "strategies/candidate-incubation-lifecycle.md",
+    "execution/agent-execution-guardrails.md",
     "execution/demo-parity-engine.md",
     "strategies/gold-london-fix.md"
   ]

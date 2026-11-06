@@ -24,6 +24,21 @@ This repository is governed by the 5 Golden Rules of Quantitative Provenance:
   python scripts/query_provenance.py --hash-file <filepath>
   ```
 
+## Authorized Strategy IDs & Tiers
+All quantitative backtest records and queries are strictly governed by `config/strategy_registry.py`:
+
+### Production Baseline Strategies (`StrategyTier.BASELINE`)
+- `morning_va_breakout_s1` (Strategy 1: Morning VA Breakout 09:45 ET; MNQ/MES)
+- `macro_momentum_s2` (Strategy 2: Pre-Market Macro Momentum 08:35 ET; MNQ)
+- `gold_london_fix_s3` (Strategy 3: Gold London Fix Breakout 10:15 ET; MGC)
+- `lucid_flex_ensemble` (Tri-Asset Multi-Strategy Composite Ensemble)
+
+### Live Forward Demo Parity (`StrategyTier.FORWARD_DEMO`)
+- `lucid_flex_forward_demo` (Live MotiveWave paper demo parity ledger)
+
+### Research Candidates (`StrategyTier.CANDIDATE`)
+- Any new research candidate must be registered via `config/strategy_registry.py` with `StrategyTier.CANDIDATE`. Research candidates are strictly segregated and prohibited from claiming `BASELINE` tier or contaminating production baseline provenance.
+
 ## Invariant Protocols
 1. **Never quote naked numbers**: Every stat MUST include methodology, date range, data SHA-256 hash, and cost model.
 2. **Never hide warning flags**: If a stat carries `LOW_SAMPLE_SIZE`, `GROSS_EXECUTION`, `OUTLIER_DOMINANCE`, or `SHORT_EVALUATION_WINDOW`, output the flag immediately adjacent to the metric.

@@ -33,7 +33,7 @@ from backtest.provenance import ProvenanceStore, default_store
 from backtest.demo_parity_engine import DemoParityJournal
 
 
-def run_command_capture(cmd: list[str]) -> tuple[int, str]:
+def run_command_capture(cmd: list[str], timeout: int = 60) -> tuple[int, str]:
     """Runs a subprocess and returns exit code and combined output."""
     try:
         proc = subprocess.run(
@@ -42,6 +42,7 @@ def run_command_capture(cmd: list[str]) -> tuple[int, str]:
             capture_output=True,
             text=True,
             check=False,
+            timeout=timeout,
         )
         return proc.returncode, proc.stdout + proc.stderr
     except Exception as e:
@@ -65,7 +66,22 @@ def run_postmarket_reconcile() -> int:
     print(" 🌆 EXECUTING POST-MARKET RECONCILIATION SENTINEL (16:15 ET)")
     print("=" * 76)
 
-    # 1. Inspect Demo Parity Journal
+    # 1. Ingest & Sync Live MotiveWave CQG Broker Executions
+    print(" 1. Synchronizing MotiveWave CQG broker executions...")
+    code_sync, sync_out = run_command_capture([
+        "python",
+        "scripts/sync_cqg_executions.py",
+        "--sync",
+        "--systematic-only",
+        "--symbols",
+        "MES,MNQ,MGC",
+    ])
+    if code_sync == 0:
+        print(" [🟢] CQG broker executions synchronized.")
+    else:
+        print(f" [⚠️] CQG sync warning (using existing ledger):\n{sync_out.strip()}")
+
+    # 2. Inspect Demo Parity Journal
     forward_test_dir = REPO_ROOT / "results/forward_test"
     journal = DemoParityJournal(forward_test_dir=forward_test_dir)
     state = journal.get_eval_state()
@@ -132,6 +148,7 @@ def run_weekly_digest() -> int:
         "pytest",
         "tests/test_provenance_system.py",
         "tests/test_demo_parity_journal.py",
+        "tests/test_cqg_execution_sync.py",
         "tests/test_deflated_sharpe.py",
         "tests/test_operational_readiness.py",
         "tests/test_morning_watcher_daemon.py",

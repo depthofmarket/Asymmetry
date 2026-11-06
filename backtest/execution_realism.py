@@ -78,7 +78,7 @@ def build_execution_realism_summary(
         rows.append(
             {
                 "scenario": scenario["scenario"],
-                "target_fill_mode": str(params.get("target_fill_mode", "touch")),
+                "target_fill_mode": str(params.get("target_fill_mode") or params.get("fill_mode") or "touch").lower(),
                 "target_fill_trade_through_ticks": params.get("target_fill_trade_through_ticks", 0),
                 "target_fill_trade_through_points": params.get("target_fill_trade_through_points"),
                 "target_slippage_points": float(scenario["target_slippage_points"]),
