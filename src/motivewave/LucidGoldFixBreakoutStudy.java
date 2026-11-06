@@ -125,6 +125,8 @@ public class LucidGoldFixBreakoutStudy extends Study {
         boolean emergencyDelever = false;
         boolean finishLineShield = false;
         boolean garchDecileHalving = false;
+        double peakBalance = 25000.0;
+        double trailingFloor = 24000.0;
     }
 
     private static DaemonRiskState loadDaemonRiskState() {
@@ -159,6 +161,14 @@ public class LucidGoldFixBreakoutStudy extends Study {
             if (mDelever.find()) {
                 state.emergencyDelever = Boolean.parseBoolean(mDelever.group(1));
             }
+            Matcher mPeak = Pattern.compile("\"peak_balance\"\\s*:\\s*([-+]?[0-9]*\\.?[0-9]+)").matcher(content);
+            if (mPeak.find()) {
+                state.peakBalance = Double.parseDouble(mPeak.group(1));
+            }
+            Matcher mFloor = Pattern.compile("\"trailing_floor\"\\s*:\\s*([-+]?[0-9]*\\.?[0-9]+)").matcher(content);
+            if (mFloor.find()) {
+                state.trailingFloor = Double.parseDouble(mFloor.group(1));
+            }
             if (state.currentDatePnl <= -600.0) {
                 state.circuitBreakerHit = true;
             }
@@ -170,31 +180,53 @@ public class LucidGoldFixBreakoutStudy extends Study {
         return state;
     }
 
+    private static double persistedPeakBalance = 25000.00;
+    private static double persistedTrailingFloor = 24000.00;
+
+    public static double getPersistedPeakBalance() {
+        return persistedPeakBalance;
+    }
+
+    public static double getPersistedTrailingFloor() {
+        return persistedTrailingFloor;
+    }
+
+    public static void setPersistedRiskState(double peak, double floor) {
+        persistedPeakBalance = peak;
+        persistedTrailingFloor = floor;
+    }
+
     public static int resolveContracts(OrderContext ctx, int fallbackContracts) {
-        if (ctx == null) return fallbackContracts;
+        if (ctx == null) return 0;
         try {
             double cash = ctx.getCashBalance();
             double real = ctx.getRealizedPnL();
             double unreal = ctx.getUnrealizedPnL();
             double balance = cash + real + unreal;
-            if (balance > 15000.0) {
-                double profit = balance - 25000.00;
-                double hwm = Math.max(25000.00, balance);
-                double floor = Math.max(24000.00, hwm - 1000.00);
-                if (hwm >= 26100.00) {
-                    floor = 25100.00;
-                }
-                double cushion = balance - floor;
-
-                if (profit >= 1150.00) return 1;
-                if (cushion < 400.00) return 1;
-                if (profit >= 550.00) return 4;
-                if (profit >= 200.00) return 3;
-                return 2;
+            if (!Double.isFinite(balance) || balance <= 10000.0) {
+                return 0;
             }
+
+            DaemonRiskState riskState = loadDaemonRiskState();
+            persistedPeakBalance = Math.max(persistedPeakBalance, Math.max(riskState.peakBalance, balance));
+
+            double floor = Math.max(24000.00, persistedPeakBalance - 1000.00);
+            if (persistedPeakBalance >= 26100.00 || riskState.trailingFloor >= 25100.00) {
+                floor = 25100.00;
+            }
+            persistedTrailingFloor = Math.max(persistedTrailingFloor, Math.max(riskState.trailingFloor, floor));
+
+            double profit = balance - 25000.00;
+            double cushion = balance - persistedTrailingFloor;
+
+            if (profit >= 1150.00) return 1;
+            if (cushion < 400.00) return 1;
+            if (profit >= 550.00) return 4;
+            if (profit >= 200.00) return 3;
+            return 2;
         } catch (Exception ignored) {
+            return 0;
         }
-        return fallbackContracts;
     }
 
     private static class ComexRthProfile {
@@ -706,7 +738,13 @@ public class LucidGoldFixBreakoutStudy extends Study {
         if (trade == null || trade.orderSubmitted || trade.closed) return;
 
         int contracts = resolveContracts(ctx, trade.contracts);
-        if (contracts <= 0) contracts = 1;
+        if (contracts <= 0) {
+            logExecutionEvent("ORDER_BLOCKED_UNVERIFIED_ACCOUNT", "LucidGoldFixBreakout",
+                ctx.getInstrument() != null ? ctx.getInstrument().getSymbol() : "UNKNOWN",
+                "BLOCKED", 0.0, 0.0, 0.0, 0,
+                "Account context unverified or sizing returned zero; order entry blocked (fail-closed).");
+            return;
+        }
         trade.contracts = contracts;
 
         float stopPrice = ctx.getInstrument().round((float) trade.stopPrice);

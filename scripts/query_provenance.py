@@ -23,10 +23,17 @@ if str(REPO_ROOT) not in sys.path:
 from backtest.provenance import ProvenanceStore, default_store
 
 
+CANDIDATE_BANNER = """\
+────────────────────────────────────────────────────────────────────────────
+⚠️ [CANDIDATE TIER — QUARANTINED FROM PRODUCTION BASELINE]
+────────────────────────────────────────────────────────────────────────────"""
+
+
 def main():
     parser = argparse.ArgumentParser(description="Query verified backtest provenance records.")
     parser.add_argument("--strategy", type=str, help="Strategy ID (e.g., morning_va_breakout_s1, macro_momentum_s2, gold_london_fix_s3, lucid_flex_ensemble)")
-    parser.add_argument("--tier", type=str, help="Filter runs by strategy tier (BASELINE, FORWARD_DEMO, CANDIDATE, REJECTED)")
+    parser.add_argument("--tier", type=str, help="Filter runs by strategy tier (BASELINE, FORWARD_DEMO, CANDIDATE, REJECTED, ALL)")
+    parser.add_argument("--include-candidates", action="store_true", help="Include quarantined candidate runs in queries and listings")
     parser.add_argument("--latest", action="store_true", help="Fetch the latest recorded backtest run")
     parser.add_argument("--list", action="store_true", help="List all verified backtest runs in the database")
     parser.add_argument("--run-id", type=str, help="Fetch a specific backtest run by ID")
@@ -36,6 +43,7 @@ def main():
     args = parser.parse_args()
 
     store = default_store
+    include_cand = args.include_candidates or (args.tier and args.tier.upper() in ("CANDIDATE", "ALL"))
 
     # 1. Hash file lookup
     if args.hash_file:
@@ -46,7 +54,7 @@ def main():
 
     # 2. List all runs
     if args.list:
-        runs = store.list_runs(strategy_id=args.strategy, tier=args.tier, limit=100)
+        runs = store.list_runs(strategy_id=args.strategy, tier=args.tier, include_candidates=include_cand, limit=100)
         if not runs:
             tier_msg = f" with tier '{args.tier}'" if args.tier else ""
             print(f"No verified backtest runs found{tier_msg} in results/backtest_provenance.db.")
@@ -55,6 +63,10 @@ def main():
         if args.json:
             print(json.dumps([r.to_dict() for r in runs], indent=2))
             return
+
+        has_candidate = any(getattr(r, "strategy_tier", "") == "CANDIDATE" for r in runs)
+        if has_candidate:
+            print(f"\n{CANDIDATE_BANNER}\n")
 
         print("=" * 105)
         print(f"{'RUN ID':<32} | {'STRATEGY':<22} | {'TIER':<12} | {'METHOD':<12} | {'PF':<6} | {'WIN%':<6} | {'NET PNL':<10} | {'WARN':<5}")
@@ -76,7 +88,7 @@ def main():
             print(f"ERROR: Run ID '{args.run_id}' not found in {store.db_path}.", file=sys.stderr)
             sys.exit(1)
     elif args.latest or args.strategy:
-        record = store.get_latest_run(strategy_id=args.strategy)
+        record = store.get_latest_run(strategy_id=args.strategy, include_candidates=include_cand)
         if not record:
             strat_msg = f" for strategy '{args.strategy}'" if args.strategy else ""
             print(f"ERROR: No verified backtest runs found{strat_msg} in {store.db_path}.", file=sys.stderr)
@@ -84,7 +96,7 @@ def main():
             sys.exit(1)
     else:
         # Default behavior: show latest run
-        record = store.get_latest_run()
+        record = store.get_latest_run(include_candidates=include_cand)
         if not record:
             print("Store is empty. Run scripts/ingest_historical_provenance.py to seed canonical runs.", file=sys.stderr)
             sys.exit(1)
@@ -93,6 +105,10 @@ def main():
     if args.json:
         print(json.dumps(record.to_dict(), indent=2))
         return
+
+    # Prominent quarantine banner for candidate records
+    if getattr(record, "strategy_tier", "") == "CANDIDATE":
+        print(CANDIDATE_BANNER)
 
     # 5. Quote specific stat or full summary
     if args.stat:

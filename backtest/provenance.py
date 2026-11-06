@@ -442,7 +442,7 @@ class ProvenanceStore:
 
     def _sync_jsonl_mirror(self) -> None:
         """Mirrors all records from SQLite into JSONL for git tracking."""
-        runs = self.list_runs(limit=10000)
+        runs = self.list_runs(include_candidates=True, limit=100000)
         runs_sorted = sorted(runs, key=lambda r: r.timestamp)
         with open(self.jsonl_path, "w", encoding="utf-8") as f:
             for r in runs_sorted:
@@ -490,25 +490,48 @@ class ProvenanceStore:
     def get_run(self, run_id: str) -> Optional[ProvenanceRecord]:
         with self._get_connection() as conn:
             row = conn.execute("SELECT * FROM backtest_runs WHERE run_id = ?", (run_id,)).fetchone()
-            return self._row_to_record(row) if row else None
+            if not row:
+                return None
+            rec = self._row_to_record(row)
+            if getattr(rec, "strategy_tier", "") == "CANDIDATE" or getattr(rec, "strategy_tier", "") == StrategyTier.CANDIDATE.value:
+                if "CANDIDATE_TIER_QUARANTINED" not in rec.warnings:
+                    rec.warnings.append("CANDIDATE_TIER_QUARANTINED")
+            return rec
 
-    def get_latest_run(self, strategy_id: Optional[str] = None) -> Optional[ProvenanceRecord]:
+    def get_latest_run(
+        self,
+        strategy_id: Optional[str] = None,
+        include_candidates: bool = False,
+    ) -> Optional[ProvenanceRecord]:
         with self._get_connection() as conn:
             if strategy_id:
                 row = conn.execute(
                     "SELECT * FROM backtest_runs WHERE strategy_id = ? ORDER BY timestamp DESC LIMIT 1",
-                    (strategy_id,),
+                    (strategy_id.strip(),),
                 ).fetchone()
             else:
-                row = conn.execute(
-                    "SELECT * FROM backtest_runs ORDER BY timestamp DESC LIMIT 1"
-                ).fetchone()
-            return self._row_to_record(row) if row else None
+                if include_candidates:
+                    row = conn.execute(
+                        "SELECT * FROM backtest_runs ORDER BY timestamp DESC LIMIT 1"
+                    ).fetchone()
+                else:
+                    row = conn.execute(
+                        "SELECT * FROM backtest_runs WHERE strategy_tier IN ('BASELINE', 'FORWARD_DEMO') ORDER BY timestamp DESC LIMIT 1"
+                    ).fetchone()
+
+            if not row:
+                return None
+            rec = self._row_to_record(row)
+            if getattr(rec, "strategy_tier", "") == "CANDIDATE" or getattr(rec, "strategy_tier", "") == StrategyTier.CANDIDATE.value:
+                if "CANDIDATE_TIER_QUARANTINED" not in rec.warnings:
+                    rec.warnings.append("CANDIDATE_TIER_QUARANTINED")
+            return rec
 
     def list_runs(
         self,
         strategy_id: Optional[str] = None,
         tier: Optional[StrategyTier | str] = None,
+        include_candidates: bool = False,
         limit: int = 50,
     ) -> list[ProvenanceRecord]:
         conditions = []
@@ -516,10 +539,19 @@ class ProvenanceStore:
         if strategy_id:
             conditions.append("strategy_id = ?")
             params_list.append(strategy_id.strip())
-        if tier:
-            target_tier = StrategyTier.from_str(tier).value
-            conditions.append("strategy_tier = ?")
-            params_list.append(target_tier)
+
+        if tier is not None:
+            tier_str = str(tier.value if isinstance(tier, StrategyTier) else tier).strip().upper()
+            if tier_str in ("ALL", "*"):
+                # Explicit request for all tiers: do not filter by tier
+                pass
+            else:
+                target_tier = StrategyTier.from_str(tier).value
+                conditions.append("strategy_tier = ?")
+                params_list.append(target_tier)
+        elif not include_candidates:
+            # Default quarantine: exclude CANDIDATE and REJECTED runs from production reports
+            conditions.append("strategy_tier IN ('BASELINE', 'FORWARD_DEMO')")
 
         where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         query = f"SELECT * FROM backtest_runs {where_clause} ORDER BY timestamp DESC LIMIT ?"
@@ -527,7 +559,14 @@ class ProvenanceStore:
 
         with self._get_connection() as conn:
             rows = conn.execute(query, tuple(params_list)).fetchall()
-            return [self._row_to_record(r) for r in rows]
+            records = []
+            for r in rows:
+                rec = self._row_to_record(r)
+                if (getattr(rec, "strategy_tier", "") == "CANDIDATE" or getattr(rec, "strategy_tier", "") == StrategyTier.CANDIDATE.value):
+                    if "CANDIDATE_TIER_QUARANTINED" not in rec.warnings:
+                        rec.warnings.append("CANDIDATE_TIER_QUARANTINED")
+                records.append(rec)
+            return records
 
     @staticmethod
     def format_footer(record: ProvenanceRecord) -> str:

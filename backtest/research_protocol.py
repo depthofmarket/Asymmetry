@@ -90,6 +90,9 @@ DEFAULT_BLOCKED_AGENT_COMMANDS = [
     "scripts/run_edge_candidates_batch.sh",
     "scripts/run_next_vp_candidates_batch.sh",
     "scripts/run_2021_frequency_candidates_batch.sh",
+    "scripts/run_market_profile_first_batch.sh",
+    "scripts/run_market_profile_remaining_batch.sh",
+    "scripts/run_candidate_benchmark.sh",
 ]
 
 

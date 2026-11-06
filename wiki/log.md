@@ -159,3 +159,47 @@ This is an append-only, chronological journal recording all agent actions, docum
   - `wiki/log.md` (recorded final verification review entry)
 - **Summary**: Conducted rigorous independent review and adversarial stress testing of Worker It2's execution hierarchy remediation. Confirmed clean 3-tier fallback in `backtest/execution.py:get_fill_mode()`, default `None` inheritance in `STRATEGY_PARAMS`, faithful `EXECUTION_PRESETS['institutional_realistic']` resolution (`stop_fill_mode: touch`, `target_fill_mode: trade_through`), complete elimination of `_explicit_*` private flags across codebase and test harnesses, and weakref identity validation in `_EXECUTION_1M_CACHE` neutralizing memory address recycling collisions.
 - **Verification**: Programmatic test passed 12/12 adversarial hierarchy permutations and weakref cache drop. Target test suite passed 115/115 tests in 54.96s; full 8-file verification suite passed 162/162 tests in 60.07s. Provenance store verified 9 canonical runs. Issued final Gate 1 verdict: APPROVE.
+
+## [2026-11-06 14:55:00 UTC] [teamwork_test_writer_1] [TEST] | Delivered conservative execution stress test suite and MotiveWave sizing safeguards suite
+- **Pages Modified**: `tests/test_conservative_execution_stress.py`, `tests/test_motivewave_sizing_safeguards.py`, `tests/test_agent_guardrails.py`, `tests/test_strategy_registry.py`, `tests/test_alpha_factory_provenance.py`, `wiki/log.md`
+- **Summary**:
+  1. Implemented `tests/test_conservative_execution_stress.py` (25 test cases):
+     - Validated `institutional_realistic` preset configuration and engine fill mode resolution.
+     - Verified 1-tick and 2-tick trade-through target fill mechanics for longs and shorts (resting touch fails; required ticks penetration fills at target price).
+     - Verified touch stop fills (long and short stops trigger on exact touch; asymmetric realism with targets).
+     - Verified intrabar exit assumptions: conservative, pessimistic, and adverse all prioritize adverse stop hits; compared against optimistic and proximity.
+     - Verified gap-through stop open fills (market order gap execution at bar open vs legacy static price).
+     - Verified next-bar managed stop activation timing (bar t MFE activates for bar t+1) vs legacy same-bar activation.
+     - Stress-tested BacktestEngine execution and trade log streams under `institutional_realistic` preset, asserting viable execution (PF >= 1.0).
+  2. Implemented `tests/test_motivewave_sizing_safeguards.py` (18 test cases):
+     - Verified static source code safeguards across all 3 MotiveWave studies (`LucidMorningVABreakoutStudy.java`, `LucidMacroMomentumStudy.java`, `LucidGoldFixBreakoutStudy.java`).
+     - Verified true historical peak balance persistence across drawdowns (monotonic non-decreasing peak).
+     - Verified trailing floor calculation and permanent floor locking at $25,100 once peak reaches $26,100.
+     - Verified cushion calculation (`balance - persistedTrailingFloor`) and Safe CPPI de-leveraging to 1 contract when cushion < $400.
+     - Verified fail-closed contract sizing: `resolveContracts()` returns 0 when context is null, balance <= 10,000 / non-finite, or on exception.
+     - Verified fail-closed order execution: `executeAutoTradeIfArmed()` blocks order submission when `contracts <= 0`, logs `ORDER_BLOCKED_UNVERIFIED_ACCOUNT`, and returns before creating/submitting orders.
+     - Confirmed complete elimination of legacy flaws (`contracts = 1` clamping and ephemeral unpersisted HWM).
+  3. Added targeted regression tests in existing test suites:
+     - `tests/test_agent_guardrails.py`: `CommandExecutionBlockedError(PermissionError)` hierarchy, `safe_subprocess_run` raising `CommandExecutionBlockedError`, `shell=True` prohibition, and redirection tokens (`>`, `>>`, `<`, `<<`, `&`) blocking.
+     - `tests/test_strategy_registry.py`: candidate quarantine by default in `list_runs()`, `get_latest_run()`, and CLI `query_provenance.py --list`, plus quarantine warning banner verification.
+     - `tests/test_alpha_factory_provenance.py`: DSR trial accounting dynamically deriving from failed ideas + provenance store ($N \ge 34$).
+- **Verification**: `pytest tests/test_conservative_execution_stress.py tests/test_motivewave_sizing_safeguards.py tests/test_agent_guardrails.py tests/test_alpha_factory_provenance.py tests/test_execution_realism.py tests/test_strategy_registry.py tests/test_wiki_integrity.py` passed 145/145 tests (100% PASS in 14.97s). `python3 scripts/verify_wiki_integrity.py` confirms 100% compliance.
+
+## [2026-11-06 16:15:00 UTC] [teamwork_challenger_gate2_2] [AUDIT] | Empirical challenge and verification of MotiveWave sizing, execution realism stress, and dry-run invariance
+- **Pages Modified**: `wiki/log.md`
+- **Summary**:
+  1. Adversarially probed MotiveWave capital protection across all 3 Java studies (`LucidMorningVABreakoutStudy.java`, `LucidMacroMomentumStudy.java`, `LucidGoldFixBreakoutStudy.java`). Verified true monotonic peak persistence across deep drawdowns and permanent floor locking at $25,100 once peak >= $26,100.
+  2. Empirically tested balance trajectory ($25,000 -> $26,500 -> $25,300): confirmed cushion drops to $200 (< $400), causing Safe CPPI to de-lever to 1 micro contract and submit order (adheres to canonical Safe CPPI rule in `wiki/sizing/ratchet-and-cushion.md`). Confirmed unverified account contexts fail closed with `ORDER_BLOCKED_UNVERIFIED_ACCOUNT`.
+  3. Identified edge case finding: when balance drops below trailing floor ($25,050 < $25,100, cushion -$50), `resolveContracts()` returns 1 micro unless gateway daemon soft stop triggers; recommended explicit internal floor breach guard `if (balance <= persistedTrailingFloor || cushion <= 0.0) return 0;`.
+  4. Executed `tests/test_conservative_execution_stress.py` (25/25 passed) and `tests/test_adversarial_challenger_gate2.py` (20/20 passed), confirming 1-tick/2-tick target penetration requirements, touch stop fills, adverse intrabar conflict resolution, and gap open fills.
+  5. Verified dry-run invariance and baseline protection in `scripts/alpha_factory.py`: executed bare, `--strategy S1`, and `--strategy S2`, verifying zero mutations to `wiki/failed_ideas.md` and `results/backtest_provenance.db` (identical SHA-256 hashes before and after) and permanent baseline protection against dead-end archival.
+- **Verification**: `pytest tests/test_motivewave_sizing_safeguards.py tests/test_conservative_execution_stress.py tests/test_adversarial_challenger_gate2.py tests/test_alpha_factory_provenance.py` passed 79/79 tests (100% PASS). SHA-256 hash invariance verified via `shasum -a 256`. Issued Gate 2 verdict: APPROVE.
+
+
+## [2026-11-06 16:20:00 UTC] [teamwork_challenger_gate2_1] [CHALLENGE] | Empirical challenge of Agent Security, Candidate Quarantine, and Dynamic DSR
+- **Pages Modified**: `tests/test_adversarial_challenger_gate2_1.py`, `wiki/log.md`
+- **Summary**:
+  1. Adversarially probed agent security guardrails (`backtest/agent_guardrails.py:validate_command` and `safe_subprocess_run`) against extensive shell redirection tricks (`>`, `>>`, `1>`, `1>>`, `2>&1`, `&>`, `>&`, `2>`, `<`, `<<`, `<<<`, `0<`, `&`, `$(cmd)`, `` `cmd` ``, sequence lists, quotes). Verified that `CommandExecutionBlockedError` is raised in all cases and `isinstance(e, PermissionError)` is True. Confirmed `shell=True` is strictly prohibited.
+  2. Stress-tested candidate quarantine in SQLite store (`results/backtest_provenance.db`), CLI queries (`scripts/query_provenance.py`), pre-market readiness checks (`scripts/check_morning_readiness.py`), and weekly session sentinels (`scripts/session_sentinel.py`). Proved that research candidates NEVER appear in default `--list`, `--latest`, or `--stat` queries even with future timestamps. Verified that explicit opt-in (`include_candidates=True` or `--tier CANDIDATE`) surfaces candidate records decorated with prominent warning banner and `CANDIDATE_TIER_QUARANTINED` flag. Confirmed unregistered strategies attempting to record as `BASELINE` raise `ValueError`.
+  3. Stress-tested dynamic DSR trial accounting in `scripts/alpha_factory.py`. Verified that trial count scales dynamically from the complete experiment ledger ($N = \max(25, N_{\text{failed}} + N_{\text{prov}})$). Confirmed strictly monotonic increase of EVT hurdle ($SR^*$) across $N \in [2, 10000]$ and strictly monotonic downward penalty of Deflated Sharpe Ratio ($DSR$) on constant returns across $N \in [1, 500]$. Verified automated rejection archival to `wiki/failed_ideas.md` with sequential numbering, idempotency/deduplication, and baseline strategy archival exemption.
+- **Verification**: Authored `tests/test_adversarial_challenger_gate2_1.py` with 24 dedicated stress tests (24/24 PASS in 12.97s). Targeted suite (`tests/test_agent_guardrails.py`, `tests/test_strategy_registry.py`, `tests/test_alpha_factory_provenance.py`, `tests/test_provenance_system.py`, `tests/test_adversarial_challenger_gate2_1.py`) passed 92/92 tests in 41.18s. `python3 scripts/verify_wiki_integrity.py` confirms 100% compliance. Issued Gate 2 verdict: APPROVE.

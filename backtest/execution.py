@@ -549,7 +549,10 @@ class ExecutionMixin:
             levels = kwargs.get('exit_levels', {})
 
         p = self.strategy_params
-        assumption = p.get('intrabar_exit_assumption', 'conservative')
+        raw_assumption = p.get('intrabar_exit_assumption', 'conservative')
+        assumption = str(raw_assumption or 'conservative').lower().strip()
+        if assumption in {'pessimistic', 'adverse'}:
+            assumption = 'conservative'
         gap_stop_mode = str(p.get('gap_stop_fill_mode', 'open') or 'open').lower().strip()
 
         adverse_hits = []
@@ -601,6 +604,7 @@ class ExecutionMixin:
                 if favorable_distance < adverse_distance:
                     return True, favorable_hit[0], favorable_hit[1]
                 return True, adverse_hit[0], resolved_adverse_price
+            # Default to conservative / pessimistic (prioritizing adverse stop execution)
             return True, adverse_hit[0], resolved_adverse_price
 
         if adverse_hit:

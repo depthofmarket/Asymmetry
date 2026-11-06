@@ -18,6 +18,12 @@ from backtest.research_protocol import DEFAULT_BLOCKED_AGENT_COMMANDS
 
 logger = logging.getLogger(__name__)
 
+
+class CommandExecutionBlockedError(PermissionError):
+    """Raised when a command violates agent execution guardrails."""
+    pass
+
+
 # Dangerous shell injection and command chaining patterns
 DANGEROUS_SHELL_TOKENS: list[str] = [
     "&&",
@@ -28,6 +34,11 @@ DANGEROUS_SHELL_TOKENS: list[str] = [
     "`",
     "\n",
     "\r",
+    ">>",
+    ">",
+    "<<",
+    "<",
+    "&",
 ]
 
 # Dangerous system binaries and administrative tools
@@ -178,15 +189,19 @@ def safe_subprocess_run(
         subprocess.CompletedProcess: Execution result.
 
     Raises:
-        PermissionError: If command fails guardrail validation.
+        CommandExecutionBlockedError: If command fails guardrail validation or shell=True.
         ValueError: If timeout is not positive.
         subprocess.TimeoutExpired: If execution exceeds timeout.
         subprocess.CalledProcessError: If check=True and process returns non-zero.
     """
+    if kwargs.get("shell", False):
+        logger.error("Execution with shell=True is strictly prohibited by agent guardrails: %s", cmd)
+        raise CommandExecutionBlockedError("Execution with shell=True is strictly prohibited by agent guardrails")
+
     is_valid, reason = validate_command(cmd)
     if not is_valid:
         logger.error("Command blocked by agent guardrails: %s (reason: %s)", cmd, reason)
-        raise PermissionError(f"Command blocked by agent guardrails: {reason}")
+        raise CommandExecutionBlockedError(f"Command blocked by agent guardrails: {reason}")
 
     if timeout is None:
         timeout = 300.0

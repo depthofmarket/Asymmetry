@@ -67,6 +67,11 @@ The active production baseline is the **LucidFlex Tri-Asset Ensemble** (`lucid_f
   - **Priority 3 (Agent Permissions & Guardrails)**: Promoted blocked commands check in `backtest/research_protocol.py` to `severity="hard"`, created `backtest/agent_guardrails.py` with runtime command validation and safe subprocess execution with mandatory 300s timeout, and added explicit timeouts to operational scripts.
   - **Priority 4 (Research Governance & Strategy Registry)**: Created `config/strategy_registry.py` formalizing strategy tiers (`BASELINE`, `FORWARD_DEMO`, `CANDIDATE`, `REJECTED`), guarded baseline provenance in `backtest/provenance.py`, synchronized `AGENTS.md` and `GEMINI.md`, and documented candidate lifecycle at `wiki/strategies/candidate-incubation-lifecycle.md`.
   - **Verification**: 162/162 priority & regression tests passed, 731/731 full test suite passed with 0 errors, and unanimous gate approval achieved.
+- [x] **Milestone 8**: Conservative Execution Stress & MotiveWave Sizing Safeguards Test Suites
+  - Implemented `tests/test_conservative_execution_stress.py` (25 tests): 1-tick/2-tick target trade-through, touch stops, conservative/pessimistic intrabar exit normalization, gap-through stop open fills, next-bar managed stop activation, and full backtest execution stress tests ($PF \ge 1.0$).
+  - Implemented `tests/test_motivewave_sizing_safeguards.py` (18 tests): true historical peak balance persistence across drawdowns, trailing floor locking at $25,100 once peak reaches $26,100, cushion calculation & Safe CPPI de-leveraging to 1 contract when cushion < $400, fail-closed contract sizing (0 contracts on null ctx, balance <= 10,000, or exceptions), and fail-closed order execution (`ORDER_BLOCKED_UNVERIFIED_ACCOUNT`).
+  - Added targeted regression tests across `tests/test_agent_guardrails.py`, `tests/test_strategy_registry.py`, and `tests/test_alpha_factory_provenance.py`.
+  - **Verification**: 145/145 tests passed cleanly in 14.97s; 100% wiki compliance confirmed.
 
 ---
 

@@ -132,10 +132,11 @@ def check_account_state() -> dict[str, any]:
 
 
 def check_provenance_store() -> dict[str, any]:
-    """Verifies that the quantitative provenance store is active and populated."""
+    """Verifies that the quantitative provenance store is active and populated with production baselines."""
     try:
         from backtest.provenance import default_store
-        runs = default_store.list_runs(limit=100)
+        # Only production baselines and forward demo runs are listed (candidate quarantine enforced)
+        runs = default_store.list_runs(include_candidates=False, limit=100)
         return {
             "valid": True,
             "db_path": str(default_store.db_path),

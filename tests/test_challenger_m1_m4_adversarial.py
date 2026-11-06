@@ -61,8 +61,9 @@ class TestAlphaFactoryRecordNonMutation:
     """Empirical verification that alpha_factory dry-run never mutates the database."""
 
     def test_live_db_unmutated_after_s1_dry_run(self):
-        """Executing scripts/alpha_factory.py without --record must not alter results/backtest_provenance.db."""
+        """Executing scripts/alpha_factory.py without --record must not alter results/backtest_provenance.db or wiki."""
         live_db = REPO_ROOT / "results/backtest_provenance.db"
+        failed_ideas = REPO_ROOT / "wiki/failed_ideas.md"
         assert live_db.exists(), f"Database not found at {live_db}"
 
         conn = sqlite3.connect(live_db)
@@ -71,8 +72,45 @@ class TestAlphaFactoryRecordNonMutation:
         before_run_ids = set(r[0] for r in conn.execute("SELECT run_id FROM backtest_runs").fetchall())
         conn.close()
 
-        # Run alpha_factory.py without --record
+        before_wiki = failed_ideas.read_text(encoding="utf-8") if failed_ideas.exists() else ""
+
+        # Run alpha_factory.py without --record on S1 (which receives DSR veto under expanded trial count N >= 33)
         cmd = [sys.executable, str(REPO_ROOT / "scripts/alpha_factory.py"), "--strategy", "S1"]
+        res = subprocess.run(cmd, capture_output=True, text=True, cwd=str(REPO_ROOT))
+
+        # S1 fails DSR under dynamic trial count (N >= 33), issuing a binding veto and exiting 1
+        assert res.returncode == 1, f"Expected returncode 1 (adversarial veto), got {res.returncode}: {res.stdout}"
+        assert "BINDING VETO ISSUED" in res.stdout
+        assert "Deflated Sharpe Ratio DSR" in res.stdout
+
+        conn = sqlite3.connect(live_db)
+        after_count = conn.execute("SELECT count(*) FROM backtest_runs").fetchone()[0]
+        after_max_rowid = conn.execute("SELECT max(rowid) FROM backtest_runs").fetchone()[0]
+        after_run_ids = set(r[0] for r in conn.execute("SELECT run_id FROM backtest_runs").fetchall())
+        conn.close()
+
+        after_wiki = failed_ideas.read_text(encoding="utf-8") if failed_ideas.exists() else ""
+
+        assert before_count == after_count == 9, f"Row count changed: before={before_count}, after={after_count}"
+        assert before_max_rowid == after_max_rowid, f"Max rowid changed!"
+        assert before_run_ids == after_run_ids, "Run IDs set modified!"
+        assert before_wiki == after_wiki, "wiki/failed_ideas.md was mutated by S1 dry run!"
+
+    def test_live_db_unmutated_after_ensemble_dry_run(self):
+        """Executing scripts/alpha_factory.py --strategy ensemble without --record must not alter db or wiki."""
+        live_db = REPO_ROOT / "results/backtest_provenance.db"
+        failed_ideas = REPO_ROOT / "wiki/failed_ideas.md"
+        assert live_db.exists(), f"Database not found at {live_db}"
+
+        conn = sqlite3.connect(live_db)
+        before_count = conn.execute("SELECT count(*) FROM backtest_runs").fetchone()[0]
+        before_max_rowid = conn.execute("SELECT max(rowid) FROM backtest_runs").fetchone()[0]
+        before_run_ids = set(r[0] for r in conn.execute("SELECT run_id FROM backtest_runs").fetchall())
+        conn.close()
+
+        before_wiki = failed_ideas.read_text(encoding="utf-8") if failed_ideas.exists() else ""
+
+        cmd = [sys.executable, str(REPO_ROOT / "scripts/alpha_factory.py"), "--strategy", "ensemble"]
         res = subprocess.run(cmd, capture_output=True, text=True, cwd=str(REPO_ROOT))
         assert res.returncode == 0, f"Command failed: {res.stderr}"
         assert "[INFO] DRY RUN (not recorded to database; pass --record to persist)" in res.stdout
@@ -84,27 +122,12 @@ class TestAlphaFactoryRecordNonMutation:
         after_run_ids = set(r[0] for r in conn.execute("SELECT run_id FROM backtest_runs").fetchall())
         conn.close()
 
+        after_wiki = failed_ideas.read_text(encoding="utf-8") if failed_ideas.exists() else ""
+
         assert before_count == after_count == 9, f"Row count changed: before={before_count}, after={after_count}"
         assert before_max_rowid == after_max_rowid, f"Max rowid changed!"
         assert before_run_ids == after_run_ids, "Run IDs set modified!"
-
-    def test_live_db_unmutated_after_ensemble_dry_run(self):
-        """Executing scripts/alpha_factory.py --strategy ensemble without --record must not alter db."""
-        live_db = REPO_ROOT / "results/backtest_provenance.db"
-        conn = sqlite3.connect(live_db)
-        before_count = conn.execute("SELECT count(*) FROM backtest_runs").fetchone()[0]
-        conn.close()
-
-        cmd = [sys.executable, str(REPO_ROOT / "scripts/alpha_factory.py"), "--strategy", "ensemble"]
-        res = subprocess.run(cmd, capture_output=True, text=True, cwd=str(REPO_ROOT))
-        assert res.returncode == 0, f"Command failed: {res.stderr}"
-        assert "[INFO] DRY RUN (not recorded to database; pass --record to persist)" in res.stdout
-
-        conn = sqlite3.connect(live_db)
-        after_count = conn.execute("SELECT count(*) FROM backtest_runs").fetchone()[0]
-        conn.close()
-
-        assert before_count == after_count == 9, f"Row count changed: before={before_count}, after={after_count}"
+        assert before_wiki == after_wiki, "wiki/failed_ideas.md was mutated by ensemble dry run!"
 
     def test_record_flag_gating_logic_in_isolated_store(self, tmp_path: Path):
         """Verify the conditional branch: record only when args.record is True."""
@@ -560,5 +583,29 @@ class TestSQLiteDatabaseIntegrityAndConcurrency:
             results = [f.result() for f in concurrent.futures.as_completed(futures)]
 
         assert len(results) == num_threads
-        all_runs = store.list_runs(limit=100)
-        assert len(all_runs) == num_threads
+
+        # 1. Candidate Quarantine Verification: Default list_runs excludes candidate runs
+        runs_default = store.list_runs(limit=100)
+        assert len(runs_default) == num_threads // 2, (
+            f"Expected {num_threads // 2} baseline runs under default quarantine, got {len(runs_default)}"
+        )
+        assert all(r.strategy_tier == StrategyTier.BASELINE.value for r in runs_default), (
+            "Quarantine leak: non-BASELINE run found in default list_runs output"
+        )
+
+        # 2. Multi-Tier Concurrency Verification: include_candidates=True retrieves all runs
+        all_runs = store.list_runs(include_candidates=True, limit=100)
+        assert len(all_runs) == num_threads, (
+            f"Expected {num_threads} total runs with include_candidates=True, got {len(all_runs)}"
+        )
+        baseline_count = sum(1 for r in all_runs if r.strategy_tier == StrategyTier.BASELINE.value)
+        candidate_count = sum(1 for r in all_runs if r.strategy_tier == StrategyTier.CANDIDATE.value)
+        assert baseline_count == num_threads // 2 == 10
+        assert candidate_count == num_threads // 2 == 10
+
+        # 3. Candidate Warning Flags Verification: Quarantine warning attached to candidates
+        for r in all_runs:
+            if r.strategy_tier == StrategyTier.CANDIDATE.value:
+                assert "CANDIDATE_TIER_QUARANTINED" in r.warnings, (
+                    f"Candidate run {r.run_id} missing CANDIDATE_TIER_QUARANTINED warning"
+                )

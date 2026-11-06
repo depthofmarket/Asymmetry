@@ -33,22 +33,135 @@ if str(REPO_ROOT) not in sys.path:
 
 from backtest import dashboard_analytics as da
 from backtest.provenance import ProvenanceRecord, ProvenanceStore, default_store
+from config.strategy_registry import is_production_baseline
 
 DATA_PATH = REPO_ROOT / "data/processed/unified_three_strategy_markov_portfolio_trades_2021_2026.parquet"
 FAILED_IDEAS_PATH = REPO_ROOT / "wiki/failed_ideas.md"
 
 
-def get_baseline_trial_count() -> int:
-    """Returns baseline trial count dynamically parsed from wiki/failed_ideas.md (minimum 25)."""
-    count = 25
+def slugify_heading(heading: str) -> str:
+    """Convert markdown heading text to GitHub/Obsidian URL anchor slug."""
+    clean = re.sub(r"[^\w\s-]", "", heading.lower())
+    return re.sub(r"[-\s]+", "-", clean).strip("-")
+
+
+def get_baseline_trial_count(store: Optional[ProvenanceStore] = None) -> int:
+    """Returns baseline trial count dynamically derived from complete experiment ledger:
+    failed ideas in wiki/failed_ideas.md + verified runs in results/backtest_provenance.db (minimum 25).
+    """
+    n_failed = 0
     if FAILED_IDEAS_PATH.exists():
         try:
             with open(FAILED_IDEAS_PATH, "r", encoding="utf-8") as f:
                 headers = re.findall(r"### \d+\.\s+", f.read())
-                count = max(count, len(headers))
+                n_failed = len(headers)
         except Exception:
-            pass
-    return count
+            n_failed = 0
+
+    n_prov = 0
+    try:
+        ps = store if store is not None else default_store
+        runs = ps.list_runs(include_candidates=True, limit=100000)
+        n_prov = len(runs)
+    except Exception:
+        n_prov = 0
+
+    return max(25, n_failed + n_prov)
+
+
+def archive_rejected_candidate(
+    audit: Dict[str, Any],
+    concept_text: str = "",
+    date_start: str = "",
+    date_end: str = "",
+    failed_ideas_path: Optional[Path] = None,
+) -> int:
+    """Formats and appends a vetoed candidate to wiki/failed_ideas.md adhering to wiki/SCHEMA.md."""
+    target_path = failed_ideas_path or FAILED_IDEAS_PATH
+    if not target_path.exists():
+        print(f" [⚠️] Failed ideas ledger not found at {target_path}. Skipping archive.")
+        return 0
+
+    strat_id = audit.get("strategy_id", "candidate_strategy")
+    if is_production_baseline(strat_id):
+        print(f" [INFO] Strategy '{strat_id}' is an authorized production baseline; skipping archival to {target_path.name}.")
+        return 0
+
+    content = target_path.read_text(encoding="utf-8")
+
+    strat_name = audit.get("strategy_name", "Candidate Strategy")
+    trades = audit.get("trades", 0)
+    pf = audit.get("pf", 0.0)
+    wr = audit.get("win_rate", 0.0)
+    dsr = audit.get("dsr", 0.0)
+    net_pnl = audit.get("net_pnl", 0.0)
+    max_dd = audit.get("max_dd", 0.0)
+    veto_reasons = audit.get("veto_reasons", [])
+    veto_str = "; ".join(veto_reasons) if veto_reasons else "Adversarial red-team veto"
+    core_premise = concept_text.strip() if concept_text.strip() else strat_name
+
+    # Deduplication check: verify if strategy_id or exact concept heading is already recorded
+    rule_pattern = rf"-\s+\*\*Standing Rule\*\*:\s*Strategy\s+{re.escape(strat_id)}\s+is\s+quarantined"
+    heading_pattern = rf"^###\s+(\d+)\.\s+{re.escape(strat_name)}"
+    table_pattern = rf"\[{re.escape(strat_name)}"
+
+    existing_rule = re.search(rule_pattern, content, re.MULTILINE | re.IGNORECASE)
+    existing_heading = re.search(heading_pattern, content, re.MULTILINE | re.IGNORECASE)
+    existing_table = re.search(table_pattern, content, re.IGNORECASE)
+
+    if existing_rule or existing_heading or existing_table or (f"Strategy {strat_id} is quarantined" in content):
+        matched_num = existing_heading.group(1) if existing_heading else "existing"
+        print(
+            f" [INFO] Strategy '{strat_id}' ({strat_name}) is already documented in "
+            f"{target_path.name} as #{matched_num}. Skipping duplicate archival."
+        )
+        return int(matched_num) if str(matched_num).isdigit() else 0
+
+    # Find highest existing sequential number from '### N. ' headers
+    header_nums = [int(m) for m in re.findall(r"^###\s+(\d+)\.", content, re.MULTILINE)]
+    next_num = (max(header_nums) + 1) if header_nums else 1
+
+    eval_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    heading_title = f"{strat_name}: Adversarial Veto ({eval_date})"
+    full_heading = f"### {next_num}. {heading_title}"
+    anchor_slug = slugify_heading(f"{next_num}. {heading_title}")
+
+    # Build entry adhering to wiki/SCHEMA.md §6
+    entry_lines = [
+        f"\n### {next_num}. {heading_title}",
+        f"- **Evaluation Date**: {eval_date}",
+        f"- **Author / Agent**: Autonomous Alpha Factory",
+        f"- **Core Premise**: {core_premise}",
+        f"- **Sample/Artifact**: {trades} trades ({date_start} to {date_end})",
+        f"- **Empirical Failure Evidence**: Trades: {trades}, Profit Factor: {pf:.2f}, Win Rate: {wr:.1f}%, DSR: {dsr:.4f}, Net PnL: ${net_pnl:,.2f}, Max Drawdown: -${abs(max_dd):,.2f}. Veto: {veto_str}",
+        f"- **Structural Root Cause**: Rejection under Bailey & Lopez de Prado DSR multiple-testing and Belfort Step 07/08 adversarial hurdles ({veto_str}).",
+        f"- **Standing Rule**: Strategy {strat_id} is quarantined and rejected from production baseline consideration.",
+    ]
+    entry_block = "\n".join(entry_lines) + "\n"
+
+    # Insert into Table of Ruled-Out Concepts
+    table_item = f"{next_num}. [{strat_name}: Adversarial Veto](#{anchor_slug})\n"
+
+    table_match = re.search(r"(## Table of Ruled-Out Concepts\s*\n\n)(.*?)(\n\s*---\s*\n)", content, re.DOTALL)
+    if table_match:
+        table_prefix = table_match.group(1)
+        table_body = table_match.group(2).rstrip()
+        table_suffix = table_match.group(3)
+
+        updated_table_body = f"{table_body}\n{table_item}"
+        content = (
+            content[: table_match.start()]
+            + f"{table_prefix}{updated_table_body}{table_suffix}"
+            + content[table_match.end() :]
+        )
+    else:
+        content = content + f"\n\n{table_item}"
+
+    # Append entry at the end of the file
+    content = content.rstrip() + "\n" + entry_block
+    target_path.write_text(content, encoding="utf-8")
+    print(f" [🟢] Archived rejected candidate as #{next_num} to {target_path.name}")
+    return next_num
 
 
 def screen_dead_ends(concept_text: str) -> List[str]:
@@ -153,7 +266,8 @@ def main() -> int:
         dest="evaluate",
         type=str,
         choices=["S1", "S2", "S3", "ensemble"],
-        help="Evaluate canonical or candidate strategy",
+        default="ensemble",
+        help="Evaluate canonical or candidate strategy (default: ensemble)",
     )
     parser.add_argument(
         "--trials",
@@ -195,7 +309,7 @@ def main() -> int:
 
     # 3. Load Trades
     trades_df = da.load_trades()
-    strat_key = args.evaluate or "S1"
+    strat_key = args.evaluate or "ensemble"
 
     strat_map = {
         "S1": ("morning_va_breakout_s1", "Morning VA Breakout (09:45 ET)", trades_df[trades_df["strat"] == "S1"]),
@@ -232,16 +346,7 @@ def main() -> int:
     print(f" Warning Flags    : {', '.join(audit['warnings']) if audit['warnings'] else 'None (Clean)'}")
     print(f" Adversarial Verdict : {audit['verdict']}")
 
-    if audit["veto_reasons"]:
-        print("\n [🚨] BINDING VETO ISSUED:")
-        for reason in audit["veto_reasons"]:
-            print(f"      ❌ {reason}")
-        print("\n Strategy cannot advance to paper trading. Archiving to wiki/failed_ideas.md.")
-        return 1
-
-    print("\n [🟢] ALL ADVERSARIAL HURDLES PASSED.")
-
-    # 4. Standardized Provenance Record & Footer
+    # Extract date range for reporting and archiving
     if not sub_df.empty and "date" in sub_df:
         d_min = sub_df["date"].min()
         d_max = sub_df["date"].max()
@@ -250,6 +355,32 @@ def main() -> int:
     else:
         date_start = "2021-01-01"
         date_end = "2026-12-31"
+
+    if audit["veto_reasons"]:
+        print("\n [🚨] BINDING VETO ISSUED:")
+        for reason in audit["veto_reasons"]:
+            print(f"      ❌ {reason}")
+
+        if is_production_baseline(strat_id):
+            print(f"\n [INFO] Strategy '{strat_id}' is an authorized production baseline in config/strategy_registry.py.")
+            print(f"        Production baselines are exempt from dead-end archival in {FAILED_IDEAS_PATH.name}.")
+            print("        Standalone sub-strategy hurdles do not invalidate composite ensemble deployment.")
+        elif not args.record:
+            print(f"\n [INFO] DRY RUN: Candidate rejected by adversarial veto, but archival to {FAILED_IDEAS_PATH.name} skipped.")
+            print("        Pass --record to persist both audit failure and dead-end archival.")
+        else:
+            print(f"\n Strategy cannot advance to paper trading. Archiving to {FAILED_IDEAS_PATH.name}.")
+            archive_rejected_candidate(
+                audit,
+                concept_text=args.theme or "",
+                date_start=date_start,
+                date_end=date_end,
+            )
+        return 1
+
+    print("\n [🟢] ALL ADVERSARIAL HURDLES PASSED.")
+
+    # 4. Standardized Provenance Record & Footer
 
     git_commit = store.get_git_commit()
     gross_profit = float(audit["gross_profit"])

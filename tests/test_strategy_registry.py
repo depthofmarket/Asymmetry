@@ -399,7 +399,12 @@ class TestProvenanceIntegration:
             largest_win=100.0,
         )
 
-        all_runs = temp_store.list_runs()
+        # By default, candidate runs are quarantined from production list_runs()
+        default_runs = temp_store.list_runs()
+        assert len(default_runs) == 2  # Baseline and Forward Demo only
+
+        # Explicitly request candidate runs
+        all_runs = temp_store.list_runs(include_candidates=True)
         assert len(all_runs) == 3
 
         baseline_runs = temp_store.list_runs(tier=StrategyTier.BASELINE)
@@ -494,3 +499,53 @@ class TestQueryProvenanceCli:
         assert "lucid_flex_forward_demo" in proc.stdout
         assert "Total verified runs: 1" in proc.stdout
         assert "morning_va_breakout_s1" not in proc.stdout
+
+    def test_cli_list_excludes_candidates_by_default(self):
+        """CLI --list must strictly quarantine candidate runs by default."""
+        proc = subprocess.run(
+            [sys.executable, str(REPO_ROOT / "scripts/query_provenance.py"), "--list"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        # All lines in table should be BASELINE or FORWARD_DEMO
+        for line in proc.stdout.splitlines():
+            if "|" in line and "RUN ID" not in line and "===" not in line:
+                assert "CANDIDATE" not in line, f"Candidate leaked into default CLI list: {line}"
+
+    def test_candidate_quarantine_banner_displayed_on_candidate_query(self, temp_store, tmp_path, monkeypatch):
+        """Querying a candidate run must display prominent quarantine banner."""
+        data_file = tmp_path / "cand.parquet"
+        data_file.write_bytes(b"DATA")
+
+        temp_store.record_run(
+            run_id="run_cand_banner_test",
+            strategy_id="cand_test_alpha",
+            strategy_name="Candidate Test Alpha",
+            methodology="in_sample",
+            date_start="2026-01-01",
+            date_end="2026-06-30",
+            data_path=data_file,
+            total_trades=20,
+            win_rate=50.0,
+            profit_factor=1.1,
+            gross_profit=500.0,
+            net_profit=200.0,
+            max_drawdown=100.0,
+            sharpe_ratio=0.5,
+            largest_win=50.0,
+        )
+
+        import scripts.query_provenance as qp
+        monkeypatch.setattr(qp, "default_store", temp_store)
+        test_args = ["query_provenance.py", "--strategy", "cand_test_alpha", "--include-candidates"]
+        monkeypatch.setattr(sys, "argv", test_args)
+
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            qp.main()
+        output = buf.getvalue()
+        assert "⚠️ [CANDIDATE TIER — QUARANTINED FROM PRODUCTION BASELINE]" in output
+        assert "cand_test_alpha" in output

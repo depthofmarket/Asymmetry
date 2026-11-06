@@ -13,6 +13,7 @@ import sys
 import unittest
 
 from backtest.agent_guardrails import (
+    CommandExecutionBlockedError,
     DANGEROUS_BINARIES,
     DANGEROUS_SHELL_TOKENS,
     safe_subprocess_run,
@@ -213,6 +214,49 @@ class AgentGuardrailsTests(unittest.TestCase):
                 timeout=5,
             )
         self.assertEqual(ctx.exception.returncode, 7)
+
+    def test_command_execution_blocked_error_hierarchy(self) -> None:
+        """CommandExecutionBlockedError must subclass PermissionError for backwards compatibility."""
+        self.assertTrue(issubclass(CommandExecutionBlockedError, PermissionError))
+
+    def test_safe_subprocess_run_raises_command_execution_blocked_error(self) -> None:
+        """Blocked commands must specifically raise CommandExecutionBlockedError."""
+        blocked_commands = [
+            "rm -rf /tmp/data",
+            "sudo whoami",
+            "python main_backtest.py",
+            "echo 1 > output.txt",
+        ]
+        for cmd in blocked_commands:
+            with self.assertRaises(CommandExecutionBlockedError) as ctx:
+                safe_subprocess_run(cmd)
+            self.assertIn("Command blocked by agent guardrails", str(ctx.exception))
+            # Also confirm it is caught as PermissionError
+            self.assertIsInstance(ctx.exception, PermissionError)
+
+    def test_safe_subprocess_run_strictly_prohibits_shell_true(self) -> None:
+        """safe_subprocess_run must reject shell=True and raise CommandExecutionBlockedError."""
+        with self.assertRaises(CommandExecutionBlockedError) as ctx:
+            safe_subprocess_run(["echo", "hello"], shell=True)
+        self.assertIn("shell=True is strictly prohibited", str(ctx.exception))
+
+    def test_validate_command_rejects_redirection_and_backgrounding_tokens(self) -> None:
+        """validate_command must reject redirection (>, >>, <, <<) and backgrounding (&)."""
+        redirection_cases = [
+            "echo 'data' > /tmp/output.txt",
+            "python test.py >> /tmp/append.log",
+            "cat < /tmp/input.txt",
+            "cat << EOF\nsecret\nEOF",
+            "python run.py &",
+            ["echo", "foo > bar.txt"],
+            ["cat", "file >> output.txt"],
+            ["sh", "-c", "input < file"],
+            ["sleep", "100 &"],
+        ]
+        for cmd in redirection_cases:
+            valid, reason = validate_command(cmd)
+            self.assertFalse(valid, f"Expected redirection/backgrounding command {cmd!r} to be blocked")
+            self.assertIn("Shell chaining/injection detected", reason or "")
 
 
 if __name__ == "__main__":
