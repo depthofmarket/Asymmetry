@@ -454,6 +454,116 @@ def top_n_dominance_pct(trades: np.ndarray, n: int = 5) -> float:
     return float((top_n.sum() / total_win) * 100.0)
 
 
+def trim_winners_adversarial_test(trades: np.ndarray, trim_pct: float = 0.05) -> dict[str, Any]:
+    """
+    Adversarial Stress Test: Truncate top trim_pct (e.g. 5%) of winning trades
+    to test whether the economic edge holds strictly above breakeven (PF > 1.0).
+    """
+    x = np.asarray(trades, dtype=float)
+    if x.size == 0:
+        return {
+            "trimmed_pf": 0.0,
+            "trimmed_net": 0.0,
+            "trimmed_win_rate": 0.0,
+            "trimmed_expectancy": 0.0,
+            "removed_count": 0,
+            "removed_profit": 0.0,
+            "edge_holds": False,
+        }
+    wins = np.sort(x[x > 0])
+    losses = -x[x < 0]
+    if wins.size == 0 or losses.size == 0:
+        return {
+            "trimmed_pf": 0.0,
+            "trimmed_net": float(x.sum()),
+            "trimmed_win_rate": 0.0,
+            "trimmed_expectancy": 0.0,
+            "removed_count": 0,
+            "removed_profit": 0.0,
+            "edge_holds": False,
+        }
+    k_trim = max(1, int(math.ceil(wins.size * trim_pct)))
+    trimmed_wins = wins[:-k_trim] if k_trim < wins.size else wins[:0]
+    gross_win = float(trimmed_wins.sum())
+    gross_loss = float(losses.sum())
+    trimmed_pf = float(gross_win / gross_loss) if gross_loss > 0 else (999.0 if gross_win > 0 else 0.0)
+    trimmed_net = float(gross_win - gross_loss)
+    n_rem = wins.size - trimmed_wins.size
+    total_trimmed_trades = trimmed_wins.size + losses.size + int((x == 0).sum())
+    trimmed_wr = float(trimmed_wins.size / total_trimmed_trades * 100.0) if total_trimmed_trades > 0 else 0.0
+    trimmed_exp = float(trimmed_net / total_trimmed_trades) if total_trimmed_trades > 0 else 0.0
+    removed_profit = float(wins[-k_trim:].sum()) if k_trim > 0 else 0.0
+
+    return {
+        "trimmed_pf": round(trimmed_pf, 2),
+        "trimmed_net": round(trimmed_net, 2),
+        "trimmed_win_rate": round(trimmed_wr, 2),
+        "trimmed_expectancy": round(trimmed_exp, 2),
+        "removed_count": int(n_rem),
+        "removed_profit": round(removed_profit, 2),
+        "edge_holds": bool(trimmed_pf > 1.0),
+    }
+
+
+def benchmark_relative_metrics(
+    strategy_returns: np.ndarray,
+    benchmark_returns: np.ndarray,
+    annualization_factor: float = 252.0,
+) -> dict[str, float]:
+    """
+    Computes Beta, Jensen's Alpha, Correlation, Tracking Error, Information Ratio,
+    and Up/Down Capture ratios against a passive market benchmark.
+    """
+    rs = np.asarray(strategy_returns, dtype=float)
+    rb = np.asarray(benchmark_returns, dtype=float)
+    n = min(rs.size, rb.size)
+    if n < 5:
+        return {
+            "beta": 0.0,
+            "alpha": 0.0,
+            "correlation": 0.0,
+            "tracking_error": 0.0,
+            "information_ratio": 0.0,
+            "up_capture": 0.0,
+            "down_capture": 0.0,
+        }
+    rs = rs[:n]
+    rb = rb[:n]
+    var_b = float(np.var(rb, ddof=1))
+    cov_sb = float(np.cov(rs, rb)[0, 1]) if var_b > 0 else 0.0
+    beta = float(cov_sb / var_b) if var_b > 0 else 0.0
+
+    std_s = float(np.std(rs, ddof=1))
+    std_b = float(np.std(rb, ddof=1))
+    corr = float(cov_sb / (std_s * std_b)) if (std_s > 0 and std_b > 0) else 0.0
+
+    # Annualized Alpha
+    mean_s_ann = float(np.mean(rs) * annualization_factor)
+    mean_b_ann = float(np.mean(rb) * annualization_factor)
+    alpha = float(mean_s_ann - beta * mean_b_ann)
+
+    # Tracking error & Information Ratio
+    diff = rs - rb
+    te = float(np.std(diff, ddof=1) * math.sqrt(annualization_factor))
+    ir = float((np.mean(diff) * annualization_factor) / te) if te > 0 else 0.0
+
+    # Up/Down Capture
+    up_idx = rb > 0
+    down_idx = rb < 0
+    up_cap = float((np.mean(rs[up_idx]) / np.mean(rb[up_idx])) * 100.0) if (np.any(up_idx) and np.mean(rb[up_idx]) > 0) else 0.0
+    down_cap = float((np.mean(rs[down_idx]) / np.mean(rb[down_idx])) * 100.0) if (np.any(down_idx) and abs(np.mean(rb[down_idx])) > 0) else 0.0
+
+    return {
+        "beta": round(beta, 3),
+        "alpha": round(alpha, 4),
+        "correlation": round(corr, 3),
+        "tracking_error": round(te, 4),
+        "information_ratio": round(ir, 2),
+        "up_capture": round(up_cap, 1),
+        "down_capture": round(down_cap, 1),
+    }
+
+
 def drawdown_episodes(daily_series: pd.Series | np.ndarray) -> pd.DataFrame:
     """
     Deconstructs an equity curve into distinct drawdown episodes with:
@@ -644,6 +754,7 @@ def calculate_institutional_metrics(
     risk_free_rate: float = 0.0,
     n_trials: int = 33,
     col: str = "net_pnl",
+    benchmark_daily_returns: pd.Series | np.ndarray | Sequence[float] | None = None,
 ) -> dict[str, Any]:
     """
     Computes the complete 88+ institutional quantitative metric taxonomy.
@@ -803,8 +914,18 @@ def calculate_institutional_metrics(
     mean_mae = float(df_trades["mae"].mean()) if "mae" in df_trades.columns else 0.0
     edge_efficiency = float(net_pnl / df_trades["mfe"].sum()) if ("mfe" in df_trades.columns and df_trades["mfe"].sum() > 0) else 0.0
 
+    # Adversarial Truncation Stress Test (Top 5% Winners Removed)
+    trim_5pct = trim_winners_adversarial_test(x, trim_pct=0.05)
+
+    # Benchmark Comparative Analytics
+    if benchmark_daily_returns is not None:
+        r_pct = (r / capital) if (capital > 0 and np.nanmean(np.abs(r)) > 1.0) else r
+        b_rel = benchmark_relative_metrics(strategy_returns=r_pct, benchmark_returns=np.asarray(benchmark_daily_returns, dtype=float), annualization_factor=252.0)
+    else:
+        b_rel = {"beta": 0.0, "alpha": 0.0, "correlation": 0.0, "tracking_error": 0.0, "information_ratio": 0.0, "up_capture": 0.0, "down_capture": 0.0}
+
     return {
-        # 1. Return & Capital Growth (10)
+        # 1. Return & Capital Growth (10 + Benchmark Relatives)
         "net_pnl": round(net_pnl, 2),
         "gross_profit": round(gross_profit, 2),
         "gross_loss": round(gross_loss, 2),
@@ -815,6 +936,12 @@ def calculate_institutional_metrics(
         "traded_session_avg_pnl": round(float(x.sum() / max(1, len(np.unique(df_trades["date"])))) if "date" in df_trades.columns else d_mean, 2),
         "median_daily_pnl": round(float(np.median(r)), 2),
         "benchmark_relative_return": round(net_pnl, 2),
+        "beta": b_rel["beta"],
+        "alpha": b_rel["alpha"],
+        "correlation": b_rel["correlation"],
+        "tracking_error": b_rel["tracking_error"],
+        "up_capture": b_rel["up_capture"],
+        "down_capture": b_rel["down_capture"],
 
         # 2. Risk-Adjusted Ratios (14)
         "sharpe_ratio": round(sharpe, 2),
@@ -875,6 +1002,13 @@ def calculate_institutional_metrics(
         "largest_loss": round(largest_loss, 2),
         "top_5_wins_pct": round(top5_dom, 1),
         "trimmed_profit_factor": round(trimmed_pf, 2),
+        "trimmed_profit_factor_5pct": trim_5pct["trimmed_pf"],
+        "trimmed_net_5pct": trim_5pct["trimmed_net"],
+        "trimmed_win_rate_5pct": trim_5pct["trimmed_win_rate"],
+        "trimmed_expectancy_5pct": trim_5pct["trimmed_expectancy"],
+        "trimmed_removed_count_5pct": trim_5pct["removed_count"],
+        "trimmed_removed_profit_5pct": trim_5pct["removed_profit"],
+        "edge_holds_5pct": trim_5pct["edge_holds"],
 
         # 6. Higher Statistical Moments & Significance (8)
         "trade_skew": round(trade_skew, 2),

@@ -34,6 +34,8 @@ This ledger is an append-only record of all research hypotheses, sizing policies
 22. [Breakout: Opening Range Compression Breakout Gate](#22-breakout-opening-range-compression-breakout-gate-2026-05-21)
 23. [Microstructure: Liquidity-Taking Trend Probe](#23-microstructure-liquidity-taking-trend-probe-2026-05-20)
 24. [Volume Profile: Failed-Auction Quality Branch](#24-volume-profile-failed-auction-quality-branch-2026-05-20)
+25. [H21: Crude Oil Pit Open Breakout (09:00 ET on MCL)](#25-h21-crude-oil-pit-open-breakout-0900-et-on-mcl-2026-11-07)
+26. [H22: 4-Index Sector Rotation Value Area Breakout (09:45 ET on MYM/M2K)](#26-h22-4-index-sector-rotation-value-area-breakout-0945-et-on-mymm2k-2026-11-07)
 
 ---
 
@@ -252,3 +254,19 @@ This ledger is an append-only record of all research hypotheses, sizing policies
 - **Empirical Failure Evidence**: 157 trades, Profit Factor 0.85, Net PnL -$2,757.99, Win Rate 37.58%, daily Sharpe -1.30. Prop eval pass probability 0.0%. All setups failed: `mr_short` (0.55 PF), `trend_long` (0.89 PF), `trend_short` (0.82 PF).
 - **Structural Root Cause**: Failed auctions frequently transition into violent secondary expansion drives that blow through stops.
 - **Standing Rule**: The failed-auction quality family is permanently archived in `rejected_research_families`.
+### 25. H21: Crude Oil Pit Open Breakout (09:00 ET on MCL) (2026-11-07)
+- **Evaluation Date**: 2026-11-07
+- **Author / Agent**: Quantitative Research Team
+- **Core Premise**: 15-minute Opening Range (09:00–09:14 ET) breakout outside prior 70% Value Area on Micro WTI Crude Oil (`MCL`).
+- **Sample/Artifact**: 245 trades across 2021–2026 (`data/raw/cl_1m_2020_2026_et.parquet`, SHA-256: `7f99fefece90be31...`). Run ID: `candidate_crude_oil_pit_open_breakout_2021_2026`.
+- **Empirical Failure Evidence**: 245 trades, Profit Factor 0.93, Net -$1,380.05, Win Rate 46.53%, Max Drawdown -$3,704.87 (breaches LucidFlex $1,000 trailing DD by 3.7x). Out-of-Sample (2025–2026) collapsed to PF 0.74, Net -$2,104.59.
+- **Structural Root Cause**: Crude oil market shifted from physical pit open dominance at 09:00 ET to 24-hour algorithmic OPEC headline sensitivity and London morning fixing flows. Post-09:00 ET breakouts suffer from heavy 2-sided dealer whipsaw and lack multi-hour trending follow-through.
+- **Standing Rule**: Pure 09:00 ET unconditioned price breakouts on Crude Oil futures are permanently rejected.
+### 26. H22: 4-Index Sector Rotation Value Area Breakout (09:45 ET on MYM/M2K) (2026-11-07)
+- **Evaluation Date**: 2026-11-07
+- **Author / Agent**: Quantitative Research Team
+- **Core Premise**: Applying Strategy 1 canonical 09:45 ET Value Area breakout mechanics to Micro Dow (`MYM`) and Micro Russell (`M2K`) to trade sector rotation when NQ and ES open inside value.
+- **Sample/Artifact**: 741 trades across 2021–2026 (`ym_1m_2020_2026_et.parquet` SHA-256: `ac564378b0742624...` & `rty_1m_2020_2026_et.parquet` SHA-256: `2fbb57ad05147664...`). Run ID: `candidate_index_sector_rotation_s5_2021_2026`.
+- **Empirical Failure Evidence**: 741 trades, Profit Factor 0.82, Net -$13,885.35, Win Rate 43.59%, Max Drawdown -$18,524.50. Both In-Sample (2021–2024: 519 trades, PF 0.87, Net -$6,550.30) and Out-of-Sample (2025–2026: 222 trades, PF 0.74, Net -$7,335.05) failed decisively.
+- **Structural Root Cause**: When mega-cap tech (`NQ`) and large-cap blend (`ES`) are trapped inside their prior Value Area (balanced/choppy), the Dow 30 (price-weighted 30 stocks) and Russell 2000 (small caps) lack the broader market capitalization to sustain independent trending escapes. Breakouts on YM and RTY face aggressive liquidity mean-reversion pullbacks back into the range.
+- **Standing Rule**: Do not deploy standalone 09:45 Value Area breakouts on Dow or Russell without broad-market (SPX/NDX) trend participation.

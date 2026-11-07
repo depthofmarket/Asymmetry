@@ -54,11 +54,26 @@ def ingest_canonical_runs():
     date_end = str(trades["date"].max())
     days_count = len(calendar)
 
+    # Load NQ Benchmark for comparative analytics
+    nq_path = REPO_ROOT / "data/raw/nq_1m_2017_2026_cqg_et.parquet"
+    nq_daily_returns = None
+    if nq_path.exists():
+        nq_df = pd.read_parquet(nq_path, columns=["time", "close"])
+        nq_df["time"] = pd.to_datetime(nq_df["time"])
+        nq_df["date"] = nq_df["time"].dt.strftime("%Y-%m-%d")
+        nq_filt = nq_df[(nq_df["date"] >= date_start) & (nq_df["date"] <= date_end)]
+        nq_close = nq_filt.groupby("date")["close"].last()
+        nq_s = pd.Series(index=calendar, dtype=float)
+        for d in calendar:
+            if d in nq_close.index:
+                nq_s[d] = nq_close[d]
+        nq_daily_returns = nq_s.ffill().bfill().pct_change().fillna(0.0).to_numpy(dtype=float)
+
     # Ingest S1: Morning VA Breakout (09:45 ET)
     s1_trades = trades[trades["strat"] == "S1"]
     m_s1 = da.performance_metrics(s1_trades, calendar, "research_pnl")
     daily_s1 = da.daily_series(s1_trades, calendar, "research_pnl")
-    m_s1_ext = bm.calculate_institutional_metrics(s1_trades["research_pnl"].to_numpy(), daily_returns=daily_s1)
+    m_s1_ext = bm.calculate_institutional_metrics(s1_trades["research_pnl"].to_numpy(), daily_returns=daily_s1, benchmark_daily_returns=nq_daily_returns)
     bundle_s1 = BacktestBundle.create(
         run_id="run_canonical_s1_va_breakout_2021_2026",
         strategy_id="morning_va_breakout_s1",
@@ -106,7 +121,7 @@ def ingest_canonical_runs():
     s2_trades = trades[trades["strat"] == "S3"]
     m_s2 = da.performance_metrics(s2_trades, calendar, "research_pnl")
     daily_s2 = da.daily_series(s2_trades, calendar, "research_pnl")
-    m_s2_ext = bm.calculate_institutional_metrics(s2_trades["research_pnl"].to_numpy(), daily_returns=daily_s2)
+    m_s2_ext = bm.calculate_institutional_metrics(s2_trades["research_pnl"].to_numpy(), daily_returns=daily_s2, benchmark_daily_returns=nq_daily_returns)
     bundle_s2 = BacktestBundle.create(
         run_id="run_canonical_s2_macro_momentum_2021_2026",
         strategy_id="macro_momentum_s2",
@@ -154,7 +169,7 @@ def ingest_canonical_runs():
     s3_trades = trades[trades["strat"] == "S2"]
     m_s3 = da.performance_metrics(s3_trades, calendar, "research_pnl")
     daily_s3 = da.daily_series(s3_trades, calendar, "research_pnl")
-    m_s3_ext = bm.calculate_institutional_metrics(s3_trades["research_pnl"].to_numpy(), daily_returns=daily_s3)
+    m_s3_ext = bm.calculate_institutional_metrics(s3_trades["research_pnl"].to_numpy(), daily_returns=daily_s3, benchmark_daily_returns=nq_daily_returns)
     bundle_s3 = BacktestBundle.create(
         run_id="run_canonical_s3_gold_london_fix_2021_2026",
         strategy_id="gold_london_fix_s3",
@@ -201,7 +216,7 @@ def ingest_canonical_runs():
     # Ingest Unified Ensemble (S1 + S2 + S3)
     m_comp = da.performance_metrics(trades, calendar, "research_pnl")
     daily_comp = da.daily_series(trades, calendar, "research_pnl")
-    m_comp_ext = bm.calculate_institutional_metrics(trades["research_pnl"].to_numpy(), daily_returns=daily_comp)
+    m_comp_ext = bm.calculate_institutional_metrics(trades["research_pnl"].to_numpy(), daily_returns=daily_comp, benchmark_daily_returns=nq_daily_returns)
     bundle_comp = BacktestBundle.create(
         run_id="run_canonical_lucid_flex_ensemble_2021_2026",
         strategy_id="lucid_flex_ensemble",

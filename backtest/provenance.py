@@ -823,6 +823,16 @@ Warning Flags:
             "dd": "max_drawdown",
             "maxdd": "max_drawdown",
             "sharpe": "sharpe_ratio",
+            "trimmed_pf_5pct": "trimmed_profit_factor_5pct",
+            "trimmed_5pct": "trimmed_profit_factor_5pct",
+            "edge_holds_5pct": "edge_holds_5pct",
+            "trimmed_net_5pct": "trimmed_net_5pct",
+            "beta": "beta",
+            "alpha": "alpha",
+            "correlation": "correlation",
+            "tracking_error": "tracking_error",
+            "up_capture": "up_capture",
+            "down_capture": "down_capture",
         }
 
         lookup_keys = [stat_lower]
