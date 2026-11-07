@@ -48,6 +48,11 @@ This ledger is an append-only record of all research hypotheses, sizing policies
 36. [H31: Value vs Growth Factor Dispersion Momentum (10:15 ET on MYM)](#36-h31-value-vs-growth-factor-dispersion-momentum-1015-et-on-mym-2026-11-07)
 37. [H33: London 4 PM Global Benchmark Fix Equity Drive (10:50 ET on MES)](#37-h33-london-4-pm-global-benchmark-fix-equity-drive-1050-et-on-mes-2026-11-07)
 38. [H38: 0DTE Dealer Gamma Absorption & IB Re-entry Trap (10:15 ET on MES)](#38-h38-0dte-dealer-gamma-absorption-ib-re-entry-trap-1015-et-on-mes-2026-11-07)
+39. [H39: Cash Open Momentum Thrust (09:35 ET on MNQ)](#39-h39-cash-open-momentum-thrust-0935-et-on-mnq-2026-11-07)
+40. [H40: Transatlantic Energy Handover (09:40 ET on MCL)](#40-h40-transatlantic-energy-handover-0940-et-on-mcl-2026-11-07)
+41. [H41: LBMA PM Fix Pre-Hedging Drive (09:35 ET on MGC)](#41-h41-lbma-pm-fix-pre-hedging-drive-0935-et-on-mgc-2026-11-07)
+42. [H42: 80% Value Area Re-Acceptance Rotation (MNQ/MES)](#42-h42-80-value-area-re-acceptance-rotation-mnqmes-2026-11-07)
+43. [H43: Multi-Session Inside-Day Coiled Spring Breakout (MNQ)](#43-h43-multi-session-inside-day-coiled-spring-breakout-mnq-2026-11-07)
 
 ---
 
@@ -430,6 +435,74 @@ This ledger is an append-only record of all research hypotheses, sizing policies
   - Microstructural Skew: Stop loss hit 155 times (49.2%, -$5,835.75) vs profit target hit only 87 times (27.6%, +$3,370.41). Breakeven stops hit 48 times (15.2%), Time exits 25 times (7.9%). Stops were triggered at nearly a 2:1 ratio over target fills.
 - **Structural Root Cause**: Shallow re-entry into the 30-minute Initial Balance between 10:01 and 10:15 ET is not a "failed auction" or "dealer gamma trap" — it is overwhelmingly a standard breakout re-test that gathers liquidity before primary trend continuation. Fading this re-test steps directly in front of institutional trend continuation. Furthermore, attributing this action to daily "0DTE dealer gamma hedging" is anachronistic: daily 0DTE options did not even exist on Tuesdays and Thursdays prior to late 2022. When real institutional order flow initiates a breakout, options dealers short gamma are forced to dynamically hedge in the direction of the break, acting as a trend accelerant rather than a mean-reverting pin. Fading breakout pullbacks at 10:15 ET results in severe capital destruction.
 - **Standing Rule**: Standalone mean-reversion strategies fading Initial Balance breakout re-entries prior to 10:30 ET without confirmed order-book exhaustion (Delta divergence and volume absorption) are permanently rejected.
+
+### 39. H39: Cash Open Momentum Thrust (09:35 ET on MNQ) (2026-11-07)
+- **Evaluation Date**: 2026-11-07
+- **Author / Agent**: Red-Team Quantitative Adversary (`adversarial_auditor`)
+- **Core Premise**: Entering directional momentum on Micro E-mini Nasdaq (`MNQ`) at 09:35 ET following an opening 5-minute (09:30–09:34 ET) high-volume expansion thrust under the hypothesis that opening institutional cash deployment drives 15-minute trend continuation.
+- **Sample/Artifact**: 77 to 164 trades across 2021–2026 (`nq_1m_2017_2026_cqg_et.parquet` SHA-256: `c9d78a716f5afe040c590fc974e980edfee029081ba47875f041b034c38b737a`). Evaluation script: `scripts/research_cash_open_thrust_s9.py`.
+- **Empirical Failure Evidence**: Decisively falsified across all volume shock multipliers (1.10x to 1.30x):
+  - Vol Mult 1.10: 164 trades, WR 51.2%, Profit Factor 0.84, Net -$775.60
+  - Vol Mult 1.15: 147 trades, WR 51.7%, Profit Factor 0.79, Net -$910.30
+  - Vol Mult 1.20: 121 trades, WR 48.8%, Profit Factor 0.74, Net -$947.90
+  - Vol Mult 1.25: 100 trades, WR 48.0%, Profit Factor 0.77, Net -$715.00
+  - Vol Mult 1.30: 77 trades, WR 48.1%, Profit Factor 0.68, Net -$760.30
+  - Severe Microstructural Skew: Stop loss hit 67 times vs profit target hit only 18 times (3.7:1 stop realization penalty). In 2026, PF collapsed to 0.23 (-$626.40).
+- **Structural Root Cause**: Volume in the first 5 minutes of cash trading reflects the mechanical clearing of overnight Market-on-Open (MOO) order imbalances rather than organic directional institutional trend initiation. Once opening crosses clear, aggressive flow evaporates, and institutional market makers mean-revert price toward opening VWAP. Entering at 09:35 ET buys/sells at the peak of opening exhaustion, triggering stops at nearly a 4:1 ratio over targets. Canonical Strategy 1 intentionally waits until 09:45 ET to ensure this opening whip-chop is fully resolved.
+- **Standing Rule**: Standalone momentum entries initiated at 09:35 ET prior to the 09:45 ET 15-minute opening range completion are permanently rejected.
+
+### 40. H40: Transatlantic Energy Handover (09:40 ET on MCL) (2026-11-07)
+- **Evaluation Date**: 2026-11-07
+- **Author / Agent**: Red-Team Quantitative Adversary (`adversarial_auditor`)
+- **Core Premise**: Entering directional breakouts on Micro WTI Crude Oil (`MCL`) at 09:40 ET (excluding Wednesday EIA inventory releases) under the hypothesis that volume handover between European crude trading and US cash energy creates persistent directional momentum.
+- **Sample/Artifact**: 149 to 225 trades across 2021–2026 (`cl_1m_2020_2026_et.parquet` SHA-256: `7f99fefece90be3114b7eb39060a5fe251038700a7238d3e1caac4f5909d1c90`). Evaluation script: `scripts/research_energy_handover_s10.py`.
+- **Empirical Failure Evidence**: Total catastrophic failure across all volume multipliers (1.5x to 2.5x):
+  - Vol Mult 1.5: 225 trades, Win Rate 12.0%, Profit Factor 0.03, Net -$783.10
+  - Vol Mult 2.0: 200 trades, Win Rate 11.5%, Profit Factor 0.03, Net -$710.60
+  - Vol Mult 2.5: 149 trades, Win Rate 11.4%, Profit Factor 0.03, Net -$538.30
+- **Structural Root Cause**: The premise of a 09:40 ET "transatlantic energy handover" is structurally unfounded. NYMEX crude pit trading opens at 09:00 ET, while European ICE Brent desks trade through 14:30 ET settlement. At 09:40 ET, crude oil is buffeted by secondary volatility from the 09:30 US equity cash open, creating tight 2-to-3 tick whipsaws. With $1.40 commissions and adverse market slippage, stop losses are triggered almost immediately on 88% of trades, resulting in a near-total wipeout (PF 0.03).
+- **Standing Rule**: Standalone 09:40 ET breakout or momentum strategies on Micro Crude Oil are permanently rejected.
+
+### 41. H41: LBMA PM Fix Pre-Hedging Drive (09:35 ET on MGC) (2026-11-07)
+- **Evaluation Date**: 2026-11-07
+- **Author / Agent**: Red-Team Quantitative Adversary (`adversarial_auditor`)
+- **Core Premise**: Entering Micro Gold (`MGC`) at 09:35 ET in the direction of the 09:30 cash open, liquidating strictly at 09:58 ET before the 10:00:00 ET LBMA PM Fix auction clearing lock, under the hypothesis that bullion banks front-run and pre-hedge fixing imbalances.
+- **Sample/Artifact**: 115 to 190 trades across 2021–2026 (`gc_1m_2020_2026_et.parquet` SHA-256: `4be8c9f73920d9ebb28609431869231ac49ebd43dd14b48e0f6a05a84763b3df`). Evaluation script: `scripts/research_gold_pre_fix_s11.py`.
+- **Empirical Failure Evidence**: Consistently unprofitable across all volume thresholds (1.5x to 2.5x):
+  - Vol Mult 1.5: 190 trades, WR 48.4%, Profit Factor 0.71, Net -$981.00
+  - Vol Mult 2.0: 156 trades, WR 48.1%, Profit Factor 0.69, Net -$882.40
+  - Vol Mult 2.5: 115 trades, WR 47.0%, Profit Factor 0.59, Net -$900.00
+- **Structural Root Cause**: Prior to the 10:00:00 ET LBMA London PM Fix auction clearing, bullion dealer algorithms engage in two-sided passive inventory absorption rather than directional pre-hedging runs. Dealers lean against short-term price excursions to minimize auction execution variance. Entering momentum at 09:35 ET trades directly into this passive absorption, bleeding capital to round-turn friction. Directional auction clearing only begins *after* fix publication, which is why canonical Strategy 3 succeeds at 10:15 ET (PF 1.59) while 09:35 ET pre-fix momentum fails.
+- **Standing Rule**: Directional momentum trading on Gold prior to the 10:00 AM ET LBMA London PM Fix auction settlement is permanently rejected.
+
+### 42. H42: 80% Value Area Re-Acceptance Rotation (MNQ/MES) (2026-11-07)
+- **Evaluation Date**: 2026-11-07
+- **Author / Agent**: Red-Team Quantitative Adversary (`adversarial_auditor`)
+- **Core Premise**: Dalton's classic Market Profile "80% Rule": If price opens outside the prior session's Value Area (above VAH or below VAL) and prints consecutive closes inside the Value Area, it rotates across the entire Value Area to the opposite boundary with an "80% probability".
+- **Sample/Artifact**: 223 to 267 trades across 2021–2026 (`nq_1m_2017_2026_cqg_et.parquet` SHA-256: `c9d78a716f5afe040c590fc974e980edfee029081ba47875f041b034c38b737a` & `es_1m_2020_2026_cqg_et.parquet` SHA-256: `36f0a1042b9981b8166c32d2aad5b5452f7027fb210da65547d928dd791290f3`). Evaluation script: `scripts/research_va_80pct_rule_s12.py`.
+- **Empirical Failure Evidence**: Decisively falsified across all confirmation thresholds (1, 2, and 3 bar closes) on both equity index assets:
+  - MNQ: 267 trades, Win Rate 50.9%, Profit Factor 0.98, Net -$184.80 (stops 127 vs targets 110).
+  - MES (1 close): 260 trades, Win Rate 47.3%, Profit Factor 0.73, Net -$1,575.25.
+  - MES (2 closes): 234 trades, Win Rate 48.7%, Profit Factor 0.79, Net -$1,075.10.
+  - MES (3 closes): 223 trades, Win Rate 48.4%, Profit Factor 0.77, Net -$1,069.70.
+  - Fails Belfort Step 04 ($PF < 1.25$) and Step 05 ($PF < 1.15$). Realized win rate is 47%–51%, proving the "80%" claim is completely fictitious.
+- **Structural Root Cause**: The 80% Rule was conceived in the 1980s CBOT floor-pit era when local market makers controlled physical inventory between reference brackets. In modern electronic futures (2021–2026), Value Area boundaries are active conflict zones between morning opening-drive momentum and algorithmic market makers. Dipping into the Value Area does not trigger an automatic rotation; in over half of sessions, price chops violently around the boundary or builds a new POC near the boundary before resuming trend. The setup is statistically indistinguishable from a coin flip, with micro commissions and adverse slippage driving steady capital bleed.
+- **Standing Rule**: Standalone Value Area re-acceptance rotation strategies ("80% Rule") on equity index futures are permanently rejected.
+
+### 43. H43: Multi-Session Inside-Day Coiled Spring Breakout (MNQ) (2026-11-07)
+- **Evaluation Date**: 2026-11-07
+- **Author / Agent**: Red-Team Quantitative Adversary (`adversarial_auditor`)
+- **Core Premise**: Toby Crabel's Inside Day compression breakout: Entering momentum in the direction of the break when price breaches the high or low of a session whose entire range was contained within the previous session's range (Inside Day), under the hypothesis that range contraction detonates into directional expansion.
+- **Sample/Artifact**: 85 trades across 154 Inside Days (2021–2026) (`nq_1m_2017_2026_cqg_et.parquet` SHA-256: `c9d78a716f5afe040c590fc974e980edfee029081ba47875f041b034c38b737a`). Evaluation script: `scripts/research_inside_day_breakout_s13.py`.
+- **Empirical Failure Evidence**: Falsified across all bracket calibrations:
+  - Stop 30 / Target 60: 85 trades, Win Rate 51.8%, Profit Factor 0.61, Net -$987.50.
+  - Stop 35 / Target 70: 85 trades, Win Rate 50.6%, Profit Factor 0.84, Net -$491.00.
+  - Stop 40 / Target 80: 85 trades, Win Rate 54.1%, Profit Factor 1.09, Net +$278.00.
+  - Fails Belfort Step 04 institutional validation threshold ($PF \ge 1.25$). Total net return of $278 over 5.8 years equates to $48/year, completely unviable for systematic prop execution.
+- **Structural Root Cause**: In modern algorithmic futures markets, Inside Day highs and lows are prominent retail reference levels that act as high-probability liquidity sweeps. When price probes outside the Inside Day boundary, it triggers resting retail breakout buy/sell stops. Institutional market makers use this liquidity surge to exit inventory, immediately fading the breakout and snapping price back inside the range. Breakout traders are consistently stopped out in the false expansion trap before any sustained multi-hour trend develops.
+- **Standing Rule**: Standalone Inside-Day boundary breakouts on equity index futures without confirmed multi-session volume consolidation or external macro catalysts are permanently rejected.
+
+
 
 
 
