@@ -21,6 +21,7 @@ Welcome to the `nq-scalper-backtest` persistent knowledge base. This wiki serves
 - [Strategy 2: Pre-Market Macro Momentum (08:35 ET)](strategies/macro-momentum.md) — MNQ pre-market directional momentum following 08:30 Tier-1 macro releases with Markov high-vol adaptive sizing. `[active]`
 - [Strategy 3: Gold London Fix Breakout (10:15 ET)](strategies/gold-london-fix.md) — Long-only COMEX MGC structural breakout following LBMA PM bullion fixing auction clearing. `[active]`
 - [Candidate Incubation Lifecycle & Strategy Governance](strategies/candidate-incubation-lifecycle.md) — Strategy tier governance (BASELINE, FORWARD_DEMO, CANDIDATE, REJECTED), 6-stage incubation gates, and provenance store segregation. `[active]`
+- [Declarative Confluence Engine & Decision Trace Architecture](strategies/declarative-confluence-engine.md) — Composable Boolean condition trees, multi-group scoring cards, veto overrides, decision traces, and 10-tool MCP server. `[active]`
 
 ---
 

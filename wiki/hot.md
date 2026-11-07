@@ -28,18 +28,34 @@ The active production baseline is the **LucidFlex Tri-Asset Ensemble** (`lucid_f
 ## Active Tasks & Work in Progress
 
 - [x] **Milestone 7: Investing Algorithm Framework Deep Architectural Extraction & Microstructure Expansion**:
-  - **143 Institutional Metrics Expansion (`backtest/metrics.py`)**: Extracted deep microstructure, excursion, and walk-forward stability families from `coding-kitties/investing-algorithm-framework`:
+  - **Option A: 143 Institutional Metrics Expansion (`backtest/metrics.py`)**: Extracted deep microstructure, excursion, and walk-forward stability families from `coding-kitties/investing-algorithm-framework`:
     1. *Directional Symmetry*: `long_win_rate`, `short_win_rate`, `long_profit_factor`, `short_profit_factor`, `winning_long_trades`, `losing_short_trades`, `long_net_pnl`, `short_net_pnl`, `long_short_edge_asymmetry`.
     2. *Excursions & Edge Efficiency*: `mean_mfe`, `mean_mae`, `max_mfe`, `max_mae`, `mfe_mae_ratio` ($\mathbb{E}[\text{MFE}] / \mathbb{E}[\text{MAE}]$), `edge_efficiency_ratio` ($\text{Net PnL} / \sum \text{MFE}$).
     3. *Temporal Duration & Discipline*: `avg_hold_time_mins`, `avg_win_duration_mins`, `avg_loss_duration_mins`, `holding_duration_asymmetry` ($\text{HDA} = \bar{\tau}_{\text{loss}} / \bar{\tau}_{\text{win}}$) quantifying loss-aversion discipline breakdown, `exposure_ratio` and `market_exposure_pct`.
     4. *Cadence & Frequency*: `trades_per_day`, `trades_per_week`, `trades_per_month`, `trades_per_year`.
     5. *Calendar Periodicity*: `percentage_winning_months`, `percentage_winning_years`, `avg_monthly_pnl_winning_months`, `avg_monthly_pnl_losing_months`, `best_month_pnl`, `worst_month_pnl`, `best_year_pnl`, `worst_year_pnl`.
     6. *Multi-Window Walk-Forward Stability*: `return_consistency`, `win_rate_consistency`, `sharpe_consistency`, `consistency_score`, `stability_score`.
-  - **MotiveWave Java Study Single-Trade Session Cooldown Lock (`DAILY_SUBMITTED_DATES`)**:
+  - **Option A: MotiveWave Java Study Single-Trade Session Cooldown Lock (`DAILY_SUBMITTED_DATES`)**:
     - Eliminated multi-trade triggers and chart recalculation re-entries across `LucidMacroMomentumStudy.java`, `LucidMorningVABreakoutStudy.java`, and `LucidGoldFixBreakoutStudy.java`.
     - Implemented JVM-static thread-safe session lock `DAILY_SUBMITTED_DATES = ConcurrentHashMap.newKeySet()` verifying `!DAILY_SUBMITTED_DATES.contains(today)` before any order submission and marking all session candidate trade structs as submitted.
     - Recompiled with JDK 25 (`tools/jdk25/Contents/Home/bin/javac`), packaged and deployed extension JAR `/Users/novo/MotiveWave Extensions/LucidPropEnsemble.jar` (64 KB).
     - Verified 100% green via `python scripts/check_morning_readiness.py`, `tests/test_institutional_metrics.py` (16/16), and MotiveWave test suites (28/28).
+  - **Option B: Declarative Confluence Scoring Cards & Decision Trace Architecture (`backtest/confluence.py`)**:
+    - Created modular, declarative rule engine inspired by IAF architecture: `Operator` enum, `EvaluationContext` with historical and current bar values, composable Boolean expressions (`Condition`, `AllOf`, `AnyOf`, `Not`, `AtLeast`).
+    - Engineered multi-tier weighting and veto protection: `PrimaryGroup`, `SecondaryGroup`, and `VetoGroup`. Any triggered veto rule overrides total score and invalidates setup.
+    - Designed explainable, audit-ready `DecisionTrace` with JSON serialization capturing all evaluated conditions, threshold diffs, rule scores, and veto flags.
+    - Verified 5/5 unit tests in `tests/test_confluence.py`.
+  - **Option B: Native Asymmetry Model Context Protocol (MCP) Server Expansion (`scripts/asymmetry_mcp_server.py`)**:
+    - Doubled native MCP server tool registry from 5 to 10 tools, adding:
+      1. `asymmetry_get_equity_curve`: Downsampled daily equity, HWM, and drawdown trajectory.
+      2. `asymmetry_get_trades`: Filterable trade execution ledger (direction, outcome, limit, sort).
+      3. `asymmetry_get_monthly_returns`: 12-month calendar return grid with annual totals and win rates.
+      4. `asymmetry_rank_strategies`: Cross-sectional quantitative leaderboard ranking registered runs.
+      5. `asymmetry_log_research_note`: Direct LLM agent logging to `wiki/log.md` with grep-parseable headers.
+    - Verified 14/14 unit tests in `tests/test_asymmetry_mcp_server.py` under standard JSON-RPC 2.0 stdio streaming.
+  - **Option B: Karpathy LLM Wiki Architecture Documentation**:
+    - Authored comprehensive topic page `wiki/strategies/declarative-confluence-engine.md`.
+    - Updated catalog `wiki/index.md` and active context `wiki/hot.md`.
 
 - [x] **Milestone 6: Institutional Quantitative Framework Upgrade (98 Metrics, .obtf Bundles & MCP Server)**:
   - **Step 1: 98 Institutional Metrics Engine (`backtest/metrics.py`)**: Vectorized pure-Python analytics covering Return Dynamics (10 + Benchmark Relatives), Risk-Adjusted Ratios (14: Sortino, Calmar, Omega, Gain-to-Pain, UPI, Burke, Kappa 3), Drawdown Topology (12: CDD, Ulcer, Pain Index), Tail Risk (10: Cornish-Fisher VaR, CVaR 95/99), Microstructure (16: Expectancy, Trimmed PF ex-2%, Top 5 Win Dominance, Top 5% Adversarial Truncation), Statistical Moments (8: Skew, Kurtosis, SQN, Jarque-Bera), Multiple Testing (6: PSR, DSR, EVT SR*), Sizing/Ruin (8: Full/Half Kelly, Gambler's Ruin), and Passive Benchmark Relatives (Beta, Alpha, Correlation, Tracking Error, Up/Down Capture).
@@ -117,6 +133,7 @@ The active production baseline is the **LucidFlex Tri-Asset Ensemble** (`lucid_f
         - Statistical Insignificance: t-statistic = 0.92, p-value = 0.3578 (35.8% chance of pure random noise).
         - Severe Capital Inefficiency: 9 trades/year (0.75 tr/mo), EV = $0.15/day, 2 consecutive losing years (2024 PF 0.52, 2025 PF 0.84), 80.8% underwater time, 980-day recovery.
         - Outlier Dominance: Top 3 trades = 71.6% of net profit; ex-top 5% PF collapses to 1.09. Failed Idea #34.
+    11. Candidate S14 / H32 (13:00 ET Post-Lunch Institutional Capital Deployment `MNQ`): **Falsified & Vetoed by Red-Team Auditor**. Full walkforward across 430 trades generated PF 0.75, Net -$2,711.00, Win Rate 32.6%, MaxDD -$2,849.00 (Sharpe -1.86). In-Sample PF 0.83 (-$1,213.00, failing Belfort Step 04 PF >= 1.25), Out-of-Sample PF 0.59 (-$1,498.00). Negative in 4 of 6 years. Stops hit 188 times vs targets 55 times (3.4:1 stop-to-target realization ratio). 13:00 false breakouts caused by midday liquidity vacuum and 0DTE gamma pinning. Failed Idea #35.
   - Recorded verified runs into `results/backtest_provenance.db` under quarantined `StrategyTier.CANDIDATE`. Baseline tier remains 100% untainted.
 
 - **2026-11-06 (Session M5 - CQG Broker Execution Synchronizer & Real Trade Ingestion)**:

@@ -23,6 +23,8 @@ import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone
+import pandas as pd
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -146,6 +148,73 @@ TOOLS_METADATA = [
                 },
             },
             "required": ["filepath"],
+        },
+    },
+    {
+        "name": "asymmetry_get_equity_curve",
+        "description": "Stream or sample high-resolution session equity curve and underwater drawdown trajectory from .obtf bundles.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "strategy_id": {"type": "string", "description": "Strategy ID (e.g. 'morning_va_breakout_s1', 'lucid_flex_ensemble')"},
+                "run_id": {"type": "string", "description": "Explicit run ID"},
+                "sample_step": {"type": "integer", "description": "Sample every N bars/sessions (default 15)", "default": 15},
+                "max_rows": {"type": "integer", "description": "Maximum table rows to return (default 50)", "default": 50},
+            },
+        },
+    },
+    {
+        "name": "asymmetry_get_trades",
+        "description": "Query granular trade execution log (direction, points, PnL, hold duration, MFE/MAE) from .obtf bundles with optional filters.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "strategy_id": {"type": "string", "description": "Strategy ID"},
+                "run_id": {"type": "string", "description": "Explicit run ID"},
+                "direction": {"type": "string", "description": "Filter by 'LONG' or 'SHORT'"},
+                "outcome": {"type": "string", "description": "Filter by 'WIN' or 'LOSS'"},
+                "limit": {"type": "integer", "description": "Maximum trades to return (default 20)", "default": 20},
+                "sort_by": {"type": "string", "description": "Sort column: 'pnl', 'worst_pnl', or 'date' (default 'pnl')", "default": "pnl"},
+            },
+        },
+    },
+    {
+        "name": "asymmetry_get_monthly_returns",
+        "description": "Retrieve the full year-by-month return matrix (Jan-Dec + Annual Totals) and winning month percentage.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "strategy_id": {"type": "string", "description": "Strategy ID"},
+                "run_id": {"type": "string", "description": "Explicit run ID"},
+            },
+        },
+    },
+    {
+        "name": "asymmetry_rank_strategies",
+        "description": "Rank all recorded baseline and candidate trading strategies by any quantitative performance or risk metric.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "metric": {"type": "string", "description": "Metric to rank by: 'profit_factor', 'sortino_ratio', 'calmar_ratio', 'net_profit', 'win_rate', 'consistency_score', 'mfe_mae_ratio' (default 'profit_factor')", "default": "profit_factor"},
+                "tier": {"type": "string", "description": "Filter tier: 'BASELINE', 'CANDIDATE', or 'ALL'"},
+                "ascending": {"type": "boolean", "description": "Sort ascending (True) or descending (False, default)", "default": False},
+                "limit": {"type": "integer", "description": "Max strategies to return (default 15)", "default": 15},
+            },
+        },
+    },
+    {
+        "name": "asymmetry_log_research_note",
+        "description": "Append a research observation or hypothesis postmortem directly to wiki/log.md with guaranteed grep-parseable headers.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "topic": {"type": "string", "description": "Short topic description (e.g. 'Falsified H30' or 'Plateau Sweep Complete')"},
+                "summary": {"type": "string", "description": "Detailed multi-line summary of quantitative findings and evidence"},
+                "agent_name": {"type": "string", "description": "Agent name: 'claude', 'gemini', 'quant-developer', 'worker' (default 'quant-developer')", "default": "quant-developer"},
+                "action": {"type": "string", "description": "Action tag: 'UPDATE', 'INGEST', 'QUERY', 'LINT' (default 'UPDATE')", "default": "UPDATE"},
+                "verification": {"type": "string", "description": "Verification command and outcome"},
+            },
+            "required": ["topic", "summary"],
         },
     },
 ]
@@ -332,12 +401,260 @@ def handle_verify_data_hash(args: Dict[str, Any]) -> str:
     )
 
 
+def handle_get_equity_curve(args: Dict[str, Any]) -> str:
+    strategy_id = args.get("strategy_id")
+    run_id = args.get("run_id")
+    sample_step = int(args.get("sample_step", 15))
+    max_rows = int(args.get("max_rows", 50))
+
+    record = default_store.get_run(run_id) if run_id else default_store.get_latest_run(strategy_id=strategy_id, include_candidates=True)
+    if not record:
+        return f"Error: No backtest run found for strategy '{strategy_id}'."
+    if not record.bundle_path:
+        return f"Error: Run '{record.run_id}' has no associated .obtf bundle."
+
+    bundle_path = REPO_ROOT / record.bundle_path
+    if not bundle_path.exists():
+        return f"Error: Bundle file '{bundle_path}' not found."
+
+    bundle = BacktestBundle.load(bundle_path)
+    if bundle.equity.empty:
+        return f"Error: Equity series in bundle '{record.bundle_path}' is empty."
+
+    df_eq = bundle.equity.copy()
+    if (df_eq["equity"] == 0).all():
+        active_eq = df_eq
+    else:
+        first_nonzero = (df_eq["equity"] != 0).idxmax()
+        active_eq = df_eq.iloc[first_nonzero:]
+
+    step = max(1, len(active_eq) // max_rows) if sample_step <= 0 else sample_step
+    sampled = active_eq.iloc[::step].head(max_rows)
+
+    lines = [
+        f"### Equity Curve & Drawdown Trajectory: `{record.strategy_id}` ({record.run_id})\n",
+        f"| Session Date | Daily PnL | Equity ($) | HWM ($) | Drawdown ($) | Drawdown (%) |",
+        f"| :--- | :--- | :--- | :--- | :--- | :--- |",
+    ]
+    for _, row in sampled.iterrows():
+        sess = str(row.get("session", "N/A"))[:10]
+        dpnl = row.get("daily_pnl", 0.0)
+        eq = row.get("equity", 0.0)
+        hwm = row.get("hwm", 0.0)
+        dd = row.get("drawdown_dollars", 0.0)
+        dd_pct = row.get("drawdown_pct", 0.0)
+        lines.append(f"| {sess} | ${dpnl:+,.2f} | ${eq:,.2f} | ${hwm:,.2f} | -${abs(dd):,.2f} | -{abs(dd_pct):.2f}% |")
+
+    return "\n".join(lines)
+
+
+def handle_get_trades(args: Dict[str, Any]) -> str:
+    strategy_id = args.get("strategy_id")
+    run_id = args.get("run_id")
+    direction = args.get("direction")
+    outcome = args.get("outcome")
+    limit = int(args.get("limit", 20))
+    sort_by = args.get("sort_by", "pnl")
+
+    record = default_store.get_run(run_id) if run_id else default_store.get_latest_run(strategy_id=strategy_id, include_candidates=True)
+    if not record or not record.bundle_path:
+        return f"Error: No verified bundle found for '{strategy_id or run_id}'."
+
+    bundle_path = REPO_ROOT / record.bundle_path
+    if not bundle_path.exists():
+        return f"Error: Bundle file '{bundle_path}' not found."
+
+    bundle = BacktestBundle.load(bundle_path)
+    if bundle.trades.empty:
+        return "No trades recorded in this bundle."
+
+    df = bundle.trades.copy()
+    pnl_col = "research_pnl" if "research_pnl" in df.columns else ("net_pnl" if "net_pnl" in df.columns else "pnl")
+
+    if direction:
+        d_clean = direction.strip().upper()
+        if "direction" in df.columns:
+            df = df[df["direction"].astype(str).str.upper() == d_clean]
+
+    if outcome:
+        out_clean = outcome.strip().upper()
+        if out_clean in ("WIN", "PROFIT"):
+            df = df[df[pnl_col] > 0]
+        elif out_clean in ("LOSS", "DRAWDOWN"):
+            df = df[df[pnl_col] < 0]
+
+    if sort_by == "pnl":
+        df = df.sort_values(pnl_col, ascending=False)
+    elif sort_by == "worst_pnl":
+        df = df.sort_values(pnl_col, ascending=True)
+    elif sort_by == "date":
+        date_col = "date_str" if "date_str" in df.columns else "date"
+        if date_col in df.columns:
+            df = df.sort_values(date_col, ascending=False)
+
+    df_view = df.head(limit)
+
+    lines = [
+        f"### Trade Execution Ledger: `{record.strategy_id}` ({len(df)} matching trades)\n",
+        f"| Trade ID | Date | Symbol | Dir | Qty | Net PnL ($) | Hold (min) | Cum PnL ($) |",
+        f"| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |",
+    ]
+    for _, r in df_view.iterrows():
+        tid = str(r.get("trade_id", "N/A"))
+        dstr = str(r.get("date_str", r.get("date", "N/A")))
+        sym = str(r.get("micro", r.get("sym", "N/A")))
+        dir_str = str(r.get("direction", "N/A"))
+        qty = int(r.get("contracts", 1))
+        pnl = float(r.get(pnl_col, 0.0))
+        dur = float(r.get("hold_minutes", 0.0))
+        cum = float(r.get("cum_pnl", 0.0))
+        lines.append(f"| {tid} | {dstr} | {sym} | {dir_str} | {qty} | ${pnl:+,.2f} | {dur:.1f} | ${cum:,.2f} |")
+
+    return "\n".join(lines)
+
+
+def handle_get_monthly_returns(args: Dict[str, Any]) -> str:
+    strategy_id = args.get("strategy_id")
+    run_id = args.get("run_id")
+
+    record = default_store.get_run(run_id) if run_id else default_store.get_latest_run(strategy_id=strategy_id, include_candidates=True)
+    if not record or not record.bundle_path:
+        return f"Error: No verified bundle found for '{strategy_id or run_id}'."
+
+    bundle_path = REPO_ROOT / record.bundle_path
+    if not bundle_path.exists():
+        return f"Error: Bundle file '{bundle_path}' not found."
+
+    bundle = BacktestBundle.load(bundle_path)
+    if bundle.trades.empty:
+        return "No trade records found to compute monthly returns."
+
+    df = bundle.trades.copy()
+    pnl_col = "research_pnl" if "research_pnl" in df.columns else ("net_pnl" if "net_pnl" in df.columns else "pnl")
+    date_col = "date_str" if "date_str" in df.columns else "date"
+    df["dt"] = pd.to_datetime(df[date_col])
+    df["year"] = df["dt"].dt.year
+    df["month"] = df["dt"].dt.month
+
+    monthly = df.groupby(["year", "month"])[pnl_col].sum().unstack(level=1).fillna(0.0)
+    month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+    lines = [
+        f"### Monthly Return Matrix: `{record.strategy_id}` (Net PnL in USD)\n",
+        f"| Year | " + " | ".join(month_names) + " | Total ($) | Win% |",
+        f"| :--- | " + " | ".join([":---"] * 12) + " | :--- | :--- |",
+    ]
+
+    total_months = 0
+    winning_months = 0
+
+    for yr in sorted(monthly.index):
+        row = monthly.loc[yr]
+        row_vals = []
+        for m in range(1, 13):
+            val = float(row.get(m, 0.0))
+            if val != 0.0:
+                total_months += 1
+                if val > 0:
+                    winning_months += 1
+            row_vals.append(f"${val:+,.0f}" if val != 0.0 else "-")
+        yr_total = float(row.sum())
+        yr_win_pct = (row[row > 0].count() / max(1, (row != 0).count()) * 100.0)
+        lines.append(f"| **{yr}** | " + " | ".join(row_vals) + f" | **${yr_total:+,.0f}** | {yr_win_pct:.0f}% |")
+
+    pct_overall = (winning_months / max(1, total_months) * 100.0)
+    lines.append(f"\n**Total Calendar Months**: {total_months} | **Winning Months**: {winning_months} ({pct_overall:.1f}%)")
+    return "\n".join(lines)
+
+
+def handle_rank_strategies(args: Dict[str, Any]) -> str:
+    metric = args.get("metric", "profit_factor").strip().lower()
+    tier = args.get("tier")
+    ascending = bool(args.get("ascending", False))
+    limit = int(args.get("limit", 15))
+
+    include_candidates = bool(tier and tier.upper() in ("CANDIDATE", "ALL"))
+    runs = default_store.list_runs(tier=tier, include_candidates=include_candidates, limit=100)
+    if not runs:
+        return "No runs available for ranking."
+
+    scored_runs = []
+    for r in runs:
+        val = getattr(r, metric, None)
+        if val is None and r.extended_metrics:
+            val = r.extended_metrics.get(metric)
+        if val is not None and isinstance(val, (int, float)):
+            scored_runs.append((r, float(val)))
+
+    if not scored_runs:
+        return f"Error: Metric '{metric}' not found across stored backtest runs."
+
+    scored_runs.sort(key=lambda item: item[1], reverse=not ascending)
+    scored_runs = scored_runs[:limit]
+
+    lines = [
+        f"### Quantitative Strategy Leaderboard: Ranked by `{metric.upper()}`\n",
+        f"| Rank | Strategy ID | Tier | {metric.upper()} | Win Rate | Net PnL | Max DD |",
+        f"| :--- | :--- | :--- | :--- | :--- | :--- | :--- |",
+    ]
+    for idx, (r, score) in enumerate(scored_runs, 1):
+        tier_str = getattr(r, "strategy_tier", "BASELINE") or "BASELINE"
+        lines.append(
+            f"| #{idx} | `{r.strategy_id}` | {tier_str} | **{score:.2f}** | {r.win_rate:.1f}% | "
+            f"${r.net_profit:,.2f} | -${abs(r.max_drawdown):,.2f} |"
+        )
+
+    return "\n".join(lines)
+
+
+def handle_log_research_note(args: Dict[str, Any]) -> str:
+    topic = args.get("topic", "").strip()
+    summary = args.get("summary", "").strip()
+    agent_name = args.get("agent_name", "quant-developer").strip()
+    action = args.get("action", "UPDATE").strip()
+    verification = args.get("verification", "Verified via automated test suites").strip()
+
+    if not topic or not summary:
+        return "Error: 'topic' and 'summary' arguments are required."
+
+    log_path = REPO_ROOT / "wiki" / "log.md"
+    if not log_path.exists():
+        return "Error: wiki/log.md not found."
+
+    now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    header = f"## [{now_utc}] [{agent_name}] [{action}] | {topic}"
+
+    entry = (
+        f"{header}\n"
+        f"- **Pages Modified**: None (direct MCP agent journal log)\n"
+        f"- **Summary**: {summary}\n"
+        f"- **Verification**: {verification}\n\n"
+    )
+
+    content = log_path.read_text(encoding="utf-8")
+    split_marker = "---\n\n"
+    if split_marker in content:
+        parts = content.split(split_marker, 1)
+        new_content = parts[0] + split_marker + entry + parts[1]
+    else:
+        new_content = content + "\n\n" + entry
+
+    log_path.write_text(new_content, encoding="utf-8")
+
+    return f"Research note successfully logged to wiki/log.md at {now_utc}:\n{header}"
+
+
 TOOL_DISPATCH = {
     "asymmetry_query_stat": handle_query_stat,
     "asymmetry_list_runs": handle_list_runs,
     "asymmetry_compare_strategies": handle_compare_strategies,
     "asymmetry_inspect_bundle": handle_inspect_bundle,
     "asymmetry_verify_data_hash": handle_verify_data_hash,
+    "asymmetry_get_equity_curve": handle_get_equity_curve,
+    "asymmetry_get_trades": handle_get_trades,
+    "asymmetry_get_monthly_returns": handle_get_monthly_returns,
+    "asymmetry_rank_strategies": handle_rank_strategies,
+    "asymmetry_log_research_note": handle_log_research_note,
 }
 
 

@@ -39,6 +39,12 @@ This ledger is an append-only record of all research hypotheses, sizing policies
 27. [H23: COMEX Gold Cash Open Drive (08:20 ET on MGC)](#27-h23-comex-gold-cash-open-drive-0820-et-on-mgc-2026-11-07)
 28. [H24: 60-Minute Initial Balance Range Extension (10:30 ET on MES/MNQ)](#28-h24-60-minute-initial-balance-range-extension-1030-et-on-mesmnq-2026-11-07)
 29. [H25: 15:50 ET NYSE Market-On-Close (MOC) Imbalance Drive (MNQ/MES)](#29-h25-1550-et-nyse-market-on-close-moc-imbalance-drive-mnqmes-2026-11-07)
+30. [H26: European Cash Close Rotation (11:15–11:45 ET on MES/MNQ)](#30-h26-european-cash-close-rotation-11151145-et-on-mesmnq-2026-11-07)
+31. [H27: Dalton's Overnight Inventory Imbalance Correction (09:35 ET on MES/MNQ)](#31-h27-daltons-overnight-inventory-imbalance-correction-0935-et-on-mesmnq-2026-11-07)
+32. [H28: Micro Gold Morning Value Area Breakout (09:45 ET on MGC)](#32-h28-micro-gold-morning-value-area-breakout-0945-et-on-mgc-2026-11-07)
+33. [H29: WTI Crude Oil NYMEX Settlement Auction Imbalance (14:27 ET on MCL)](#33-h29-wti-crude-oil-nymex-settlement-auction-imbalance-1427-et-on-mcl-2026-11-07)
+34. [H30: Small-Cap Beta Diffusion Lag (10:00 ET on M2K)](#34-h30-small-cap-beta-diffusion-lag-1000-et-on-m2k-2026-11-07)
+35. [H32: Post-Lunch Institutional Capital Deployment (13:00 ET on MNQ)](#35-h32-post-lunch-institutional-capital-deployment-1300-et-on-mnq-2026-11-07)
 
 ---
 
@@ -330,5 +336,58 @@ This ledger is an append-only record of all research hypotheses, sizing policies
   - MNQ Standalone: 293 trades, PF 0.73, Net -$3,860.82, WR 37.5%, MaxDD -$4,633.04. Negative every year (2021: 0.77 PF; 2022: 0.73; 2023: 0.75; 2024: 0.47; 2025: 0.93; 2026: 0.82). Stop loss hit 150 times vs target 81 times.
 - **Structural Root Cause**: In modern electronic futures (2021–2026), overnight Globex trading is not amateur retail inventory that gets bullied by locals at the cash open. Heavy overnight volume imbalances (>= 85%) reflect macro repricing and institutional flow. Attempting to fade one-sided overnight markets back to yesterday's settlement price runs directly into opening institutional continuation drives; stops are triggered at a 2:1 ratio over target fills.
 - **Standing Rule**: Standalone overnight inventory gap-fade strategies back to prior settlement without intraday liquidity exhaustion confirmation are permanently rejected.
+
+### 32. H28: Micro Gold Morning Value Area Breakout (09:45 ET on MGC) (2026-11-07)
+- **Evaluation Date**: 2026-11-07
+- **Author / Agent**: Quantitative Research Team
+- **Core Premise**: Applying Strategy 1 canonical 09:45 ET Value Area breakout mechanics (opening drive outside prior 70% Value Area with overnight gap) to Micro Gold (`MGC`).
+- **Sample/Artifact**: 367 trades across 2021–2026 (`gc_1m_2020_2026_et.parquet` SHA-256: `4be8c9f73920d9ebb28609431869231ac49ebd43dd14b48e0f6a05a84763b3df`). Run ID: `candidate_gold_va_breakout_s11_2021_2026`.
+- **Empirical Failure Evidence**: 367 trades generated Profit Factor 1.02, Net $266.42, Win Rate 47.14%, Max Drawdown -$916.46. In-Sample (2021–2024) was negative (243 trades, PF 0.91, Net -$612.82), completely failing Belfort Step 04 (PF >= 1.25). Suffered active `OUTLIER_DOMINANCE` warning (single largest winning trade was 66.3% of cumulative net profit).
+- **Structural Root Cause**: The 09:30 ET US equity cash open is not the primary institutional benchmark for Gold. The true global institutional pricing anchor for gold is the LBMA London PM Fix auction at 10:00 AM ET (15:00 London). Between 09:30 and 10:00 ET, bullion banks accumulate and absorb inventory ahead of the Fix, creating 2-sided whip-chops that erode breakouts. That is why Strategy 3 at 10:15 ET (post-Fix) succeeds (PF 1.59), while entering at 09:45 ET fails (PF 1.02).
+- **Standing Rule**: Standalone 09:45 ET Value Area breakouts on Gold prior to the 10:00 AM ET LBMA PM Fix auction settlement are permanently rejected.
+
+### 33. H29: WTI Crude Oil NYMEX Settlement Auction Imbalance (14:27 ET on MCL) (2026-11-07)
+- **Evaluation Date**: 2026-11-07
+- **Author / Agent**: Quantitative Research Team
+- **Core Premise**: Entering momentum at 14:28 ET in the direction of pre-settlement expansion (14:20–14:27 ET) or fading the post-settlement close at 14:30 ET during the official NYMEX 2-minute daily settlement window (14:28:00 to 14:30:00 ET) on Micro WTI Crude Oil (`MCL`).
+- **Sample/Artifact**: 365 trades across 2021–2026 (`cl_1m_2020_2026_et.parquet` SHA-256: `7f99fefece90be3114b7eb39060a5fe251038700a7238d3e1caac4f5909d1c90`). Run ID: `candidate_crude_settlement_s12_2021_2026`.
+- **Empirical Failure Evidence**: Both variants failed decisively across the 5.8-year walkforward:
+  - Variant 1 (Drive Into Settlement 14:28–14:30): 365 trades, Profit Factor 0.50, Net -$1,318.60, Win Rate 33.97%, Max Drawdown -$1,430.36. Negative in 5 of 6 years (2021: 0.21 PF; 2022: 0.78; 2023: 0.39; 2024: 0.20; 2025: 0.18).
+  - Variant 2 (Post-Settlement Fade 14:30–14:35): 365 trades, Profit Factor 0.48, Net -$1,392.60, Win Rate 36.44%, Max Drawdown -$1,378.12. Negative every single year.
+- **Structural Root Cause**: While trading volume surges 600% during 14:28–14:30 ET (reaching 2,600 contracts/min), the order flow is almost entirely dominated by Trade-at-Settlement (TAS) block crossing between commercial market makers. These bilateral block crossings generate massive volume with virtually zero directional price displacement. The 2-minute adverse friction ($3.24 RT per micro) completely consumes the tiny 3–4 cent micro-excursions, collapsing win rates to 34%–36%.
+- **Standing Rule**: Standalone 14:28 ET NYMEX settlement momentum or fade strategies on Crude Oil are permanently rejected.
+
+### 34. H30: Small-Cap Beta Diffusion Lag (10:00 ET on M2K) (2026-11-07)
+- **Evaluation Date**: 2026-11-07
+- **Author / Agent**: Red-Team Quantitative Adversary (`adversarial_auditor`)
+- **Core Premise**: Entering M2K (Russell 2000 micro) at 10:01 ET in the direction of 09:30–10:00 ET broad market (ES/NQ) aligned thrust when M2K has captured <= 60% of its historical rolling 20-day beta-expected return (academic lead-lag hypothesis: Hou 2007, Lo & MacKinlay 1990).
+- **Sample/Artifact**: 52 trades across 2021–2026 (`rty_1m_2020_2026_et.parquet` SHA-256: `2fbb57ad0514766428aa5fd97376a70e516acd444c659ba17e90bbd8a65c544b`). Provenance Run ID: `candidate_small_cap_diffusion_s4_2021_2026`. Audit script: `scripts/red_team_audit_small_cap_diffusion_s4.py`.
+- **Empirical Failure Evidence**:
+  - **Belfort Step 07 Parameter Plateau Cliff**: Stop-loss sensitivity sweep (+12.5% perturbation to 9.0 points) caused net PnL to drop from $326.10 down to $220.60, yielding a Stability Ratio of **0.68x** (strictly violating the mandatory >= 0.70x plateau threshold).
+  - **Statistical Insignificance**: t-statistic of **0.92** with a p-value of **0.3578** (35.8% probability of pure random noise; fails to reject null hypothesis $H_0$ at $p < 0.05$).
+  - **Sample Size & Capital Inefficiency**: Only 52 trades over 5.8 years (~9.0 trades/year; ~0.75 trades/month). Generated just +$326.10 cumulative net profit over 2,126 calendar days ($0.15/day).
+  - **Multi-Year Regimes & Inversion**: Suffered two consecutive losing years in 2024 (7 trades, PF 0.52, -$96.40 net) and 2025 (9 trades, PF 0.84, -$34.30 net). In the March 2023 SVB banking crisis, it went 0-for-1 (-$42.20).
+  - **Outlier Concentration**: Top 3 trades account for 71.6% of cumulative net profit ($233.40 / $326.10). Truncating the top 5% winning trades collapses Net PnL to $92.70 (PF 1.09).
+  - **Underwater Drawdown Topology**: Spent 80.8% of trades underwater with a longest continuous drawdown of 980 calendar days (2.7 years).
+- **Structural Root Cause**: While lead-lag information diffusion from large caps to small caps is documented in academic daily/weekly portfolios (Hou 2007), at the 10:00 AM intraday horizon it does not yield an executable retail edge. Modern algorithmic market makers and multi-asset ETF arbitrage desks (IWM vs SPY/QQQ) arbitrage intraday dislocations within milliseconds. When Russell 2000 severely lags broad market thrusts at 10:00 ET, it is not a "coiled spring" awaiting diffusion—it reflects real structural divergence (e.g., regional bank credit risk, higher interest rate debt-refinancing burdens, or idiosyncratic small-cap weakness).
+- **Standing Rule**: Small-cap intraday beta diffusion / lead-lag strategies without real-time order-book absorption confirmation are permanently rejected.
+
+### 35. H32: Post-Lunch Institutional Capital Deployment (13:00 ET on MNQ) (2026-11-07)
+- **Evaluation Date**: 2026-11-07
+- **Author / Agent**: Red-Team Quantitative Adversary (`adversarial_auditor`)
+- **Core Premise**: Entering directional momentum breakouts of the 12:00–12:59 ET NY lunch compression range at 13:00 ET on MNQ under the hypothesis that institutional trading desks deploy afternoon risk capital following the lunch lull.
+- **Sample/Artifact**: 430 trades across 2021–2026 (`nq_1m_2017_2026_cqg_et.parquet` SHA-256: `c9d78a716f5afe040c590fc974e980edfee029081ba47875f041b034c38b737a`). Evaluation script: `scripts/research_lunch_compression_s6.py`.
+- **Empirical Failure Evidence**: 430 trades produced Profit Factor 0.75, Net -$2,711.00, Win Rate 32.56%, Max Drawdown -$2,849.00, Sharpe -1.86:
+  - In-Sample (2021–2024): 295 trades, PF 0.83, Net -$1,213.00, MaxDD -$1,907.90. Decisively failed Belfort Step 04 threshold (PF >= 1.25).
+  - Out-of-Sample (2025–2026): 135 trades, PF 0.59, Net -$1,498.00, Win Rate 23.0%, MaxDD -$1,643.00. Severe out-of-sample breakdown.
+  - Yearly Breakdown: Net negative in 4 of 6 years (2021: PF 0.58, -$788.80; 2022: PF 0.63, -$793.70; 2025: PF 0.58, -$677.50; 2026: PF 0.59, -$820.50).
+  - Directional Symmetry: Long PF 0.79 (-$1,255.00), Short PF 0.71 (-$1,456.00). Both sides heavily negative.
+  - Microstructural Asymmetry: Stop loss hit 188 times (43.7%, -$10,227.20) vs profit target hit only 55 times (12.8%). Stops triggered at a 3.4:1 ratio over target fills. Breakeven stops hit 77 times (17.9%).
+- **Structural Root Cause**: The 13:00 ET "post-lunch breakout" is a retail trading myth. Institutional algorithmic execution mandates (VWAP/TWAP) operate continuously throughout the day; aggressive afternoon institutional volume does not mobilize until 15:00 ET (European fixing) and 15:45 ET (NYSE MOC imbalances). At 13:00 ET, European markets have already closed (11:30 ET), leaving the order book in low-liquidity midday doldrums dominated by 0DTE options dealer gamma pinning. Breakouts of the 12:00–13:00 range consistently encounter dealer mean-reversion absorption, producing false breakouts that trap breakout traders and whip directly into stop losses.
+- **Standing Rule**: Standalone breakout strategies trading out of the 12:00–13:00 ET lunch compression prior to 15:00 ET without external macro catalysts are permanently rejected.
+
+
+
+
 
 

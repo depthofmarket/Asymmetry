@@ -15,6 +15,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import sqlite3
 import subprocess
 from dataclasses import asdict, dataclass, field
@@ -276,9 +277,11 @@ class ProvenanceStore:
         if total_trades < 30:
             warnings.append(f"LOW_SAMPLE_SIZE: N={total_trades} trades (< 30 required for statistical power)")
 
-        slip_lower = str(slippage_model or "").lower()
-        comm_lower = str(commission_model or "").lower()
-        if not is_net or "0" in slip_lower or "zero" in slip_lower or "none" in slip_lower or "none" in comm_lower:
+        slip_lower = str(slippage_model or "").lower().strip()
+        comm_lower = str(commission_model or "").lower().strip()
+        has_zero_slip = bool(re.search(r'\b0\s*(tick|pt|point|cent|dollar|usd|\$)?\b|zero|none', slip_lower)) if slip_lower else True
+        has_zero_comm = bool(re.search(r'\b0\s*(dollar|cent|usd|\$)?\b|zero|none', comm_lower)) if comm_lower else True
+        if not is_net or has_zero_slip or has_zero_comm:
             warnings.append("GROSS_EXECUTION: Reported without realistic slippage and/or commission deductions")
 
         if net_profit > 0 and largest_win > 0:

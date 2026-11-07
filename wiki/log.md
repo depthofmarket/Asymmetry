@@ -10,6 +10,23 @@ This is an append-only, chronological journal recording all agent actions, docum
 
 ---
 
+## [2026-11-07 16:50:00 UTC] [gemini] [UPDATE] | Option B: Declarative Confluence Scoring Cards & Native MCP Server Expansion
+- **Pages Modified**:
+  - `backtest/confluence.py` (created declarative confluence scoring cards and decision trace engine)
+  - `tests/test_confluence.py` (added unit tests verifying logic gates, cross operators, veto overrides, and traces)
+  - `scripts/asymmetry_mcp_server.py` (expanded native MCP server from 5 to 10 tools with JSON-RPC schemas)
+  - `tests/test_asymmetry_mcp_server.py` (added unit tests verifying all 10 MCP tools and stdio JSON-RPC streaming)
+  - `wiki/strategies/declarative-confluence-engine.md` (authored topic page detailing confluence architecture & MCP protocol)
+  - `wiki/index.md` (cataloged declarative confluence engine topic page)
+  - `wiki/hot.md` (refreshed active context with Option B deliverables)
+  - `wiki/log.md` (recorded operational journal entry)
+- **Summary**: Completed Option B from the strategic roadmap:
+  1. Implemented Declarative Confluence Scoring Cards and explainable Decision Traces in `backtest/confluence.py` inspired by modern algorithmic trading architectures. Features `Operator` enum, `EvaluationContext` with historical bar lookbacks, composable Boolean expressions (`Condition`, `AllOf`, `AnyOf`, `Not`, `AtLeast`), multi-tier weighting (`PrimaryGroup`, `SecondaryGroup`), and hard `VetoGroup` overrides.
+  2. Implemented audit-ready, JSON-serializable `DecisionTrace` capturing all evaluated conditions, threshold differentials, assigned weights, group categorizations, and veto triggers.
+  3. Doubled the Native Asymmetry MCP Server (`scripts/asymmetry_mcp_server.py`) from 5 to 10 tools, adding `asymmetry_get_equity_curve`, `asymmetry_get_trades`, `asymmetry_get_monthly_returns`, `asymmetry_rank_strategies`, and `asymmetry_log_research_note`.
+  4. Fully tested both components: 5/5 passed in `tests/test_confluence.py`, 14/14 passed in `tests/test_asymmetry_mcp_server.py`, with 100% compliance across combined 35 institutional tests.
+- **Verification**: `pytest tests/test_confluence.py tests/test_asymmetry_mcp_server.py tests/test_institutional_metrics.py` passed 35/35 tests in 2.84s. `python scripts/verify_wiki_integrity.py` confirmed 100% compliance across all 15 automated checks.
+
 ## [2026-11-07 16:35:00 UTC] [worker] [UPDATE] | Deep Extraction of IAF Framework: 143-Metric Expansion & MotiveWave Daily Cooldown Lock
 - **Pages Modified**:
   - `backtest/metrics.py` (integrated directional symmetry, MFE/MAE excursions, holding duration asymmetry, and walk-forward consistency)
@@ -384,4 +401,16 @@ This is an append-only, chronological journal recording all agent actions, docum
   4. Discovered fatal fragility: Belfort Step 07 Parameter Plateau Cliff (stop-loss perturbation +12.5% to 9.0 pts produced Stability Ratio of 0.68x < 0.70x), complete statistical insignificance (t-stat = 0.92, p = 0.3578; 35.8% chance of random noise), unviable trade frequency (9 trades/year = $0.15/day EV), two consecutive losing years (2024 PF 0.52, 2025 PF 0.84), 80.8% underwater duration (980-day recovery), and severe outlier concentration (top 3 trades = 71.6% of net profit).
   5. Issued BINDING VETO and documented detailed autopsy as Entry #34 in `wiki/failed_ideas.md`.
 - **Verification**: `python3 scripts/red_team_audit_small_cap_diffusion_s4.py` completed cleanly. `python3 scripts/verify_wiki_integrity.py` confirmed 15/15 checks clean.
+
+
+## [2026-11-07 16:42:00 UTC] [adversarial-auditor] [VETO] | Evaluated and permanently vetoed Candidate 6 (H32 Post-Lunch Institutional Capital Deployment on MNQ)
+- **Pages Modified**: `wiki/failed_ideas.md`, `wiki/hot.md`, `wiki/log.md`
+- **Summary**:
+  1. Implemented point-in-time backtest for Candidate 6 (H32: 13:00 ET Post-Lunch Institutional Capital Deployment on MNQ following 12:00-12:59 ET lunch compression and 13:00-13:20 ET breakout) in `scripts/research_lunch_compression_s6.py`.
+  2. Recorded candidate walkforward run `candidate_lunch_compression_s6_2021_2026` in `results/backtest_provenance.db` (430 trades, WR 32.6%, PF 0.75, Net -$2,711.00, MaxDD -$2,849.00, Sharpe -1.86).
+  3. Verified Belfort Step 04 In-Sample breach: In-Sample (2021–2024) generated PF 0.83, Net -$1,213.00, failing mandatory PF >= 1.25 threshold. Out-of-Sample degraded to PF 0.59 (-$1,498.00).
+  4. Forensic root cause analysis: 13:00 ET coincides with European cash close liquidity vacuum (11:30 ET) and 0DTE dealer gamma pinning. 13:00 breakouts are false expansions that snap back into the lunch range, triggering stop losses at a 3.4:1 ratio over target fills (188 stops vs 55 targets).
+  5. Issued BINDING VETO and documented detailed autopsy as Entry #35 in `wiki/failed_ideas.md`.
+- **Verification**: `python3 scripts/research_lunch_compression_s6.py` executed cleanly. `python3 scripts/verify_wiki_integrity.py` confirms 15/15 checks clean.
+
 
