@@ -468,6 +468,30 @@ This is an append-only, chronological journal recording all agent actions, docum
 - **Verification**: `python3 scripts/research_gamma_absorption_s8.py` executed cleanly. `python3 scripts/verify_wiki_integrity.py` confirms 15/15 checks clean.
 
 
+## [2026-11-07 17:15:00 UTC] [adversarial-auditor] [VETO] | Evaluated and permanently vetoed Candidates 9, 10, and 11 (H39, H40, H41 Morning Clearing Trilogy)
+- **Pages Modified**: `wiki/failed_ideas.md`, `wiki/hot.md`, `wiki/log.md`
+- **Summary**:
+  1. Implemented point-in-time backtests for Candidate 9 (H39: 09:35 ET Cash Open Thrust on MNQ), Candidate 10 (H40: 09:40 ET Transatlantic Energy Handover on MCL), and Candidate 11 (H41: 09:35 ET LBMA PM Fix Pre-Hedging Drive on MGC).
+  2. Evaluated all candidates across 2021–2026 datasets with realistic transaction friction:
+     - H39 (MNQ 09:35): 147 trades, WR 51.7%, PF 0.79, Net -$910.30. Stops hit at a 3.7:1 ratio over targets (67 stops vs 18 targets). 09:35 buys the exhaustion of the opening uncrossing spike.
+     - H40 (MCL 09:40): 200 trades (Wednesday EIA gated), WR 11.5%, PF 0.03, Net -$710.60. Total loss of capital to equity-energy cross-whipsaws.
+     - H41 (MGC 09:35): 156 trades, WR 48.1%, PF 0.69, Net -$882.40. Pre-fix auction flows are passive two-sided inventory absorption.
+  3. Issued binding vetoes and documented autopsies as Entries #39, #40, and #41 in `wiki/failed_ideas.md`.
+- **Verification**: `python3 scripts/research_cash_open_thrust_s9.py` executed. `python3 scripts/verify_wiki_integrity.py` confirms 15/15 checks clean.
+
+
+## [2026-11-07 17:22:00 UTC] [adversarial-auditor] [VETO] | Evaluated and permanently vetoed Candidates A and B (H42 80% Rule and H43 Inside Day Breakout)
+- **Pages Modified**: `wiki/failed_ideas.md`, `wiki/hot.md`, `wiki/log.md`
+- **Summary**:
+  1. Implemented point-in-time backtests for Candidate A (H42: Peter Steidlmayer / Jim Dalton Market Profile 80% Value Area Re-Acceptance Rotation on MNQ/MES) and Candidate B (H43: Toby Crabel Multi-Session Inside-Day Coiled Spring Breakout on MNQ).
+  2. Evaluated all candidates across 2021–2026 datasets with full transaction friction:
+     - H42 (80% Rule): On MNQ, 267 trades produced WR 50.9%, PF 0.98, Net -$184.80. On MES (0.25 pt bins), 223–260 trades produced WR 47.3%–48.7%, PF 0.73–0.79, Net -$1,069 to -$1,575. Dalton's "80% probability" is mathematically fictitious in modern electronic futures; boundary re-entry creates random chop (47%–51% win rate).
+     - H43 (Inside Day): Across 85 trades on MNQ, tight/medium stops generated PF 0.61–0.84 (Net -$491 to -$987), while wide stops generated PF 1.09 (+$278 over 5.8 yrs = $48/yr), failing Belfort Step 04 (PF >= 1.25). Inside Day extremes are high-frequency liquidity sweep traps.
+  3. Issued binding vetoes and documented autopsies as Entries #42 and #43 in `wiki/failed_ideas.md`.
+- **Verification**: `python3 scripts/verify_wiki_integrity.py` confirms 15/15 checks clean.
+
+
+
 
 
 
