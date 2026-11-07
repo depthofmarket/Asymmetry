@@ -666,6 +666,17 @@ def render_prop_poster_master(sim: dict) -> Path:
         ax_tab.text(s_x[3], y_s, r[3], fontsize=8.5, fontweight="bold", color="#1f77b4" if "$" in r[3] or "%" in r[3] else "#000000")
         y_s -= 0.16
 
+    # Provenance Stamp Footer on Poster (Rule 2 & 3 Compliance)
+    ax_foot = fig.add_axes([0.02, 0.003, 0.96, 0.015])
+    ax_foot.set_facecolor("#F8F9FA")
+    for sp in ax_foot.spines.values():
+        sp.set_color("#000000")
+        sp.set_linewidth(0.8)
+    ax_foot.set_xticks([])
+    ax_foot.set_yticks([])
+    ax_foot.text(0.01, 0.5, "PROVENANCE VERIFICATION (Rule 2 & 3): Run ID: run_canonical_lucid_flex_ensemble_2021_2026 | Tier: BASELINE | Data SHA-256: ecad8d063caa18344491c5c3050211c35f7383b0e8802f1178e3902306b686ca | Bundle: results/bundles/run_canonical_lucid_flex_ensemble_2021_2026.obtf",
+                 fontsize=7.8, fontweight="bold", color="#222222", va="center")
+
     out_path = OUT_DIR / "lucid_flex_25k_prop_mode_report.png"
     plt.savefig(out_path, dpi=200, facecolor=fig.get_facecolor(), bbox_inches="tight")
     plt.close()

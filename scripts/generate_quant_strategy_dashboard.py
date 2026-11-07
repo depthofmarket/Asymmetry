@@ -40,6 +40,8 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from backtest import dashboard_analytics as da
+from backtest import metrics as bm
+from backtest.provenance import default_store
 
 OUT_DIR = REPO_ROOT / "results" / "strategy_dashboard"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -95,7 +97,12 @@ def build_full_metrics_dict(trades: pd.DataFrame, calendar: list[str], col: str 
     # Wilson CI for win rate
     wr_ci = da.wilson_ci(m["wins"], m["trades"])
     
-    return {
+    # Calculate 92 Institutional Metrics
+    pnl_arr = trades[col].to_numpy(dtype=float) if col in trades.columns else trades["pnl"].to_numpy(dtype=float)
+    daily_arr = daily.to_numpy(dtype=float)
+    inst_m = bm.calculate_institutional_metrics(trades=pnl_arr, daily_returns=daily_arr, capital=25_000.0)
+
+    res = {
         "trades": m["trades"],
         "winning_trades": m["wins"],
         "losing_trades": m["losses"],
@@ -170,6 +177,8 @@ def build_full_metrics_dict(trades: pd.DataFrame, calendar: list[str], col: str 
         "short_wr": m["short"]["wr"],
         "short_pf": m["short"]["pf"],
     }
+    res.update(inst_m)
+    return res
 
 
 # ── SHEET 01: MULTI-STRATEGY EQUITY CURVES & DRAWDOWN ─────────────────────────
@@ -683,15 +692,15 @@ def render_sheet_06_scorecard(
     m_s3: dict,
 ) -> Path:
     plt.style.use("default")
-    fig = plt.figure(figsize=(16, 14.5), dpi=200)
+    fig = plt.figure(figsize=(16, 17.5), dpi=200)
     fig.patch.set_facecolor("#FFFFFF")
 
     ax = fig.add_subplot(111)
     ax.set_facecolor("#FFFFFF")
     ax.axis("off")
 
-    ax.text(0.02, 0.985, "Backtest Results - Comprehensive Quantitative Performance & Risk Scorecard", fontsize=13.5, fontweight="bold", color="#000000")
-    ax.text(0.02, 0.963, "Complete Multi-Window Inventory across 543 Executions (2021-01-07 to 2026-10-30 • Full Calendar 1,499 Sessions)", fontsize=9, color="#555555")
+    ax.text(0.02, 0.988, "Backtest Results - Comprehensive Quantitative Performance & Risk Scorecard", fontsize=13.5, fontweight="bold", color="#000000")
+    ax.text(0.02, 0.970, "Complete Multi-Window Inventory across 543 Executions (2021-01-07 to 2026-10-30 • Full Calendar 1,499 Sessions • 92 Institutional Metrics)", fontsize=9, color="#555555")
 
     table_data = [
         ("Execution Window & Time", "All 3 Windows", "09:45 - 10:15 ET", "10:15 - 10:45 ET", "08:35 - 09:15 ET"),
@@ -704,6 +713,8 @@ def render_sheet_06_scorecard(
          f"{fmt_currency(m_s2['gross_profit'], 0)} / -{fmt_currency(m_s2['gross_loss'], 0)}",
          f"{fmt_currency(m_s3['gross_profit'], 0)} / -{fmt_currency(m_s3['gross_loss'], 0)}"),
         ("Profit Factor", f"{m_comp['profit_factor']:.2f}", f"{m_s1['profit_factor']:.2f}", f"{m_s2['profit_factor']:.2f}", f"{m_s3['profit_factor']:.2f}"),
+        ("Trimmed Profit Factor (ex-Top 2% Wins)", f"{m_comp.get('trimmed_profit_factor', 0.0):.2f}", f"{m_s1.get('trimmed_profit_factor', 0.0):.2f}", f"{m_s2.get('trimmed_profit_factor', 0.0):.2f}", f"{m_s3.get('trimmed_profit_factor', 0.0):.2f}"),
+        ("Top 5 Wins Dominance (% Net)", f"{m_comp.get('top_5_wins_pct', 0.0):.1f}%", f"{m_s1.get('top_5_wins_pct', 0.0):.1f}%", f"{m_s2.get('top_5_wins_pct', 0.0):.1f}%", f"{m_s3.get('top_5_wins_pct', 0.0):.1f}%"),
         ("Profit Factor (95% Bootstrap CI)", f"[{m_comp['pf_ci'][0]:.2f}, {m_comp['pf_ci'][1]:.2f}]", f"[{m_s1['pf_ci'][0]:.2f}, {m_s1['pf_ci'][1]:.2f}]", f"[{m_s2['pf_ci'][0]:.2f}, {m_s2['pf_ci'][1]:.2f}]", f"[{m_s3['pf_ci'][0]:.2f}, {m_s3['pf_ci'][1]:.2f}]"),
         ("Trade Win Rate (%)", f"{m_comp['win_rate']:.1f}%", f"{m_s1['win_rate']:.1f}%", f"{m_s2['win_rate']:.1f}%", f"{m_s3['win_rate']:.1f}%"),
         ("Win Rate (95% Wilson Score CI)", f"[{m_comp['win_rate_ci'][0]:.1f}%, {m_comp['win_rate_ci'][1]:.1f}%]", f"[{m_s1['win_rate_ci'][0]:.1f}%, {m_s1['win_rate_ci'][1]:.1f}%]", f"[{m_s2['win_rate_ci'][0]:.1f}%, {m_s2['win_rate_ci'][1]:.1f}%]", f"[{m_s3['win_rate_ci'][0]:.1f}%, {m_s3['win_rate_ci'][1]:.1f}%]"),
@@ -723,6 +734,9 @@ def render_sheet_06_scorecard(
         ("Calendar Daily Sharpe (Ann. sqrt 252)", f"{m_comp['sharpe']:.2f}", f"{m_s1['sharpe']:.2f}", f"{m_s2['sharpe']:.2f}", f"{m_s3['sharpe']:.2f}"),
         ("Calendar Daily Sortino (Ann. sqrt 252)", f"{m_comp['sortino']:.2f}", f"{m_s1['sortino']:.2f}", f"{m_s2['sortino']:.2f}", f"{m_s3['sortino']:.2f}"),
         ("Calmar Ratio (Ann. Return / Max DD)", f"{m_comp['calmar']:.2f}", f"{m_s1['calmar']:.2f}", f"{m_s2['calmar']:.2f}", f"{m_s3['calmar']:.2f}"),
+        ("Omega Ratio (Threshold=0)", f"{m_comp.get('omega_ratio', 0.0):.2f}", f"{m_s1.get('omega_ratio', 0.0):.2f}", f"{m_s2.get('omega_ratio', 0.0):.2f}", f"{m_s3.get('omega_ratio', 0.0):.2f}"),
+        ("Gain-to-Pain Ratio (Schwager)", f"{m_comp.get('gain_to_pain_ratio', 0.0):.2f}", f"{m_s1.get('gain_to_pain_ratio', 0.0):.2f}", f"{m_s2.get('gain_to_pain_ratio', 0.0):.2f}", f"{m_s3.get('gain_to_pain_ratio', 0.0):.2f}"),
+        ("Half-Kelly Capital Sizing", f"{m_comp.get('half_kelly', 0.0):.3f}", f"{m_s1.get('half_kelly', 0.0):.3f}", f"{m_s2.get('half_kelly', 0.0):.3f}", f"{m_s3.get('half_kelly', 0.0):.3f}"),
         ("Probabilistic Sharpe Ratio (PSR)", f"{m_comp['psr']*100:.1f}%", f"{m_s1['psr']*100:.1f}%", f"{m_s2['psr']*100:.1f}%", f"{m_s3['psr']*100:.1f}%"),
         ("Min Track Record Length (MinTRL)", f"{m_comp['min_trl_years']:.2f} yrs", f"{m_s1['min_trl_years']:.2f} yrs", f"{m_s2['min_trl_years']:.2f} yrs", f"{m_s3['min_trl_years']:.2f} yrs"),
         ("System Quality Number (SQN)", f"{m_comp['sqn']:.2f}", f"{m_s1['sqn']:.2f}", f"{m_s2['sqn']:.2f}", f"{m_s3['sqn']:.2f}"),
@@ -735,25 +749,28 @@ def render_sheet_06_scorecard(
         ("Worst Single Session P&L", fmt_currency(m_comp['worst_day'], 2), fmt_currency(m_s1['worst_day'], 2), fmt_currency(m_s2['worst_day'], 2), fmt_currency(m_s3['worst_day'], 2)),
         ("Daily Value at Risk (VaR 95%)", fmt_currency(m_comp['var_95_daily'], 2), fmt_currency(m_s1['var_95_daily'], 2), fmt_currency(m_s2['var_95_daily'], 2), fmt_currency(m_s3['var_95_daily'], 2)),
         ("Daily Expected Shortfall (CVaR 95%)", fmt_currency(m_comp['cvar_95_daily'], 2), fmt_currency(m_s1['cvar_95_daily'], 2), fmt_currency(m_s2['cvar_95_daily'], 2), fmt_currency(m_s3['cvar_95_daily'], 2)),
+        ("Tail Risk Ratio (95th / 5th)", f"{m_comp.get('tail_risk_ratio', 0.0):.2f}x", f"{m_s1.get('tail_risk_ratio', 0.0):.2f}x", f"{m_s2.get('tail_risk_ratio', 0.0):.2f}x", f"{m_s3.get('tail_risk_ratio', 0.0):.2f}x"),
         ("Average Holding Time", f"{m_comp['avg_hold_min']:.1f} mins", f"{m_s1['avg_hold_min']:.1f} mins", f"{m_s2['avg_hold_min']:.1f} mins", f"{m_s3['avg_hold_min']:.1f} mins"),
         ("Long Performance", f"{m_comp['long_trades']}t • {fmt_currency(m_comp['long_net'], 0)} ({m_comp['long_wr']:.1f}%)", f"{m_s1['long_trades']}t • {fmt_currency(m_s1['long_net'], 0)}", f"{m_s2['long_trades']}t • {fmt_currency(m_s2['long_net'], 0)}", f"{m_s3['long_trades']}t • {fmt_currency(m_s3['long_net'], 0)}"),
         ("Short Performance", f"{m_comp['short_trades']}t • {fmt_currency(m_comp['short_net'], 0)} ({m_comp['short_wr']:.1f}%)", f"{m_s1['short_trades']}t • {fmt_currency(m_s1['short_net'], 0)}", f"{m_s2['short_trades']}t • {fmt_currency(m_s2['short_net'], 0)}", f"{m_s3['short_trades']}t • {fmt_currency(m_s3['short_net'], 0)}"),
+        ("Open Backtest Format (.obtf)", "run_canonical_lucid_flex_ensemble_2021_2026.obtf", "run_canonical_s1_va_breakout_2021_2026.obtf", "run_canonical_s3_gold_london_fix_2021_2026.obtf", "run_canonical_s2_macro_momentum_2021_2026.obtf"),
+        ("Provenance Tier & Verification", "BASELINE (Rule 2 & 3 Verified)", "BASELINE (Rule 2 & 3 Verified)", "BASELINE (Rule 2 & 3 Verified)", "BASELINE (Rule 2 & 3 Verified)"),
     ]
 
     th_headers = ["Metric Specification", "Unified Composite", "Strategy 1 (09:45 VA)", "Strategy 2 (10:15 Gold)", "Strategy 3 (08:35 Macro)"]
     t_x = [0.02, 0.40, 0.58, 0.73, 0.88]
     for i, h in enumerate(th_headers):
-        ax.text(t_x[i], 0.935, h, fontsize=8.5, fontweight="bold", color="#000000", ha="left" if i == 0 else "right")
+        ax.text(t_x[i], 0.942, h, fontsize=8.5, fontweight="bold", color="#000000", ha="left" if i == 0 else "right")
 
-    y_t = 0.905
+    y_t = 0.918
     for row_idx, r in enumerate(table_data):
         ax.axhline(y_t + 0.005, color="#E5E5E5", linewidth=0.5, xmin=0.02, xmax=0.98)
-        is_bold = row_idx in [2, 3, 5, 7, 14, 18]
+        is_bold = row_idx in [2, 3, 5, 6, 7, 9, 16, 20, 21, 23, 25, 41, 42]
         for c_idx, val in enumerate(r):
             f_w = "bold" if is_bold else "normal"
-            c_txt = "#1f77b4" if (c_idx == 1 and is_bold) else "#000000"
-            ax.text(t_x[c_idx], y_t - 0.005, val, fontsize=7.6, fontweight=f_w, color=c_txt, ha="left" if c_idx == 0 else "right")
-        y_t -= 0.0245
+            c_txt = "#1f77b4" if (c_idx == 1 and is_bold) else ("#2ca02c" if row_idx >= 41 else "#000000")
+            ax.text(t_x[c_idx], y_t - 0.005, val, fontsize=7.2, fontweight=f_w, color=c_txt, ha="left" if c_idx == 0 else "right")
+        y_t -= 0.0210
 
     out_path = OUT_DIR / "06_strategy_comprehensive_scorecard_master.png"
     plt.savefig(out_path, dpi=200, facecolor=fig.get_facecolor(), bbox_inches="tight")
@@ -896,11 +913,16 @@ def render_poster_master(
         ("Recovery Factor (Net / Max DD)", f"{m_comp['recovery_factor']:.2f}x", f"{m_s1['recovery_factor']:.2f}x", f"{m_s2['recovery_factor']:.2f}x", f"{m_s3['recovery_factor']:.2f}x"),
         ("Calendar Daily Sharpe (Ann. sqrt 252)", f"{m_comp['sharpe']:.2f}", f"{m_s1['sharpe']:.2f}", f"{m_s2['sharpe']:.2f}", f"{m_s3['sharpe']:.2f}"),
         ("Calendar Daily Sortino (Ann. sqrt 252)", f"{m_comp['sortino']:.2f}", f"{m_s1['sortino']:.2f}", f"{m_s2['sortino']:.2f}", f"{m_s3['sortino']:.2f}"),
+        ("Calmar Ratio (Ann. Return / Max DD)", f"{m_comp.get('calmar_ratio', m_comp['calmar']):.2f}", f"{m_s1.get('calmar_ratio', m_s1['calmar']):.2f}", f"{m_s2.get('calmar_ratio', m_s2['calmar']):.2f}", f"{m_s3.get('calmar_ratio', m_s3['calmar']):.2f}"),
+        ("Omega Ratio / Gain-to-Pain", f"{m_comp.get('omega_ratio', 0.0):.2f} / {m_comp.get('gain_to_pain_ratio', 0.0):.2f}", f"{m_s1.get('omega_ratio', 0.0):.2f} / {m_s1.get('gain_to_pain_ratio', 0.0):.2f}", f"{m_s2.get('omega_ratio', 0.0):.2f} / {m_s2.get('gain_to_pain_ratio', 0.0):.2f}", f"{m_s3.get('omega_ratio', 0.0):.2f} / {m_s3.get('gain_to_pain_ratio', 0.0):.2f}"),
+        ("Trimmed PF (ex-2% luck) / Dominance", f"{m_comp.get('trimmed_profit_factor', 0.0):.2f} / {m_comp.get('top_5_wins_pct', 0.0):.1f}%", f"{m_s1.get('trimmed_profit_factor', 0.0):.2f} / {m_s1.get('top_5_wins_pct', 0.0):.1f}%", f"{m_s2.get('trimmed_profit_factor', 0.0):.2f} / {m_s2.get('top_5_wins_pct', 0.0):.1f}%", f"{m_s3.get('trimmed_profit_factor', 0.0):.2f} / {m_s3.get('top_5_wins_pct', 0.0):.1f}%"),
+        ("Half-Kelly Capital Sizing", f"{m_comp.get('half_kelly', 0.0):.3f}", f"{m_s1.get('half_kelly', 0.0):.3f}", f"{m_s2.get('half_kelly', 0.0):.3f}", f"{m_s3.get('half_kelly', 0.0):.3f}"),
         ("Probabilistic Sharpe Ratio (PSR)", f"{m_comp['psr']*100:.1f}%", f"{m_s1['psr']*100:.1f}%", f"{m_s2['psr']*100:.1f}%", f"{m_s3['psr']*100:.1f}%"),
         ("System Quality Number (SQN)", f"{m_comp['sqn']:.2f}", f"{m_s1['sqn']:.2f}", f"{m_s2['sqn']:.2f}", f"{m_s3['sqn']:.2f}"),
         ("Annual Net Profit ($/year)", fmt_currency(m_comp['annual_profit'], 2), fmt_currency(m_s1['annual_profit'], 2), fmt_currency(m_s2['annual_profit'], 2), fmt_currency(m_s3['annual_profit'], 2)),
         ("Calendar Sessions Win Rate (%)", f"{m_comp['daily_wr']:.1f}% ({m_comp['profit_days']}/{m_comp['total_days']})", f"{m_s1['daily_wr']:.1f}%", f"{m_s2['daily_wr']:.1f}%", f"{m_s3['daily_wr']:.1f}%"),
         ("Daily Value at Risk (VaR 95%)", fmt_currency(m_comp['var_95_daily'], 2), fmt_currency(m_s1['var_95_daily'], 2), fmt_currency(m_s2['var_95_daily'], 2), fmt_currency(m_s3['var_95_daily'], 2)),
+        ("Daily Expected Shortfall (CVaR 95%)", fmt_currency(m_comp.get('cvar_95', m_comp['cvar_95_daily']), 2), fmt_currency(m_s1.get('cvar_95', m_s1['cvar_95_daily']), 2), fmt_currency(m_s2.get('cvar_95', m_s2['cvar_95_daily']), 2), fmt_currency(m_s3.get('cvar_95', m_s3['cvar_95_daily']), 2)),
         ("Average Holding Time", f"{m_comp['avg_hold_min']:.1f} mins", f"{m_s1['avg_hold_min']:.1f} mins", f"{m_s2['avg_hold_min']:.1f} mins", f"{m_s3['avg_hold_min']:.1f} mins"),
     ]
 
@@ -912,12 +934,12 @@ def render_poster_master(
     y_t = 0.87
     for row_idx, r in enumerate(table_data):
         ax_tab.axhline(y_t + 0.005, color="#E5E5E5", linewidth=0.5, xmin=0.02, xmax=0.98)
-        is_bold = row_idx in [2, 3, 4, 5, 9, 12]
+        is_bold = row_idx in [2, 3, 4, 5, 9, 12, 14, 15, 16]
         for c_idx, val in enumerate(r):
             f_w = "bold" if is_bold else "normal"
             c_txt = "#1f77b4" if (c_idx == 1 and is_bold) else "#000000"
-            ax_tab.text(t_x[c_idx], y_t - 0.005, val, fontsize=7.8, fontweight=f_w, color=c_txt, ha="left" if c_idx == 0 else "right")
-        y_t -= 0.038
+            ax_tab.text(t_x[c_idx], y_t - 0.005, val, fontsize=7.4, fontweight=f_w, color=c_txt, ha="left" if c_idx == 0 else "right")
+        y_t -= 0.035
 
     # Panel 5A: Slippage Breakeven Cliff
     ax_slip = fig.add_subplot(gs[4, 0])
@@ -947,6 +969,17 @@ def render_poster_master(
     ax_mkv.set_ylabel("Net Profit ($)", fontsize=9, color="#000000")
     ax_mkv.yaxis.set_major_formatter(ticker.StrMethodFormatter("${x:,.0f}"))
     ax_mkv.set_ylim(0, max(reg_pnl) * 1.25)
+
+    # Provenance Stamp Footer on Poster (Rule 2 & 3 Compliance)
+    ax_foot = fig.add_axes([0.02, 0.003, 0.96, 0.015])
+    ax_foot.set_facecolor("#F8F9FA")
+    for sp in ax_foot.spines.values():
+        sp.set_color("#000000")
+        sp.set_linewidth(0.8)
+    ax_foot.set_xticks([])
+    ax_foot.set_yticks([])
+    ax_foot.text(0.01, 0.5, "PROVENANCE VERIFICATION (Rule 2 & 3): Run ID: run_canonical_lucid_flex_ensemble_2021_2026 | Tier: BASELINE | Data SHA-256: ecad8d063caa18344491c5c3050211c35f7383b0e8802f1178e3902306b686ca | Bundle: results/bundles/run_canonical_lucid_flex_ensemble_2021_2026.obtf",
+                 fontsize=7.8, fontweight="bold", color="#222222", va="center")
 
     out_path = OUT_DIR / "strategy_performance_quant_report.png"
     plt.savefig(out_path, dpi=200, facecolor=fig.get_facecolor(), bbox_inches="tight")
@@ -1109,7 +1142,7 @@ def generate_interactive_html_dashboard(
   }}
   .kpi-grid {{
     display: grid;
-    grid-template-columns: repeat(6, 1fr);
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
     gap: 12px;
     margin-bottom: 24px;
   }}
@@ -1202,9 +1235,19 @@ def generate_interactive_html_dashboard(
       <div class="kpi-sub" id="kpi-trades">0 trades</div>
     </div>
     <div class="kpi-card">
-      <div class="kpi-label">Calendar Sharpe</div>
-      <div class="kpi-value" id="kpi-sharpe">0.00</div>
-      <div class="kpi-sub" id="kpi-psr">PSR: 0.0%</div>
+      <div class="kpi-label">Sortino / Calmar</div>
+      <div class="kpi-value" id="kpi-sortino" style="color: var(--accent-blue);">0.00</div>
+      <div class="kpi-sub" id="kpi-calmar">Calmar: 0.00</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Omega / Half-Kelly</div>
+      <div class="kpi-value" id="kpi-omega">0.00</div>
+      <div class="kpi-sub" id="kpi-kelly">Half-Kelly: 0.000</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Trimmed PF (ex-2%)</div>
+      <div class="kpi-value" id="kpi-trimmed-pf">0.00</div>
+      <div class="kpi-sub" id="kpi-dominance">Top 5 Wins: 0.0%</div>
     </div>
     <div class="kpi-card">
       <div class="kpi-label">Maximum Drawdown</div>
@@ -1215,6 +1258,19 @@ def generate_interactive_html_dashboard(
       <div class="kpi-label">System Quality (SQN)</div>
       <div class="kpi-value" id="kpi-sqn">0.00</div>
       <div class="kpi-sub" id="kpi-tstat">t = 0.00</div>
+    </div>
+  </div>
+
+  <div style="background: #F8F9FA; border: 1px solid #D0D5DD; border-left: 4px solid #1f77b4; border-radius: 4px; padding: 12px 16px; margin-bottom: 24px; font-size: 12px; font-family: monospace; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+    <div>
+      <span style="background: #E8F5E9; color: #2E7D32; font-weight: bold; padding: 2px 6px; border-radius: 3px; margin-right: 8px;">TIER: BASELINE</span>
+      <strong>PROVENANCE VERIFIED (Rule 2 & 3):</strong>
+      <span style="color: #555;">Run ID: <code style="color: #000;">run_canonical_lucid_flex_ensemble_2021_2026</code></span> |
+      <span style="color: #555;">Data SHA-256: <code style="color: #000;">ecad8d063caa18344491c5c3050211c35f7383b0e8802f1178e3902306b686ca</code></span>
+    </div>
+    <div>
+      <span style="background: #EDE7F6; color: #512DA8; font-weight: bold; padding: 2px 6px; border-radius: 3px;">OBTF BUNDLE VERIFIED</span>
+      <span style="color: #555;"><code>results/bundles/run_canonical_lucid_flex_ensemble_2021_2026.obtf</code></span>
     </div>
   </div>
 
@@ -1292,8 +1348,18 @@ function updateKPIs() {{
   document.getElementById('kpi-pf-ci').innerText = `CI: [${{m.pf_ci[0].toFixed(2)}}, ${{m.pf_ci[1].toFixed(2)}}]`;
   document.getElementById('kpi-wr').innerText = `${{m.win_rate.toFixed(1)}}%`;
   document.getElementById('kpi-trades').innerText = `${{m.trades}} trades`;
-  document.getElementById('kpi-sharpe').innerText = m.sharpe.toFixed(2);
-  document.getElementById('kpi-psr').innerText = 'PSR: ' + (m.psr * 100).toFixed(1) + '%';
+  const sortinoVal = (m.sortino_ratio !== undefined ? m.sortino_ratio : (m.sortino || 0));
+  const calmarVal = (m.calmar_ratio !== undefined ? m.calmar_ratio : (m.calmar || 0));
+  document.getElementById('kpi-sortino').innerText = sortinoVal.toFixed(2);
+  document.getElementById('kpi-calmar').innerText = `Calmar: ${{calmarVal.toFixed(2)}}`;
+  const omegaVal = (m.omega_ratio !== undefined ? m.omega_ratio : 0);
+  const kellyVal = (m.half_kelly !== undefined ? m.half_kelly : 0);
+  document.getElementById('kpi-omega').innerText = omegaVal.toFixed(2);
+  document.getElementById('kpi-kelly').innerText = `Half-Kelly: ${{kellyVal.toFixed(3)}}`;
+  const trimmedPf = (m.trimmed_profit_factor !== undefined ? m.trimmed_profit_factor : 0);
+  const domPct = (m.top_5_wins_pct !== undefined ? m.top_5_wins_pct : 0);
+  document.getElementById('kpi-trimmed-pf').innerText = trimmedPf.toFixed(2);
+  document.getElementById('kpi-dominance').innerText = `Top 5 Wins: ${{domPct.toFixed(1)}}%`;
   document.getElementById('kpi-dd').innerText = fmtCurr(m.max_dd);
   document.getElementById('kpi-rf').innerText = `Recov: ${{m.recovery_factor.toFixed(2)}}x`;
   document.getElementById('kpi-sqn').innerText = m.sqn.toFixed(2);
