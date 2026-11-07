@@ -130,6 +130,8 @@ public class LucidMorningVABreakoutStudy extends Study {
     private final Map<LocalDate, OpeningRange15> orByDate = new HashMap<>();
     private final Set<LocalDate> processedDays = new HashSet<>();
     private final Map<LocalDate, ActiveTrade> tradesByDate = new HashMap<>();
+    // IAF Session Cooldown Lock: strictly enforces <= 1 automated trade per session
+    private static final Set<LocalDate> DAILY_SUBMITTED_DATES = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     private static class ActiveTrade {
         LocalDate date;
@@ -953,10 +955,11 @@ public class LucidMorningVABreakoutStudy extends Study {
         if (ctx == null) return;
         if (!getSettings().getBoolean(ENABLE_LIVE_AUTOTRADE, true)) return;
 
-        // 1. If flat, check if an unsubmitted trade signal exists for today
+        // 1. If flat and no trade submitted today, check if an unsubmitted trade signal exists for today
         if (ctx.getPosition() == 0) {
             long now = ctx.getCurrentTime();
             LocalDate today = Instant.ofEpochMilli(now).atZone(NY_ZONE).toLocalDate();
+            if (DAILY_SUBMITTED_DATES.contains(today)) return; // Session cooldown locked
             ActiveTrade trade = tradesByDate.get(today);
             if (trade != null && !trade.orderSubmitted && !trade.closed && now >= trade.entryTime && now < trade.maxExitTime) {
                 executeAutoTradeIfArmed(ctx, trade.isLong ? SIGNAL_BUY : SIGNAL_SELL);
@@ -993,6 +996,18 @@ public class LucidMorningVABreakoutStudy extends Study {
     private synchronized void executeAutoTradeIfArmed(OrderContext ctx, Object signal) {
         if (ctx.getPosition() != 0) return; // Prevent double-entry / pyramiding
 
+        long now = ctx.getCurrentTime();
+        LocalDate today = Instant.ofEpochMilli(now).atZone(NY_ZONE).toLocalDate();
+
+        // Strict Single-Trade-Per-Day Enforcement (IAF Cooldown Lock)
+        if (DAILY_SUBMITTED_DATES.contains(today)) {
+            logExecutionEvent("ORDER_BLOCKED_SESSION_COOLDOWN", "LucidMorningVABreakout",
+                ctx.getInstrument() != null ? ctx.getInstrument().getSymbol() : "UNKNOWN",
+                "BLOCKED", 0.0, 0.0, 0.0, 0,
+                "Single trade per session lock active for " + today + ". Additional entries blocked.");
+            return;
+        }
+
         // Gateway-level circuit breaker check
         DaemonRiskState riskState = loadDaemonRiskState();
         if (riskState.circuitBreakerHit) {
@@ -1001,8 +1016,6 @@ public class LucidMorningVABreakoutStudy extends Study {
             return;
         }
 
-        long now = ctx.getCurrentTime();
-        LocalDate today = Instant.ofEpochMilli(now).atZone(NY_ZONE).toLocalDate();
         ActiveTrade trade = tradesByDate.get(today);
         if (trade == null || trade.orderSubmitted || trade.closed) return;
 
@@ -1033,12 +1046,15 @@ public class LucidMorningVABreakoutStudy extends Study {
         Enums$OrderAction entryAction = isLong ? Enums$OrderAction.BUY : Enums$OrderAction.SELL;
         Order entry = ctx.createMarketOrder(entryAction, contracts);
         ctx.submitOrders(entry);
+
+        // Lock session cooldown immediately to guarantee non-repainting single execution
+        DAILY_SUBMITTED_DATES.add(today);
         trade.orderSubmitted = true;
         trade.entryOrderId = entry != null ? entry.getOrderId() : null;
 
         logExecutionEvent("ORDER_SUBMITTED", "LucidMorningVABreakout", ctx.getInstrument().getSymbol(),
             entryAction.toString(), trade.entryPrice, stopPrice, targetPrice, contracts,
-            "Market entry submitted. Brackets pending fill confirmation.");
+            "Market entry submitted. Brackets pending fill confirmation. Daily cooldown locked.");
     }
 
     @Override

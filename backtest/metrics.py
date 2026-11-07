@@ -744,6 +744,283 @@ def min_track_record_length_years(
 
 
 # =============================================================================
+# INSTITUTIONAL METRICS HELPERS (DIRECTIONAL SYMMETRY, EXCURSIONS, STABILITY)
+# =============================================================================
+
+def compute_directional_symmetry_metrics(df_trades: pd.DataFrame, default_pnl: np.ndarray) -> dict[str, Any]:
+    """
+    Computes Long vs Short trade metrics from investing-algorithm-framework.
+    Separates win rate, profit factor, net PnL, and directional edge asymmetry.
+    """
+    dir_col = None
+    for candidate in ("direction", "side", "action", "order_type", "type"):
+        if candidate in df_trades.columns:
+            dir_col = candidate
+            break
+
+    pnl_col = "pnl" if "pnl" in df_trades.columns else ("net_pnl" if "net_pnl" in df_trades.columns else df_trades.columns[0])
+
+    if dir_col is not None and not df_trades.empty:
+        s_dir = df_trades[dir_col].astype(str).str.upper()
+        long_mask = s_dir.isin(["LONG", "BUY", "1", "1.0", "TRUE"])
+        short_mask = s_dir.isin(["SHORT", "SELL", "-1", "-1.0", "FALSE"])
+        df_long = df_trades[long_mask]
+        df_short = df_trades[short_mask]
+    else:
+        df_long = df_trades
+        df_short = pd.DataFrame(columns=df_trades.columns)
+
+    n_long = int(len(df_long))
+    n_short = int(len(df_short))
+
+    pnl_long = df_long[pnl_col].to_numpy(dtype=float) if n_long > 0 else np.array([])
+    pnl_short = df_short[pnl_col].to_numpy(dtype=float) if n_short > 0 else np.array([])
+
+    w_long = int((pnl_long > 0).sum()) if n_long > 0 else 0
+    l_long = int((pnl_long < 0).sum()) if n_long > 0 else 0
+    w_short = int((pnl_short > 0).sum()) if n_short > 0 else 0
+    l_short = int((pnl_short < 0).sum()) if n_short > 0 else 0
+
+    long_wr = round(float(w_long / n_long * 100.0), 2) if n_long > 0 else 0.0
+    short_wr = round(float(w_short / n_short * 100.0), 2) if n_short > 0 else 0.0
+
+    gp_long = float(pnl_long[pnl_long > 0].sum()) if n_long > 0 else 0.0
+    gl_long = float(abs(pnl_long[pnl_long < 0].sum())) if n_long > 0 else 0.0
+    long_pf = round(float(gp_long / gl_long), 2) if gl_long > 0 else (999.0 if gp_long > 0 else 1.0)
+
+    gp_short = float(pnl_short[pnl_short > 0].sum()) if n_short > 0 else 0.0
+    gl_short = float(abs(pnl_short[pnl_short < 0].sum())) if n_short > 0 else 0.0
+    short_pf = round(float(gp_short / gl_short), 2) if gl_short > 0 else (999.0 if gp_short > 0 else 1.0)
+
+    long_net = round(float(pnl_long.sum()), 2) if n_long > 0 else 0.0
+    short_net = round(float(pnl_short.sum()), 2) if n_short > 0 else 0.0
+
+    if n_long > 0 and n_short > 0 and short_pf > 0:
+        edge_asymmetry = round(float(long_pf / short_pf), 2) if (long_pf < 999.0 and short_pf < 999.0) else 1.0
+    else:
+        edge_asymmetry = 1.0
+
+    return {
+        "number_of_long_trades": n_long,
+        "number_of_short_trades": n_short,
+        "number_of_long_trades_closed": n_long,
+        "number_of_short_trades_closed": n_short,
+        "winning_long_trades": w_long,
+        "losing_long_trades": l_long,
+        "winning_short_trades": w_short,
+        "losing_short_trades": l_short,
+        "long_win_rate": long_wr,
+        "short_win_rate": short_wr,
+        "long_profit_factor": long_pf,
+        "short_profit_factor": short_pf,
+        "long_net_pnl": long_net,
+        "short_net_pnl": short_net,
+        "long_short_edge_asymmetry": edge_asymmetry,
+    }
+
+
+def compute_trade_excursion_metrics(df_trades: pd.DataFrame, net_pnl: float) -> dict[str, Any]:
+    """
+    Computes Maximum Adverse Excursion (MAE) and Maximum Favorable Excursion (MFE) metrics.
+    """
+    mfe_col = next((c for c in ("mfe", "max_favorable_excursion", "peak_pnl") if c in df_trades.columns), None)
+    mae_col = next((c for c in ("mae", "max_adverse_excursion", "trough_pnl") if c in df_trades.columns), None)
+
+    if mfe_col is not None and not df_trades[mfe_col].dropna().empty:
+        mfe_s = df_trades[mfe_col].dropna().astype(float)
+        mean_mfe = float(mfe_s.mean())
+        max_mfe = float(mfe_s.max())
+        mfe_sum = float(mfe_s.sum())
+    else:
+        mean_mfe = 0.0
+        max_mfe = 0.0
+        mfe_sum = 0.0
+
+    if mae_col is not None and not df_trades[mae_col].dropna().empty:
+        mae_s = df_trades[mae_col].dropna().astype(float).abs()
+        mean_mae = float(mae_s.mean())
+        max_mae = float(mae_s.max())
+    else:
+        mean_mae = 0.0
+        max_mae = 0.0
+
+    mfe_mae_ratio = round(float(mean_mfe / mean_mae), 2) if mean_mae > 0 else (1.0 if mean_mfe == 0.0 else 999.0)
+    edge_efficiency = round(float(net_pnl / mfe_sum), 2) if mfe_sum > 0 else 0.0
+
+    return {
+        "mean_mfe": round(mean_mfe, 2),
+        "mean_mae": round(mean_mae, 2),
+        "max_mfe": round(max_mfe, 2),
+        "max_mae": round(max_mae, 2),
+        "mfe_mae_ratio": mfe_mae_ratio,
+        "edge_efficiency_ratio": edge_efficiency,
+    }
+
+
+def compute_trade_duration_and_exposure_metrics(
+    df_trades: pd.DataFrame, n_sess: int, years: float, n_trades: int
+) -> dict[str, Any]:
+    """
+    Computes holding duration, holding asymmetry, and exposure metrics.
+    """
+    dur_col = next((c for c in ("hold_minutes", "duration_min", "duration_minutes", "duration") if c in df_trades.columns), None)
+    pnl_col = "pnl" if "pnl" in df_trades.columns else ("net_pnl" if "net_pnl" in df_trades.columns else df_trades.columns[0])
+
+    if dur_col is not None and not df_trades[dur_col].dropna().empty:
+        durs = df_trades[dur_col].dropna().astype(float)
+        avg_dur = float(durs.mean())
+        win_mask = df_trades[pnl_col] > 0
+        loss_mask = df_trades[pnl_col] < 0
+        win_dur = float(df_trades.loc[win_mask, dur_col].mean()) if win_mask.any() else avg_dur
+        loss_dur = float(df_trades.loc[loss_mask, dur_col].mean()) if loss_mask.any() else avg_dur
+        hda = round(float(loss_dur / max(0.01, win_dur)), 2)
+        total_market_mins = float(durs.sum())
+    else:
+        avg_dur = 0.0
+        win_dur = 0.0
+        loss_dur = 0.0
+        hda = 1.0
+        total_market_mins = 0.0
+
+    total_avail_mins = max(1.0, float(n_sess * 390.0))
+    exposure_ratio = round(float(total_market_mins / total_avail_mins * 100.0), 2) if total_market_mins > 0 else round(float(n_sess / (years * 252.0) * 100.0), 1)
+
+    trades_per_day = round(float(n_trades / max(1, n_sess)), 2)
+    trades_per_week = round(float(trades_per_day * 5.0), 2)
+    trades_per_month = round(float(trades_per_day * 21.0), 2)
+    trades_per_year = round(float(trades_per_day * 252.0), 1)
+
+    return {
+        "avg_hold_time_mins": round(avg_dur, 1),
+        "avg_win_duration_mins": round(win_dur, 1),
+        "avg_loss_duration_mins": round(loss_dur, 1),
+        "holding_duration_asymmetry": hda,
+        "market_exposure_pct": exposure_ratio,
+        "exposure_ratio": round(exposure_ratio / 100.0, 4),
+        "trades_per_day": trades_per_day,
+        "trades_per_week": trades_per_week,
+        "trades_per_month": trades_per_month,
+        "trades_per_year": trades_per_year,
+    }
+
+
+def compute_calendar_and_periodicity_metrics(daily_series: pd.Series) -> dict[str, Any]:
+    """
+    Computes monthly and yearly return distribution metrics.
+    """
+    if not isinstance(daily_series.index, (pd.DatetimeIndex, pd.PeriodIndex)):
+        return {
+            "percentage_winning_months": 0.0,
+            "percentage_winning_years": 0.0,
+            "avg_monthly_pnl_winning_months": 0.0,
+            "avg_monthly_pnl_losing_months": 0.0,
+            "best_month_pnl": 0.0,
+            "worst_month_pnl": 0.0,
+            "best_year_pnl": 0.0,
+            "worst_year_pnl": 0.0,
+        }
+
+    try:
+        monthly = daily_series.resample("ME").sum()
+        pct_win_m = round(float((monthly > 0).mean() * 100.0), 1) if len(monthly) > 0 else 0.0
+        win_m = monthly[monthly > 0]
+        loss_m = monthly[monthly < 0]
+        avg_win_m = round(float(win_m.mean()), 2) if len(win_m) > 0 else 0.0
+        avg_loss_m = round(float(loss_m.mean()), 2) if len(loss_m) > 0 else 0.0
+        best_m = round(float(monthly.max()), 2) if len(monthly) > 0 else 0.0
+        worst_m = round(float(monthly.min()), 2) if len(monthly) > 0 else 0.0
+
+        yearly = daily_series.resample("YE").sum()
+        pct_win_y = round(float((yearly > 0).mean() * 100.0), 1) if len(yearly) > 0 else 0.0
+        best_y = round(float(yearly.max()), 2) if len(yearly) > 0 else 0.0
+        worst_y = round(float(yearly.min()), 2) if len(yearly) > 0 else 0.0
+
+        return {
+            "percentage_winning_months": pct_win_m,
+            "percentage_winning_years": pct_win_y,
+            "avg_monthly_pnl_winning_months": avg_win_m,
+            "avg_monthly_pnl_losing_months": avg_loss_m,
+            "best_month_pnl": best_m,
+            "worst_month_pnl": worst_m,
+            "best_year_pnl": best_y,
+            "worst_year_pnl": worst_y,
+        }
+    except Exception:
+        return {
+            "percentage_winning_months": 0.0,
+            "percentage_winning_years": 0.0,
+            "avg_monthly_pnl_winning_months": 0.0,
+            "avg_monthly_pnl_losing_months": 0.0,
+            "best_month_pnl": 0.0,
+            "worst_month_pnl": 0.0,
+            "best_year_pnl": 0.0,
+            "worst_year_pnl": 0.0,
+        }
+
+
+def compute_walk_forward_stability_metrics(r: np.ndarray, window_size: int = 63, step: int = 21) -> dict[str, Any]:
+    """
+    Computes walk-forward return, win rate, and Sharpe consistency across rolling windows.
+    """
+    n = len(r)
+    if n < window_size:
+        return {
+            "return_consistency": 1.0,
+            "win_rate_consistency": 1.0,
+            "sharpe_consistency": 1.0,
+            "consistency_score": 100.0,
+            "stability_score": 100.0,
+        }
+
+    window_returns = []
+    window_sharpes = []
+    window_win_rates = []
+
+    for start in range(0, n - window_size + 1, step):
+        w = r[start:start+window_size]
+        w_ret = float(w.sum())
+        w_std = float(w.std(ddof=1)) if len(w) > 1 else 0.0
+        w_mean = float(w.mean())
+        w_sr = float(w_mean / w_std * math.sqrt(252)) if w_std > 0 else 0.0
+        w_wr = float((w > 0).mean() * 100.0)
+        window_returns.append(w_ret)
+        window_sharpes.append(w_sr)
+        window_win_rates.append(w_wr)
+
+    if not window_returns:
+        return {
+            "return_consistency": 1.0,
+            "win_rate_consistency": 1.0,
+            "sharpe_consistency": 1.0,
+            "consistency_score": 100.0,
+            "stability_score": 100.0,
+        }
+
+    sr_arr = np.array(window_sharpes)
+    ret_arr = np.array(window_returns)
+    wr_arr = np.array(window_win_rates)
+
+    sharpe_cv = (sr_arr.std(ddof=1) / max(0.01, sr_arr.mean())) if len(sr_arr) > 1 else 0.0
+    sharpe_consistency = round(float(max(0.0, 1.0 - min(1.0, sharpe_cv))), 3)
+
+    ret_cv = (ret_arr.std(ddof=1) / max(1.0, abs(ret_arr.mean()))) if len(ret_arr) > 1 else 0.0
+    ret_consistency = round(float(max(0.0, 1.0 - min(1.0, ret_cv))), 3)
+
+    wr_cv = (wr_arr.std(ddof=1) / 50.0) if len(wr_arr) > 1 else 0.0
+    wr_consistency = round(float(max(0.0, 1.0 - min(1.0, wr_cv))), 3)
+
+    composite_score = round(float((sharpe_consistency + ret_consistency + wr_consistency) / 3.0 * 100.0), 1)
+
+    return {
+        "return_consistency": ret_consistency,
+        "win_rate_consistency": wr_consistency,
+        "sharpe_consistency": sharpe_consistency,
+        "consistency_score": composite_score,
+        "stability_score": composite_score,
+    }
+
+
+# =============================================================================
 # MASTER 88+ INSTITUTIONAL METRICS EVALUATOR
 # =============================================================================
 
@@ -909,10 +1186,12 @@ def calculate_institutional_metrics(
     edge_ratio = float(x_mean / abs(losses.mean())) if losses.size > 0 else 0.0
     jb_stat, jb_pval = jarque_bera_test(r)
 
-    # Microstructure Excursion
-    mean_mfe = float(df_trades["mfe"].mean()) if "mfe" in df_trades.columns else 0.0
-    mean_mae = float(df_trades["mae"].mean()) if "mae" in df_trades.columns else 0.0
-    edge_efficiency = float(net_pnl / df_trades["mfe"].sum()) if ("mfe" in df_trades.columns and df_trades["mfe"].sum() > 0) else 0.0
+    # Microstructure Excursions & IAF Metrics Computation
+    dir_metrics = compute_directional_symmetry_metrics(df_trades, x)
+    exc_metrics = compute_trade_excursion_metrics(df_trades, net_pnl)
+    dur_metrics = compute_trade_duration_and_exposure_metrics(df_trades, n_sess, years, n)
+    cal_metrics = compute_calendar_and_periodicity_metrics(daily_series)
+    wf_metrics = compute_walk_forward_stability_metrics(r)
 
     # Adversarial Truncation Stress Test (Top 5% Winners Removed)
     trim_5pct = trim_winners_adversarial_test(x, trim_pct=0.05)
@@ -1010,7 +1289,24 @@ def calculate_institutional_metrics(
         "trimmed_removed_profit_5pct": trim_5pct["removed_profit"],
         "edge_holds_5pct": trim_5pct["edge_holds"],
 
-        # 6. Higher Statistical Moments & Significance (8)
+        # 6. Directional Asymmetry & Long/Short Symmetry (15) [IAF Pattern]
+        "number_of_long_trades": dir_metrics["number_of_long_trades"],
+        "number_of_short_trades": dir_metrics["number_of_short_trades"],
+        "number_of_long_trades_closed": dir_metrics["number_of_long_trades_closed"],
+        "number_of_short_trades_closed": dir_metrics["number_of_short_trades_closed"],
+        "winning_long_trades": dir_metrics["winning_long_trades"],
+        "losing_long_trades": dir_metrics["losing_long_trades"],
+        "winning_short_trades": dir_metrics["winning_short_trades"],
+        "losing_short_trades": dir_metrics["losing_short_trades"],
+        "long_win_rate": dir_metrics["long_win_rate"],
+        "short_win_rate": dir_metrics["short_win_rate"],
+        "long_profit_factor": dir_metrics["long_profit_factor"],
+        "short_profit_factor": dir_metrics["short_profit_factor"],
+        "long_net_pnl": dir_metrics["long_net_pnl"],
+        "short_net_pnl": dir_metrics["short_net_pnl"],
+        "long_short_edge_asymmetry": dir_metrics["long_short_edge_asymmetry"],
+
+        # 7. Higher Statistical Moments & Significance (8)
         "trade_skew": round(trade_skew, 2),
         "trade_kurtosis": round(trade_kurt, 2),
         "daily_skew": round(daily_skew, 2),
@@ -1020,7 +1316,7 @@ def calculate_institutional_metrics(
         "sqn": round(system_quality_number(x), 2),
         "jarque_bera_stat": round(jb_stat, 2),
 
-        # 7. Multiple Testing & Selection Bias Controls (6)
+        # 8. Multiple Testing & Selection Bias Controls (6)
         "probabilistic_sharpe_ratio": round(psr, 4),
         "deflated_sharpe": round(dsr, 4),
         "expected_max_sharpe": round(sr_star, 2),
@@ -1028,7 +1324,7 @@ def calculate_institutional_metrics(
         "sharpe_haircut_pct": round(max(0.0, (sharpe - dsr) / max(sharpe, 0.001) * 100.0), 1),
         "spa_p_value": round(p_val, 4),
 
-        # 8. Sizing, Risk of Ruin & Leverage (8)
+        # 9. Sizing, Risk of Ruin & Leverage (8)
         "full_kelly_fraction": round(full_k, 4),
         "half_kelly": round(half_k, 4),
         "analytical_risk_of_ruin": round(ror_anal, 4),
@@ -1038,13 +1334,42 @@ def calculate_institutional_metrics(
         "optimal_fixed_fraction": round(half_k, 4),
         "margin_utilization_pct": 0.0,
 
-        # 9. Market Microstructure & Excursion (8)
-        "mean_mfe": round(mean_mfe, 2),
-        "mean_mae": round(mean_mae, 2),
-        "edge_efficiency_ratio": round(edge_efficiency, 2),
+        # 10. Market Microstructure, Excursion & Duration (14) [IAF Pattern]
+        "mean_mfe": exc_metrics["mean_mfe"],
+        "mean_mae": exc_metrics["mean_mae"],
+        "max_mfe": exc_metrics["max_mfe"],
+        "max_mae": exc_metrics["max_mae"],
+        "mfe_mae_ratio": exc_metrics["mfe_mae_ratio"],
+        "edge_efficiency_ratio": exc_metrics["edge_efficiency_ratio"],
         "adverse_stop_realization_rate": 0.0,
-        "market_exposure_pct": round(float(n_sess / (years * 252.0) * 100.0), 1),
+        "market_exposure_pct": dur_metrics["market_exposure_pct"],
+        "exposure_ratio": dur_metrics["exposure_ratio"],
         "turnover_ratio": round(float(n / years), 1),
-        "long_short_edge_asymmetry": 1.0,
-        "avg_hold_time_mins": 0.0,
+        "avg_hold_time_mins": dur_metrics["avg_hold_time_mins"],
+        "avg_win_duration_mins": dur_metrics["avg_win_duration_mins"],
+        "avg_loss_duration_mins": dur_metrics["avg_loss_duration_mins"],
+        "holding_duration_asymmetry": dur_metrics["holding_duration_asymmetry"],
+
+        # 11. Trading Cadence & Frequency (4) [IAF Pattern]
+        "trades_per_day": dur_metrics["trades_per_day"],
+        "trades_per_week": dur_metrics["trades_per_week"],
+        "trades_per_month": dur_metrics["trades_per_month"],
+        "trades_per_year": dur_metrics["trades_per_year"],
+
+        # 12. Calendar & Periodicity Returns (8) [IAF Pattern]
+        "percentage_winning_months": cal_metrics["percentage_winning_months"],
+        "percentage_winning_years": cal_metrics["percentage_winning_years"],
+        "avg_monthly_pnl_winning_months": cal_metrics["avg_monthly_pnl_winning_months"],
+        "avg_monthly_pnl_losing_months": cal_metrics["avg_monthly_pnl_losing_months"],
+        "best_month_pnl": cal_metrics["best_month_pnl"],
+        "worst_month_pnl": cal_metrics["worst_month_pnl"],
+        "best_year_pnl": cal_metrics["best_year_pnl"],
+        "worst_year_pnl": cal_metrics["worst_year_pnl"],
+
+        # 13. Walk-Forward Stability & Multi-Window Consistency (5) [IAF Pattern]
+        "return_consistency": wf_metrics["return_consistency"],
+        "win_rate_consistency": wf_metrics["win_rate_consistency"],
+        "sharpe_consistency": wf_metrics["sharpe_consistency"],
+        "consistency_score": wf_metrics["consistency_score"],
+        "stability_score": wf_metrics["stability_score"],
     }

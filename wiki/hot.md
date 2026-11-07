@@ -27,6 +27,20 @@ The active production baseline is the **LucidFlex Tri-Asset Ensemble** (`lucid_f
 
 ## Active Tasks & Work in Progress
 
+- [x] **Milestone 7: Investing Algorithm Framework Deep Architectural Extraction & Microstructure Expansion**:
+  - **143 Institutional Metrics Expansion (`backtest/metrics.py`)**: Extracted deep microstructure, excursion, and walk-forward stability families from `coding-kitties/investing-algorithm-framework`:
+    1. *Directional Symmetry*: `long_win_rate`, `short_win_rate`, `long_profit_factor`, `short_profit_factor`, `winning_long_trades`, `losing_short_trades`, `long_net_pnl`, `short_net_pnl`, `long_short_edge_asymmetry`.
+    2. *Excursions & Edge Efficiency*: `mean_mfe`, `mean_mae`, `max_mfe`, `max_mae`, `mfe_mae_ratio` ($\mathbb{E}[\text{MFE}] / \mathbb{E}[\text{MAE}]$), `edge_efficiency_ratio` ($\text{Net PnL} / \sum \text{MFE}$).
+    3. *Temporal Duration & Discipline*: `avg_hold_time_mins`, `avg_win_duration_mins`, `avg_loss_duration_mins`, `holding_duration_asymmetry` ($\text{HDA} = \bar{\tau}_{\text{loss}} / \bar{\tau}_{\text{win}}$) quantifying loss-aversion discipline breakdown, `exposure_ratio` and `market_exposure_pct`.
+    4. *Cadence & Frequency*: `trades_per_day`, `trades_per_week`, `trades_per_month`, `trades_per_year`.
+    5. *Calendar Periodicity*: `percentage_winning_months`, `percentage_winning_years`, `avg_monthly_pnl_winning_months`, `avg_monthly_pnl_losing_months`, `best_month_pnl`, `worst_month_pnl`, `best_year_pnl`, `worst_year_pnl`.
+    6. *Multi-Window Walk-Forward Stability*: `return_consistency`, `win_rate_consistency`, `sharpe_consistency`, `consistency_score`, `stability_score`.
+  - **MotiveWave Java Study Single-Trade Session Cooldown Lock (`DAILY_SUBMITTED_DATES`)**:
+    - Eliminated multi-trade triggers and chart recalculation re-entries across `LucidMacroMomentumStudy.java`, `LucidMorningVABreakoutStudy.java`, and `LucidGoldFixBreakoutStudy.java`.
+    - Implemented JVM-static thread-safe session lock `DAILY_SUBMITTED_DATES = ConcurrentHashMap.newKeySet()` verifying `!DAILY_SUBMITTED_DATES.contains(today)` before any order submission and marking all session candidate trade structs as submitted.
+    - Recompiled with JDK 25 (`tools/jdk25/Contents/Home/bin/javac`), packaged and deployed extension JAR `/Users/novo/MotiveWave Extensions/LucidPropEnsemble.jar` (64 KB).
+    - Verified 100% green via `python scripts/check_morning_readiness.py`, `tests/test_institutional_metrics.py` (16/16), and MotiveWave test suites (28/28).
+
 - [x] **Milestone 6: Institutional Quantitative Framework Upgrade (98 Metrics, .obtf Bundles & MCP Server)**:
   - **Step 1: 98 Institutional Metrics Engine (`backtest/metrics.py`)**: Vectorized pure-Python analytics covering Return Dynamics (10 + Benchmark Relatives), Risk-Adjusted Ratios (14: Sortino, Calmar, Omega, Gain-to-Pain, UPI, Burke, Kappa 3), Drawdown Topology (12: CDD, Ulcer, Pain Index), Tail Risk (10: Cornish-Fisher VaR, CVaR 95/99), Microstructure (16: Expectancy, Trimmed PF ex-2%, Top 5 Win Dominance, Top 5% Adversarial Truncation), Statistical Moments (8: Skew, Kurtosis, SQN, Jarque-Bera), Multiple Testing (6: PSR, DSR, EVT SR*), Sizing/Ruin (8: Full/Half Kelly, Gambler's Ruin), and Passive Benchmark Relatives (Beta, Alpha, Correlation, Tracking Error, Up/Down Capture).
   - **Step 2: Adversarial Top 5% Winner Truncation Stress Test**: Proved that the economic edge holds strictly above breakeven ($PF > 1.00$, positive expectancy) across all 3 strategies and the ensemble even after permanently deleting the top 5% best winning trades (Ensemble Trimmed PF: 1.34 > 1.00 with +$9,082.76 net; S1 Trimmed PF: 1.40; S2 Trimmed PF: 1.28; S3 Trimmed PF: 1.30).
@@ -87,8 +101,8 @@ The active production baseline is the **LucidFlex Tri-Asset Ensemble** (`lucid_f
 
 ## Recent Changes (Last 3–5 Sessions)
 
-- **2026-11-07 (Session M6 - Portfolio Expansion & Non-News Candidate Falsification S4-S10)**:
-  - Systematically evaluated 7 candidate trading strategies to expand portfolio from 3 to 5-6 strategies and increase trade frequency:
+- **2026-11-07 (Session M6 - Portfolio Expansion & Non-News Candidate Falsification S4-S12)**:
+  - Systematically evaluated 9 candidate trading strategies to expand portfolio from 3 to 5-6 strategies and increase trade frequency:
     1. Candidate S4 (Crude Oil 09:00 pit open `MCL`): Falsified (PF 0.93, -$1,380 net, 3.7x max DD breach). Failed Idea #25.
     2. Candidate S5 (4-Index Sector Rotation `MYM`/`M2K`): Falsified (PF 0.82, -$13,885 net). Failed Idea #26.
     3. Candidate S6 (COMEX Gold 08:20 Open `MGC`): Falsified (PF 0.81, -$11,427 net, dealer inventory trap). Failed Idea #27.
@@ -96,6 +110,13 @@ The active production baseline is the **LucidFlex Tri-Asset Ensemble** (`lucid_f
     5. Candidate S8 (15:50 NYSE MOC Imbalance Drive `MNQ`/`MES`): Falsified (PF 0.89, -$5,848 net, 0DTE stop chop). Failed Idea #29.
     6. Candidate S9 / H26 (11:30 European Cash Close Rotation `MES`/`MNQ`): Falsified (Fade PF 0.78, -$11,018 net across 1,492 trades; Trend IS PF 1.03–1.09, failing Belfort Step 04 PF >= 1.25). Failed Idea #30.
     7. Candidate S10 / H27 (09:35 Dalton Overnight Inventory Imbalance Correction `MES`/`MNQ`): Falsified (566 trades, PF 0.71, Net -$6,330.59, negative across all 6 years; stops hit 2:1 over target). Failed Idea #31.
+    8. Candidate S11 / H28 (09:45 Micro Gold Morning VA Breakout `MGC`): Falsified (367 trades, PF 1.02, Net $266.42, In-Sample negative at PF 0.91, 66.3% outlier dominance). Failed Idea #32.
+    9. Candidate S12 / H29 (14:27 WTI Crude Oil NYMEX Settlement Auction `MCL`): Falsified (365 trades, Drive Into Settle PF 0.50, Net -$1,318.60; Post-Settle Fade PF 0.48, Net -$1,392.60; TAS block absorption). Failed Idea #33.
+    10. Candidate S13 / H30 (10:00 ET Small-Cap Beta Diffusion Lag `M2K`): **Falsified & Vetoed by Red-Team Auditor**. Initial walkforward (52 trades, PF 1.33, Net +$326.10 over 5.8 yrs) broken under adversarial stress:
+        - Parameter Plateau Cliff: Stop-loss sensitivity (+12.5% to 9.0 pts) dropped PnL to $220.60 (Stability Ratio 0.68x < 0.70x).
+        - Statistical Insignificance: t-statistic = 0.92, p-value = 0.3578 (35.8% chance of pure random noise).
+        - Severe Capital Inefficiency: 9 trades/year (0.75 tr/mo), EV = $0.15/day, 2 consecutive losing years (2024 PF 0.52, 2025 PF 0.84), 80.8% underwater time, 980-day recovery.
+        - Outlier Dominance: Top 3 trades = 71.6% of net profit; ex-top 5% PF collapses to 1.09. Failed Idea #34.
   - Recorded verified runs into `results/backtest_provenance.db` under quarantined `StrategyTier.CANDIDATE`. Baseline tier remains 100% untainted.
 
 - **2026-11-06 (Session M5 - CQG Broker Execution Synchronizer & Real Trade Ingestion)**:

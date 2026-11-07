@@ -86,6 +86,9 @@ Deep forensic bytecode analysis of MotiveWave runtime (`MotiveWave.jar`, `mwave_
      - Strategy 3: Post-fix session boundary flatten at 11:00 ET.
 5. **No Illegal String Format Specifiers**:
    - `%+$%.2f` is illegal in `java.util.Formatter` and throws `UnknownFormatConversionException`, crashing MotiveWave's chart calculation thread. All dollar displays use `(pts >= 0 ? "+$" : "-$") + String.format("%.2f", Math.abs(netDollars))`.
+6. **Strict Single-Trade-Per-Day Session Cooldown (`DAILY_SUBMITTED_DATES`)**:
+   - To eliminate cascading multi-entries or re-triggers following chart recalculations (`calculate(0, ctx)` resetting instance variables) or stop-outs within the same session window, all three studies enforce a thread-safe JVM-static session set `DAILY_SUBMITTED_DATES = ConcurrentHashMap.newKeySet()`.
+   - Before order submission, `executeAutoTradeIfArmed` verifies `!DAILY_SUBMITTED_DATES.contains(today)` and immediately locks `today` upon order dispatch, marking all daily candidate trade structs as submitted. `onBarClose(ctx)` short-circuits entry evaluation when `DAILY_SUBMITTED_DATES.contains(today)`, mathematically guaranteeing at most 1 trade per study per calendar day.
 
 ## Empirical Evidence & Provenance
 Verified against MotiveWave trade exports reconciled into `results/backtest_provenance.db`:

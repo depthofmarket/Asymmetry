@@ -58,12 +58,18 @@ python scripts/query_provenance.py --strategy lucid_flex_ensemble --latest
 python scripts/query_provenance.py --hash-file <filepath>
 ```
 
-### Institutional 88+ Metrics Taxonomy & Schema (backtest/metrics.py)
-In addition to the 9 scalar legacy metrics, the provenance database schema and `backtest/metrics.py` natively calculate and persist the complete 88+ institutional metric taxonomy:
+### Institutional 143-Metric Taxonomy & Schema (backtest/metrics.py)
+In addition to the 9 scalar legacy metrics, the provenance database schema and `backtest/metrics.py` natively calculate and persist the comprehensive 143 institutional metric taxonomy, integrating deep microstructure, directional symmetry, and walk-forward stability metrics from the `investing-algorithm-framework`:
+- **Directional Symmetry & Long vs. Short Edge**: Separate long/short win rates (`long_win_rate`, `short_win_rate`), trade counts, long/short profit factors (`long_profit_factor`, `short_profit_factor`), net PnL by side, and `long_short_edge_asymmetry` ($\text{PF}_{\text{long}} / \text{PF}_{\text{short}}$).
+- **Trade Microstructure Excursion**: Mean and Max Maximum Favorable Excursion (`mean_mfe`, `max_mfe`), Mean and Max Maximum Adverse Excursion (`mean_mae`, `max_mae`), MFE/MAE edge efficiency ratio ($\mathbb{E}[\text{MFE}] / \mathbb{E}[\text{MAE}]$), and total PnL edge efficiency ratio ($\text{Net PnL} / \sum \text{MFE}$).
+- **Temporal Holding Discipline & Duration Asymmetry**: Average trade duration (`avg_hold_time_mins`), win duration (`avg_win_duration_mins`), loss duration (`avg_loss_duration_mins`), and Holding Duration Asymmetry ($\text{HDA} = \bar{\tau}_{\text{loss}} / \bar{\tau}_{\text{win}}$) to detect loss-aversion discipline breakdown.
+- **Trading Cadence & Market Exposure**: True session exposure ratio (`exposure_ratio`, `market_exposure_pct`), cadence frequencies (`trades_per_day`, `trades_per_week`, `trades_per_month`, `trades_per_year`).
+- **Calendar & Periodicity Performance**: Percentage winning months (`percentage_winning_months`), percentage winning years (`percentage_winning_years`), average monthly PnL for winning vs losing months, best/worst calendar months and years.
+- **Walk-Forward Stability & Multi-Window Consistency**: Return consistency (`return_consistency`), win rate consistency (`win_rate_consistency`), Sharpe consistency across rolling windows (`sharpe_consistency`), and composite multi-window stability scores (`consistency_score`, `stability_score`).
 - **Risk-Adjusted Ratios**: Sharpe, Sortino, Calmar, Omega, Gain-to-Pain (Schwager), Ulcer Performance Index (Martin), Sterling, Burke, Modified Burke, Kappa 3, Pezier Adjusted Sharpe.
 - **Drawdown & Underwater Topology**: Max Drawdown ($ and %), Average Drawdown, Longest Drawdown Calendar Days (CDD), Longest Sessions Underwater, Average DD Duration, Ulcer Index, Pain Index, Underwater Exposure %, Recovery Factor.
 - **Tail Risk & Value at Risk (VaR)**: Parametric VaR (95%, 99%), Historical VaR (95%, 99%), Cornish-Fisher expansion VaR (95%), Conditional VaR / Expected Shortfall (CVaR 95%, CVaR 99%), Traded-session CVaR 95%, Tail Risk Ratio (95th/5th percentile).
-- **Trade Microstructure & Distribution**: Expectancy ($/trade), Expectancy Score / Edge Ratio, Payoff Ratio, Scratch Rate %, Trimmed Profit Factor (excluding top 2% outlier wins), Top 5 Wins Dominance %, Median Trade PnL.
+- **Trade Microstructure & Distribution**: Expectancy ($/trade), Expectancy Score / Edge Ratio, Payoff Ratio, Scratch Rate %, Trimmed Profit Factor (excluding top 2% outlier wins), Top 5 Wins Dominance %, Median Trade PnL, Top 5% Adversarial Trimming.
 - **Higher Statistical Moments & Tests**: Fisher-Pearson Skewness, Excess Kurtosis, Student's t-statistic, Edge P-value, Van Tharp System Quality Number (SQN), Jarque-Bera Normality Test Statistic & P-value.
 - **Multiple Testing & Overfitting**: Probabilistic Sharpe Ratio (PSR), Deflated Sharpe Ratio (DSR), Expected Max Sharpe ($\text{SR}^*$), Minimum Track Record Length (MinTRL).
 - **Capital Sizing & Ruin**: Full Kelly Criterion fraction, Half Kelly sizing, Analytical Gambler's Ruin, Max Win/Loss streaks.

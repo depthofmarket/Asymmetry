@@ -240,3 +240,62 @@ def test_cli_query_provenance_institutional_stats():
     assert res_calmar.returncode == 0
     assert "LucidFlex 25K Multi-Strategy Ensemble" in res_calmar.stdout
     assert "1.03" in res_calmar.stdout
+
+
+# =============================================================================
+# 4. IAF MICROSTRUCTURE, DIRECTIONAL SYMMETRY & CONSISTENCY TESTS
+# =============================================================================
+
+def test_iaf_directional_symmetry_and_excursion_metrics():
+    """Verifies Long vs Short separation, holding duration asymmetry, and MFE/MAE."""
+    df_trades = pd.DataFrame({
+        "pnl": [150.0, -80.0, 200.0, -100.0, 300.0, -120.0, 180.0, -90.0],
+        "direction": ["LONG", "LONG", "LONG", "LONG", "SHORT", "SHORT", "SHORT", "SHORT"],
+        "hold_minutes": [25.0, 45.0, 30.0, 50.0, 20.0, 60.0, 35.0, 55.0],
+        "mfe": [220.0, 20.0, 250.0, 15.0, 350.0, 30.0, 210.0, 10.0],
+        "mae": [40.0, 95.0, 30.0, 110.0, 25.0, 130.0, 50.0, 105.0],
+    })
+
+    metrics = bm.calculate_institutional_metrics(df_trades, capital=25000.0)
+
+    # 1. Long vs Short symmetry
+    assert metrics["number_of_long_trades"] == 4
+    assert metrics["number_of_short_trades"] == 4
+    assert metrics["winning_long_trades"] == 2
+    assert metrics["losing_long_trades"] == 2
+    assert metrics["long_win_rate"] == 50.0
+    assert metrics["short_win_rate"] == 50.0
+    assert metrics["long_profit_factor"] == round(350.0 / 180.0, 2)
+    assert metrics["short_profit_factor"] == round(480.0 / 210.0, 2)
+    assert metrics["long_net_pnl"] == 170.0
+    assert metrics["short_net_pnl"] == 270.0
+    assert metrics["long_short_edge_asymmetry"] > 0.0
+
+    # 2. Excursions
+    assert metrics["mean_mfe"] > 0.0
+    assert metrics["mean_mae"] > 0.0
+    assert metrics["mfe_mae_ratio"] > 1.0
+    assert metrics["edge_efficiency_ratio"] > 0.0
+
+    # 3. Holding duration and asymmetry
+    assert metrics["avg_hold_time_mins"] > 0.0
+    assert metrics["avg_win_duration_mins"] > 0.0
+    assert metrics["avg_loss_duration_mins"] > metrics["avg_win_duration_mins"]
+    assert metrics["holding_duration_asymmetry"] > 1.0  # Losers held longer than winners
+
+
+def test_iaf_walk_forward_consistency_and_stability():
+    """Verifies rolling multi-window consistency and stability scores."""
+    np.random.seed(42)
+    daily = np.random.normal(50.0, 100.0, 252)
+    metrics = bm.calculate_institutional_metrics(daily, capital=25000.0)
+
+    assert "consistency_score" in metrics
+    assert "stability_score" in metrics
+    assert "return_consistency" in metrics
+    assert "win_rate_consistency" in metrics
+    assert "sharpe_consistency" in metrics
+
+    assert 0.0 <= metrics["consistency_score"] <= 100.0
+    assert 0.0 <= metrics["return_consistency"] <= 1.0
+    assert 0.0 <= metrics["sharpe_consistency"] <= 1.0

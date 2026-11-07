@@ -10,6 +10,47 @@ This is an append-only, chronological journal recording all agent actions, docum
 
 ---
 
+## [2026-11-07 16:35:00 UTC] [worker] [UPDATE] | Deep Extraction of IAF Framework: 143-Metric Expansion & MotiveWave Daily Cooldown Lock
+- **Pages Modified**:
+  - `backtest/metrics.py` (integrated directional symmetry, MFE/MAE excursions, holding duration asymmetry, and walk-forward consistency)
+  - `tests/test_institutional_metrics.py` (added unit tests for directional symmetry, MFE/MAE, duration asymmetry, and walk-forward stability)
+  - `src/motivewave/LucidMacroMomentumStudy.java` (implemented JVM-static thread-safe session cooldown lock DAILY_SUBMITTED_DATES)
+  - `src/motivewave/LucidMorningVABreakoutStudy.java` (implemented JVM-static thread-safe session cooldown lock DAILY_SUBMITTED_DATES)
+  - `src/motivewave/LucidGoldFixBreakoutStudy.java` (implemented JVM-static thread-safe session cooldown lock DAILY_SUBMITTED_DATES)
+  - `wiki/execution/motivewave-integration.md` (documented single-trade session cooldown lock invariant)
+  - `wiki/provenance/provenance-protocol.md` (documented expanded 143-metric institutional taxonomy)
+  - `wiki/hot.md` (recorded milestone deliverable and MotiveWave extension deployment)
+  - `wiki/log.md` (recorded operational journal entry)
+- **Summary**: Executed Option A from the strategic roadmap:
+  1. Extracted and ported core quantitative metric families from `coding-kitties/investing-algorithm-framework` into `backtest/metrics.py`, expanding the institutional metric suite from 105 to 143 metrics.
+  2. Implemented Directional Symmetry metrics (`long_win_rate`, `short_win_rate`, `long_profit_factor`, `short_profit_factor`, `winning_long_trades`, `losing_short_trades`, `long_net_pnl`, `short_net_pnl`, `long_short_edge_asymmetry`).
+  3. Implemented Trade Excursion & Edge Efficiency metrics (`mean_mfe`, `mean_mae`, `max_mfe`, `max_mae`, `mfe_mae_ratio`, `edge_efficiency_ratio`).
+  4. Implemented Holding Duration Discipline metrics (`avg_hold_time_mins`, `avg_win_duration_mins`, `avg_loss_duration_mins`, `holding_duration_asymmetry` HDA, `exposure_ratio`, cadence frequencies).
+  5. Implemented Multi-Window Walk-Forward Stability metrics (`return_consistency`, `win_rate_consistency`, `sharpe_consistency`, `consistency_score`, `stability_score`).
+  6. Resolved the MotiveWave multi-trade entry vulnerability (which caused 5 trades in 45 min on 2026-11-03) by deploying JVM-static thread-safe session locks `DAILY_SUBMITTED_DATES = ConcurrentHashMap.newKeySet()` across all three Java studies (`LucidMacroMomentumStudy.java`, `LucidMorningVABreakoutStudy.java`, `LucidGoldFixBreakoutStudy.java`).
+  7. Recompiled studies using JDK 25 (`tools/jdk25/Contents/Home/bin/javac`), packaged and deployed extension JAR to `/Users/novo/MotiveWave Extensions/LucidPropEnsemble.jar` (64 KB).
+- **Verification**: `pytest tests/test_institutional_metrics.py` passed 16/16 tests. MotiveWave test suites passed 28/28 tests. `python scripts/check_morning_readiness.py` verified 100% GREEN readiness. `python scripts/verify_wiki_integrity.py` confirmed 100% compliance across all 15 automated checks.
+
+## [2026-11-07 15:53:00 UTC] [worker] [UPDATE] | Evaluated and Falsified Candidate H29 (WTI Crude Oil NYMEX Settlement Auction at 14:27 ET)
+- **Pages Modified**:
+  - `docs/research_hypotheses/2026-11-07_crude_oil_settlement_auction_imbalance_h29.md` (pre-registered hypothesis and mechanical rules)
+  - `wiki/failed_ideas.md` (appended Failed Idea #33 WTI Crude Oil NYMEX Settlement Auction on MCL)
+  - `scripts/research_crude_settlement_s12.py` (implemented candidate backtest engine with CQG tick friction)
+  - `wiki/hot.md` (refreshed active state with Candidate S12 evaluation)
+  - `wiki/log.md` (recorded operational journal entry)
+- **Summary**: Implemented and executed `scripts/research_crude_settlement_s12.py` evaluating Candidate H29 (`candidate_crude_settlement_s12`) on `MCL` during the official NYMEX 2-minute daily settlement window (14:28:00 to 14:30:00 ET). Tested both Drive Into Settlement (14:28–14:30) and Post-Settlement Snapback (14:30–14:35) across 365 trade events from 2021 to 2026. Variant 1 generated Profit Factor 0.50, Net -$1,318.60, Win Rate 33.97%, and Max Drawdown -$1,430.36. Variant 2 generated Profit Factor 0.48, Net -$1,392.60, Win Rate 36.44%, and Max Drawdown -$1,378.12. Confirmed structural root cause: the 600% volume surge during 14:28–14:30 ET is almost entirely bilateral Trade-at-Settlement (TAS) block crossing between commercial market makers, producing massive volume with near-zero directional price displacement; 2-minute adverse friction completely consumes the microscopic 3–4 cent moves. Recorded run `candidate_crude_settlement_s12_2021_2026` to `results/backtest_provenance.db` under `StrategyTier.CANDIDATE`. Falsified under Belfort Step 04 & Step 05.
+- **Verification**: `python scripts/query_provenance.py --strategy candidate_crude_settlement_s12 --latest` verified footer and metrics under CANDIDATE tier. `python scripts/verify_wiki_integrity.py` passed 100%.
+
+## [2026-11-07 15:48:00 UTC] [worker] [UPDATE] | Evaluated and Falsified Candidate H28 (Micro Gold Morning VA Breakout at 09:45 ET)
+- **Pages Modified**:
+  - `docs/research_hypotheses/2026-11-07_gold_morning_va_breakout_h28.md` (pre-registered hypothesis and mechanical rules)
+  - `wiki/failed_ideas.md` (appended Failed Idea #32 Micro Gold Morning VA Breakout on MGC)
+  - `scripts/research_gold_va_breakout_s11.py` (implemented candidate backtest engine with CQG tick friction)
+  - `wiki/hot.md` (refreshed active state with Candidate S11 evaluation)
+  - `wiki/log.md` (recorded operational journal entry)
+- **Summary**: Implemented and executed `scripts/research_gold_va_breakout_s11.py` evaluating Candidate H28 (`candidate_gold_va_breakout_s11`) on `MGC` at 09:45 ET. Across 367 trades from 2021 to 2026, the strategy generated Profit Factor 1.02, Net $266.42, Win Rate 47.14%, and Max Drawdown -$916.46. In-Sample (2021–2024) was negative (243 trades, PF 0.91, Net -$612.82), completely failing Belfort Step 04 threshold (PF >= 1.25). Active `OUTLIER_DOMINANCE` warning (single largest trade represented 66.3% of cumulative net profit). Confirmed structural root cause: the 09:30 ET US equity cash open is not the primary institutional price anchor for Gold. The true global institutional auction is the 10:00 AM ET LBMA PM Fix; pre-Fix trading between 09:30 and 10:00 ET is dominated by bullion bank inventory accumulation and stop whipsaws. Recorded run `candidate_gold_va_breakout_s11_2021_2026` to `results/backtest_provenance.db` under `StrategyTier.CANDIDATE`. Falsified under Belfort Step 04 & Step 05.
+- **Verification**: `python scripts/query_provenance.py --strategy candidate_gold_va_breakout_s11 --latest` verified footer and metrics under CANDIDATE tier. `python scripts/verify_wiki_integrity.py` passed 100%.
+
 ## [2026-11-07 15:38:00 UTC] [worker] [UPDATE] | Evaluated and Falsified Candidate H27 (Dalton Overnight Inventory Correction at 09:35 ET)
 - **Pages Modified**:
   - `docs/research_hypotheses/2026-11-07_overnight_inventory_imbalance_correction_h27.md` (pre-registered hypothesis and mechanical rules)
@@ -332,3 +373,15 @@ This is an append-only, chronological journal recording all agent actions, docum
   4. Enhanced interactive HTML dashboard (`results/strategy_dashboard/dashboard.html`) with responsive institutional risk KPI cards (Sortino/Calmar, Omega/Half-Kelly, Trimmed PF/Top 5 Dominance) and provenance verification badges.
   5. Re-rendered all publication-grade PNG sheets across `results/strategy_dashboard/` and `results/prop_firm_dashboard/`.
 - **Verification**: Executed `scripts/generate_all_dashboards.py` (0 exit code). Verified PNG generation timestamps and dimensions. Executed `python3 scripts/verify_wiki_integrity.py` (15/15 PASS).
+
+
+## [2026-11-07 16:30:00 UTC] [adversarial-auditor] [VETO] | Evaluated and permanently vetoed Candidate 4 (H30 Small-Cap Beta Diffusion Lag on M2K)
+- **Pages Modified**: `wiki/failed_ideas.md`, `wiki/hot.md`, `wiki/log.md`
+- **Summary**:
+  1. Implemented point-in-time multi-asset backtest for Candidate 4 (H30: 10:00 ET Small-Cap Beta Diffusion Lag on M2K conditioned on 09:30-10:00 ET ES/NQ concordance and rolling 20-day beta lag) in `scripts/research_small_cap_diffusion_s4.py`.
+  2. Recorded initial candidate walkforward run `candidate_small_cap_diffusion_s4_2021_2026` in `results/backtest_provenance.db` (52 trades, WR 48.1%, PF 1.33, Net +$326.10, MaxDD -$223.00, Sharpe 2.00).
+  3. Dispatched Red-Team Adversary (`adversarial-auditor`) who implemented and executed `scripts/red_team_audit_small_cap_diffusion_s4.py`.
+  4. Discovered fatal fragility: Belfort Step 07 Parameter Plateau Cliff (stop-loss perturbation +12.5% to 9.0 pts produced Stability Ratio of 0.68x < 0.70x), complete statistical insignificance (t-stat = 0.92, p = 0.3578; 35.8% chance of random noise), unviable trade frequency (9 trades/year = $0.15/day EV), two consecutive losing years (2024 PF 0.52, 2025 PF 0.84), 80.8% underwater duration (980-day recovery), and severe outlier concentration (top 3 trades = 71.6% of net profit).
+  5. Issued BINDING VETO and documented detailed autopsy as Entry #34 in `wiki/failed_ideas.md`.
+- **Verification**: `python3 scripts/red_team_audit_small_cap_diffusion_s4.py` completed cleanly. `python3 scripts/verify_wiki_integrity.py` confirmed 15/15 checks clean.
+

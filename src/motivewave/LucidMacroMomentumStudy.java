@@ -103,6 +103,8 @@ public class LucidMacroMomentumStudy extends Study {
     private final Set<LocalDate> processedDays = new HashSet<>();
     private final Set<LocalDate> processed10amDays = new HashSet<>();
     private final Map<LocalDate, List<ActiveTrade>> tradesByDate = new HashMap<>();
+    // IAF Session Cooldown Lock: strictly enforces <= 1 automated trade per session
+    private static final Set<LocalDate> DAILY_SUBMITTED_DATES = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     private static class RthPriorStats {
         double high = Double.NEGATIVE_INFINITY;
@@ -962,8 +964,8 @@ public class LucidMacroMomentumStudy extends Study {
         List<ActiveTrade> dayTrades = tradesByDate.get(today);
         if (dayTrades == null) return;
 
-        // 1. If flat, check if an unsubmitted trade signal exists for today
-        if (ctx.getPosition() == 0) {
+        // 1. If flat and no trade submitted today, check if an unsubmitted trade signal exists for today
+        if (ctx.getPosition() == 0 && !DAILY_SUBMITTED_DATES.contains(today)) {
             for (ActiveTrade trade : dayTrades) {
                 if (!trade.orderSubmitted && !trade.closed && now >= trade.entryTime && now < trade.maxExitTime) {
                     executeAutoTradeIfArmed(ctx, trade.isLong ? SIGNAL_BUY : SIGNAL_SELL, trade);
@@ -988,6 +990,18 @@ public class LucidMacroMomentumStudy extends Study {
 
     private synchronized void executeAutoTradeIfArmed(OrderContext ctx, Object signal, ActiveTrade trade) {
         if (ctx.getPosition() != 0) return; // Prevent double-entry / pyramiding
+
+        long now = ctx.getCurrentTime();
+        LocalDate today = trade != null && trade.date != null ? trade.date : Instant.ofEpochMilli(now).atZone(NY_ZONE).toLocalDate();
+
+        // Strict Single-Trade-Per-Day Enforcement (IAF Cooldown Lock)
+        if (DAILY_SUBMITTED_DATES.contains(today)) {
+            logExecutionEvent("ORDER_BLOCKED_SESSION_COOLDOWN", "LucidMacroMomentum",
+                ctx.getInstrument() != null ? ctx.getInstrument().getSymbol() : "UNKNOWN",
+                "BLOCKED", 0.0, 0.0, 0.0, 0,
+                "Single trade per session lock active for " + today + ". Additional entries blocked.");
+            return;
+        }
 
         // Gateway-level circuit breaker check
         DaemonRiskState riskState = loadDaemonRiskState();
@@ -1026,12 +1040,22 @@ public class LucidMacroMomentumStudy extends Study {
         Enums$OrderAction entryAction = isLong ? Enums$OrderAction.BUY : Enums$OrderAction.SELL;
         Order entry = ctx.createMarketOrder(entryAction, contracts);
         ctx.submitOrders(entry);
+
+        // Lock session cooldown immediately to guarantee non-repainting single execution
+        DAILY_SUBMITTED_DATES.add(today);
         trade.orderSubmitted = true;
         trade.entryOrderId = entry != null ? entry.getOrderId() : null;
 
+        List<ActiveTrade> dayTrades = tradesByDate.get(today);
+        if (dayTrades != null) {
+            for (ActiveTrade t : dayTrades) {
+                t.orderSubmitted = true;
+            }
+        }
+
         logExecutionEvent("ORDER_SUBMITTED", "LucidMacroMomentum", ctx.getInstrument().getSymbol(),
             entryAction.toString(), trade.entryPrice, stopPrice, targetPrice, contracts,
-            "Market entry submitted. Brackets pending fill confirmation.");
+            "Market entry submitted. Brackets pending fill confirmation. Daily cooldown locked.");
     }
 
     @Override
