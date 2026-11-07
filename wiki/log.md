@@ -245,3 +245,14 @@ This is an append-only, chronological journal recording all agent actions, docum
   4. Built native Model Context Protocol (MCP) server `scripts/asymmetry_mcp_server.py` operating over JSON-RPC 2.0 stdio with zero external dependencies, providing 5 agent tools (`asymmetry_query_stat`, `asymmetry_list_runs`, `asymmetry_compare_strategies`, `asymmetry_inspect_bundle`, `asymmetry_verify_data_hash`).
   5. Built dedicated test suites in `tests/test_bundle.py` (3 tests) and `tests/test_asymmetry_mcp_server.py` (9 tests), verifying bundle round-trip fidelity, fast manifest reading, JSON-RPC 2.0 compliance, tool schemas, and error dispatching.
 - **Verification**: `pytest tests/test_bundle.py tests/test_asymmetry_mcp_server.py tests/test_institutional_metrics.py tests/test_provenance_system.py tests/test_strategy_registry.py` passed 59/59 tests cleanly. Verified `python3 scripts/verify_wiki_integrity.py` confirms 15/15 checks clean.
+
+
+## [2026-11-07 11:20:00 UTC] [gemini] [DASHBOARD] | Synchronized PNG Tearsheets and Interactive HTML Dashboards with 92 Institutional Metrics & Provenance Footers
+- **Pages Modified**: `wiki/hot.md`, `wiki/log.md`
+- **Summary**:
+  1. Upgraded `scripts/generate_quant_strategy_dashboard.py` to directly integrate `backtest.metrics.calculate_institutional_metrics()`, computing the full 92-metric suite alongside exchange calendar statistics.
+  2. Expanded `06_strategy_comprehensive_scorecard_master.png` from 33 to 42 metrics, adding Sortino, Calmar, Omega, Gain-to-Pain, Half-Kelly sizing, Tail Risk Ratio, Trimmed Profit Factor (ex-2% luck), Top 5 Win Dominance, and cryptographic data SHA-256 / .obtf bundle verification rows.
+  3. Stamped `strategy_performance_quant_report.png` (Master Quant Poster) and `lucid_flex_25k_prop_mode_report.png` (Master Prop Poster) with official Rule 2 & 3 Provenance Verification footers permanently binding Run IDs, Strategy Tiers, and Parquet data hashes.
+  4. Enhanced interactive HTML dashboard (`results/strategy_dashboard/dashboard.html`) with responsive institutional risk KPI cards (Sortino/Calmar, Omega/Half-Kelly, Trimmed PF/Top 5 Dominance) and provenance verification badges.
+  5. Re-rendered all publication-grade PNG sheets across `results/strategy_dashboard/` and `results/prop_firm_dashboard/`.
+- **Verification**: Executed `scripts/generate_all_dashboards.py` (0 exit code). Verified PNG generation timestamps and dimensions. Executed `python3 scripts/verify_wiki_integrity.py` (15/15 PASS).
