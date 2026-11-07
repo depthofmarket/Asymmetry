@@ -225,7 +225,7 @@ def handle_compare_strategies(args: Dict[str, Any]) -> str:
         ("Win Rate", fmt_num(rec_a.win_rate, suffix="%"), fmt_num(rec_b.win_rate, suffix="%")),
         ("Profit Factor", fmt_num(rec_a.profit_factor), fmt_num(rec_b.profit_factor)),
         ("Net Profit", fmt_num(rec_a.net_profit, prefix="$"), fmt_num(rec_b.net_profit, prefix="$")),
-        ("Max Drawdown", fmt_num(rec_a.max_drawdown, prefix="-$"), fmt_num(rec_b.max_drawdown, prefix="-$")),
+        ("Max Drawdown", fmt_num(abs(rec_a.max_drawdown), prefix="-$"), fmt_num(abs(rec_b.max_drawdown), prefix="-$")),
         ("Sharpe Ratio", fmt_num(rec_a.sharpe_ratio), fmt_num(rec_b.sharpe_ratio)),
         ("Sortino Ratio", fmt_num(rec_a.sortino_ratio), fmt_num(rec_b.sortino_ratio)),
         ("Calmar Ratio", fmt_num(rec_a.calmar_ratio), fmt_num(rec_b.calmar_ratio)),
