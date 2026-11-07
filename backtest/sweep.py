@@ -10,7 +10,7 @@ import pandas as pd
 
 from backtest.engine import BacktestEngine
 from backtest.portfolio import Portfolio
-from results.heatmap import HeatmapPaths, plot_heatmap
+from backtest.heatmap import HeatmapPaths, plot_heatmap
 
 
 Metric = Literal[

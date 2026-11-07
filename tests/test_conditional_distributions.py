@@ -6,7 +6,7 @@ import unittest
 
 import pandas as pd
 
-from results.analysis import export_conditional_distribution_report, summarize_conditional_distributions
+from backtest.analysis import export_conditional_distribution_report, summarize_conditional_distributions
 
 
 def _sample_trades() -> pd.DataFrame:

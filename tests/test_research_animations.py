@@ -7,7 +7,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from results.research_animations import _build_trade_surface, _load_trades, export_research_animations
+from backtest.research_animations import _build_trade_surface, _load_trades, export_research_animations
 import matplotlib.animation as animation
 
 

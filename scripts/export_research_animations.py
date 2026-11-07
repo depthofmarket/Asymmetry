@@ -10,7 +10,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from config.backtest_config import RESEARCH_CONFIG
-from results.research_animations import export_research_animations
+from backtest.research_animations import export_research_animations
 
 
 def parse_args() -> argparse.Namespace:

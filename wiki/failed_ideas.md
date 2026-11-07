@@ -45,6 +45,9 @@ This ledger is an append-only record of all research hypotheses, sizing policies
 33. [H29: WTI Crude Oil NYMEX Settlement Auction Imbalance (14:27 ET on MCL)](#33-h29-wti-crude-oil-nymex-settlement-auction-imbalance-1427-et-on-mcl-2026-11-07)
 34. [H30: Small-Cap Beta Diffusion Lag (10:00 ET on M2K)](#34-h30-small-cap-beta-diffusion-lag-1000-et-on-m2k-2026-11-07)
 35. [H32: Post-Lunch Institutional Capital Deployment (13:00 ET on MNQ)](#35-h32-post-lunch-institutional-capital-deployment-1300-et-on-mnq-2026-11-07)
+36. [H31: Value vs Growth Factor Dispersion Momentum (10:15 ET on MYM)](#36-h31-value-vs-growth-factor-dispersion-momentum-1015-et-on-mym-2026-11-07)
+37. [H33: London 4 PM Global Benchmark Fix Equity Drive (10:50 ET on MES)](#37-h33-london-4-pm-global-benchmark-fix-equity-drive-1050-et-on-mes-2026-11-07)
+38. [H38: 0DTE Dealer Gamma Absorption & IB Re-entry Trap (10:15 ET on MES)](#38-h38-0dte-dealer-gamma-absorption-ib-re-entry-trap-1015-et-on-mes-2026-11-07)
 
 ---
 
@@ -385,6 +388,51 @@ This ledger is an append-only record of all research hypotheses, sizing policies
   - Microstructural Asymmetry: Stop loss hit 188 times (43.7%, -$10,227.20) vs profit target hit only 55 times (12.8%). Stops triggered at a 3.4:1 ratio over target fills. Breakeven stops hit 77 times (17.9%).
 - **Structural Root Cause**: The 13:00 ET "post-lunch breakout" is a retail trading myth. Institutional algorithmic execution mandates (VWAP/TWAP) operate continuously throughout the day; aggressive afternoon institutional volume does not mobilize until 15:00 ET (European fixing) and 15:45 ET (NYSE MOC imbalances). At 13:00 ET, European markets have already closed (11:30 ET), leaving the order book in low-liquidity midday doldrums dominated by 0DTE options dealer gamma pinning. Breakouts of the 12:00–13:00 range consistently encounter dealer mean-reversion absorption, producing false breakouts that trap breakout traders and whip directly into stop losses.
 - **Standing Rule**: Standalone breakout strategies trading out of the 12:00–13:00 ET lunch compression prior to 15:00 ET without external macro catalysts are permanently rejected.
+
+### 36. H31: Value vs Growth Factor Dispersion Momentum (10:15 ET on MYM) (2026-11-07)
+- **Evaluation Date**: 2026-11-07
+- **Author / Agent**: Red-Team Quantitative Adversary (`adversarial_auditor`)
+- **Core Premise**: Entering directional momentum on Micro Dow (`MYM`) at 10:15 ET based on opening 45-minute (09:30–10:14 ET) factor dispersion between Tech/Growth (`MNQ`) and Old Economy/Value (`MYM`), holding until 11:15 ET under the hypothesis that opening institutional factor rotation cascades into late-morning trend continuation.
+- **Sample/Artifact**: 198 trades across 2021–2026 (`ym_1m_2020_2026_et.parquet` SHA-256: `ac564378b0742624eece750f20d655d5e961fdef8192b35cd57434066af5d900` & `nq_1m_2017_2026_cqg_et.parquet` SHA-256: `c9d78a716f5afe040c590fc974e980edfee029081ba47875f041b034c38b737a`). Evaluation script: `scripts/research_factor_dispersion_s5.py`.
+- **Empirical Failure Evidence**: 198 trades produced Profit Factor 0.80, Net -$503.70, Win Rate 31.82%, Max Drawdown -$728.90, Sharpe -1.46:
+  - In-Sample (2021–2024): 130 trades, PF 0.88, Net -$195.50, MaxDD -$400.50. Decisively failed Belfort Step 04 threshold (PF >= 1.25).
+  - Out-of-Sample (2025–2026): 68 trades, PF 0.69, Net -$308.20, Win Rate 25.0%, MaxDD -$515.20. Severe out-of-sample breakdown.
+  - 2026 Breakdown: 41 trades, Win Rate collapsed to 14.6%, PF 0.34, Net -$480.90.
+  - Directional Symmetry: Long PF 0.90 (-$120.00), Short PF 0.72 (-$383.70). Symmetrically unprofitable.
+  - Microstructural Skew: Stop loss hit 85 times (42.9%, -$2,332.50) vs profit target hit only 30 times (15.2%). Stops triggered at a 2.8:1 ratio over target fills. Breakeven stops hit 33 times (16.7%).
+- **Structural Root Cause**: While Value vs. Growth factor rotation operates as a macro trend on multi-month horizons, at the 45-to-60-minute intraday scale opening factor divergence is heavily mean-reverting. Cross-asset statistical arbitrage desks and quantitative market-neutral funds continuously trade the NQ/YM spread. When the opening spread widens during 09:30–10:14 ET, stat-arb programs actively fade the spread between 10:00 and 10:30 ET by buying the lagging index and selling the leader. Entering MYM momentum at 10:15 ET runs directly into this institutional mean-reversion liquidity, causing breakouts to reverse violently into stop losses. Furthermore, the price-weighted structure of the Dow Jones allows single high-dollar stock earnings gaps (e.g., UNH, GS) to create synthetic, non-macro factor dispersion that lacks continuation follow-through.
+- **Standing Rule**: Standalone factor dispersion momentum strategies trading cross-index relative performance (YM vs NQ) without real-time stat-arb spread-exhaustion filters are permanently rejected.
+
+### 37. H33: London 4 PM Global Benchmark Fix Equity Drive (10:50 ET on MES) (2026-11-07)
+- **Evaluation Date**: 2026-11-07
+- **Author / Agent**: Red-Team Quantitative Adversary (`adversarial_auditor`)
+- **Core Premise**: Entering directional momentum on Micro E-mini S&P 500 (`MES`) at 10:50 ET ahead of the 16:00 London / 11:00 ET WM/Refinitiv global fix, holding through 11:20 ET under the hypothesis that international cross-border portfolio rebalancing creates persistent directional trend extensions.
+- **Sample/Artifact**: 342 trades across 2021–2026 (`es_1m_2020_2026_cqg_et.parquet` SHA-256: `36f0a1042b9981b8166c32d2aad5b5452f7027fb210da65547d928dd791290f3`). Evaluation script: `scripts/research_london_fix_equity_s7.py`.
+- **Empirical Failure Evidence**: 342 trades produced Profit Factor 0.72, Net -$1,692.55, Win Rate 34.80%, Max Drawdown -$1,967.35, Sharpe -2.20:
+  - In-Sample (2021–2024): 227 trades, PF 0.66, Net -$1,414.05, MaxDD -$1,693.00. Decisively failed Belfort Step 04 threshold (PF >= 1.25).
+  - Out-of-Sample (2025–2026): 115 trades, PF 0.86, Net -$278.50, Win Rate 36.5%, MaxDD -$461.70.
+  - Multi-Year Failure: Net negative in 5 of 6 years (2021: PF 1.40, +$222.80; 2022: PF 0.31, -$1,127.85; 2023: PF 0.84, -$148.55; 2024: PF 0.63, -$360.45; 2025: PF 0.81, -$198.50; 2026: PF 0.91, -$80.00).
+  - 2022 Collapse: 69 trades, Win Rate 17.4%, PF 0.31, Net -$1,127.85.
+  - Directional Symmetry: Long PF 0.77 (-$719.60), Short PF 0.67 (-$972.95). Symmetrically unprofitable.
+  - Severe Microstructural Skew: Stop loss hit 139 times (40.6%, -$5,407.10) vs profit target hit only 35 times (10.2%). Stops triggered at an extreme 4.0:1 ratio over target fills. Breakeven stops hit 44 times (12.9%).
+- **Structural Root Cause**: The WM/Refinitiv 4:00 PM London Fix (11:00 AM ET) is primarily an FX rebalancing mechanism used for sovereign wealth and international currency hedging; on standard daily sessions, it transmits zero directional drift to US equity index futures. Furthermore, 10:50 ET directly precedes the European cash equity close (11:30 ET / 16:30 London), where European participants square books and flatten inventory rather than initiating new directional drives. Entering momentum at 10:50 ET buys the terminal exhaustion peak of the 09:30–10:30 ET US morning impulse right as 0DTE options dealers begin pinning volatility ahead of the NY midday lull, causing breakouts to violently reverse into stop losses at a 4:1 realization penalty.
+- **Standing Rule**: Standalone momentum strategies trading US equity index futures around the 11:00 ET London FX Fix prior to the European cash close without macro catalysts are permanently rejected.
+
+### 38. H38: 0DTE Dealer Gamma Absorption & IB Re-entry Trap (10:15 ET on MES) (2026-11-07)
+- **Evaluation Date**: 2026-11-07
+- **Author / Agent**: Red-Team Quantitative Adversary (`adversarial_auditor`)
+- **Core Premise**: Fading 30-minute Initial Balance (09:30–10:00 ET) breakout extensions that re-enter the IB between 10:01 and 10:15 ET on Micro E-mini S&P 500 (`MES`), holding toward the IB midpoint or opposite boundary under the hypothesis that 0DTE options dealer gamma absorption pins the market and traps breakout participants.
+- **Sample/Artifact**: 315 trades across 2021–2026 (`es_1m_2020_2026_cqg_et.parquet` SHA-256: `36f0a1042b9981b8166c32d2aad5b5452f7027fb210da65547d928dd791290f3`). Evaluation script: `scripts/research_gamma_absorption_s8.py`. Provenance Run ID: `candidate_gamma_absorption_s8_2021_2026`.
+- **Empirical Failure Evidence**: 315 trades produced Profit Factor 0.54, Net -$2,870.04, Win Rate 29.52%, Max Drawdown -$2,843.04, Sharpe -4.23:
+  - In-Sample (2021–2024): 223 trades, PF 0.43, Net -$2,577.33, Win Rate 26.5%, MaxDD -$2,577.33. Catastrophically failed Belfort Step 04 threshold (PF >= 1.25).
+  - Out-of-Sample (2025–2026): 92 trades, PF 0.84, Net -$292.71, Win Rate 37.0%, MaxDD -$515.20. Failed Belfort Step 05.
+  - 100% Calendar Year Failure: Negative in all 6 consecutive years (2021: PF 0.40; 2022: PF 0.39; 2023: PF 0.47; 2024: PF 0.46; 2025: PF 0.98; 2026: PF 0.72).
+  - Microstructural Skew: Stop loss hit 155 times (49.2%, -$5,835.75) vs profit target hit only 87 times (27.6%, +$3,370.41). Breakeven stops hit 48 times (15.2%), Time exits 25 times (7.9%). Stops were triggered at nearly a 2:1 ratio over target fills.
+- **Structural Root Cause**: Shallow re-entry into the 30-minute Initial Balance between 10:01 and 10:15 ET is not a "failed auction" or "dealer gamma trap" — it is overwhelmingly a standard breakout re-test that gathers liquidity before primary trend continuation. Fading this re-test steps directly in front of institutional trend continuation. Furthermore, attributing this action to daily "0DTE dealer gamma hedging" is anachronistic: daily 0DTE options did not even exist on Tuesdays and Thursdays prior to late 2022. When real institutional order flow initiates a breakout, options dealers short gamma are forced to dynamically hedge in the direction of the break, acting as a trend accelerant rather than a mean-reverting pin. Fading breakout pullbacks at 10:15 ET results in severe capital destruction.
+- **Standing Rule**: Standalone mean-reversion strategies fading Initial Balance breakout re-entries prior to 10:30 ET without confirmed order-book exhaustion (Delta divergence and volume absorption) are permanently rejected.
+
+
+
 
 
 

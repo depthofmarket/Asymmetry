@@ -10,6 +10,27 @@ This is an append-only, chronological journal recording all agent actions, docum
 
 ---
 
+## [2026-11-07 17:05:00 UTC] [gemini] [UPDATE] | Milestone 8: Executed Comprehensive Forensic Repository Purge & Reorganization (Reclaimed 5.04 GB)
+- **Pages Modified**:
+  - `backtest/heatmap.py` (relocated from `results/heatmap.py`)
+  - `backtest/analysis.py` (relocated from `results/analysis.py`)
+  - `backtest/research_animations.py` (relocated from `results/research_animations.py`)
+  - `backtest/sweep.py` (updated import path for heatmap)
+  - `tests/test_conditional_distributions.py` (updated import path for analysis)
+  - `scripts/export_research_animations.py` (updated import path for research_animations)
+  - `tests/test_research_animations.py` (updated import path for research_animations)
+  - `wiki/hot.md` (refreshed active state with Milestone 8 repository decluttering)
+  - `wiki/log.md` (recorded operational journal entry)
+- **Summary**: Executed approved forensic purge plan across the repository:
+  1. Purged `results/run_aliases/` containing 6 broken symlinks pointing to non-existent directories, completely clearing the VS Code explorer sidebar view.
+  2. Purged 38 massive raw CSV files taking 5,014 MB in `results/research_master/signal_exports/` and 313 legacy H4 exploratory files taking 53 MB in `results/research_master/h4_*`.
+  3. Safely preserved the ~2 MB of actively referenced calibration files (`execution_cost_assumptions/`, `research_protocol_audit.jsonl`, `signal_research/`) in `results/research_master/`.
+  4. Purged 36 loose, unreferenced scratchpad files and temporary parquets in `scratch/`.
+  5. Purged unreferenced directories `results/walkforward_2asset_2021_2024/` and `results/audit/`.
+  6. Relocated 3 active Python modules (`heatmap.py`, `analysis.py`, `research_animations.py`) into `backtest/`, updated all 4 import callers, and purged dead scripts `results/research_dashboards.py`, `results/visualize.py`, and `results/__init__.py`. `results/` is now strictly a clean artifact vault.
+  7. Shrunk `results/` from **5,069 MB down to 24 MB**, reclaiming over **5.04 GB of disk space**.
+- **Verification**: `pytest tests/test_conditional_distributions.py tests/test_research_animations.py tests/test_confluence.py tests/test_institutional_metrics.py tests/test_asymmetry_mcp_server.py tests/test_provenance_system.py tests/test_bundle.py` passed 48/48 tests in 6.17s. `python scripts/check_morning_readiness.py` is 100% GREEN. `python scripts/verify_wiki_integrity.py` passed 15/15 automated checks.
+
 ## [2026-11-07 16:50:00 UTC] [gemini] [UPDATE] | Option B: Declarative Confluence Scoring Cards & Native MCP Server Expansion
 - **Pages Modified**:
   - `backtest/confluence.py` (created declarative confluence scoring cards and decision trace engine)
@@ -412,5 +433,41 @@ This is an append-only, chronological journal recording all agent actions, docum
   4. Forensic root cause analysis: 13:00 ET coincides with European cash close liquidity vacuum (11:30 ET) and 0DTE dealer gamma pinning. 13:00 breakouts are false expansions that snap back into the lunch range, triggering stop losses at a 3.4:1 ratio over target fills (188 stops vs 55 targets).
   5. Issued BINDING VETO and documented detailed autopsy as Entry #35 in `wiki/failed_ideas.md`.
 - **Verification**: `python3 scripts/research_lunch_compression_s6.py` executed cleanly. `python3 scripts/verify_wiki_integrity.py` confirms 15/15 checks clean.
+
+
+## [2026-11-07 16:47:00 UTC] [adversarial-auditor] [VETO] | Evaluated and permanently vetoed Candidate 5 (H31 Value vs Growth Factor Dispersion Momentum on MYM)
+- **Pages Modified**: `wiki/failed_ideas.md`, `wiki/hot.md`, `wiki/log.md`
+- **Summary**:
+  1. Implemented point-in-time cross-asset backtest for Candidate 5 (H31: 10:15 ET Value vs Growth Factor Dispersion Momentum on MYM conditioned on 45-min NQ/YM divergence and morning range positioning) in `scripts/research_factor_dispersion_s5.py`.
+  2. Recorded candidate walkforward run `candidate_factor_dispersion_s5_2021_2026` in `results/backtest_provenance.db` (198 trades, WR 31.8%, PF 0.80, Net -$503.70, MaxDD -$728.90, Sharpe -1.46).
+  3. Verified Belfort Step 04 In-Sample breach: In-Sample (2021–2024) generated PF 0.88, Net -$195.50, failing mandatory PF >= 1.25 threshold. Out-of-Sample degraded to PF 0.69 (-$308.20). In 2026, win rate collapsed to 14.6% (PF 0.34, -$480.90).
+  4. Forensic root cause analysis: Intraday factor dispersion at the 45-min horizon is mean-reverting due to institutional quantitative statistical arbitrage (cross-index pairs trading) fading opening spread extremes between 10:00 and 10:30 ET. Dow 30 price-weighting artifacts (single-stock gaps in UNH, GS) generate false dispersion without follow-through. Stops were hit at a 2.8:1 ratio over targets (85 stops vs 30 targets).
+  5. Issued BINDING VETO and documented detailed autopsy as Entry #36 in `wiki/failed_ideas.md`.
+- **Verification**: `python3 scripts/research_factor_dispersion_s5.py` executed cleanly. `python3 scripts/verify_wiki_integrity.py` confirms 15/15 checks clean.
+
+
+## [2026-11-07 16:53:00 UTC] [adversarial-auditor] [VETO] | Evaluated and permanently vetoed Candidate 7 (H33 London 4 PM Global Benchmark Fix Equity Drive on MES)
+- **Pages Modified**: `wiki/failed_ideas.md`, `wiki/hot.md`, `wiki/log.md`
+- **Summary**:
+  1. Implemented point-in-time backtest for Candidate 7 (H33: 10:50 ET London 4 PM Global Benchmark Fix Equity Drive on MES following 10:00-10:44 ET pre-fix consolidation and 10:45-10:49 ET momentum thrust) in `scripts/research_london_fix_equity_s7.py`.
+  2. Recorded candidate walkforward run `candidate_london_fix_equity_s7_2021_2026` in `results/backtest_provenance.db` (342 trades, WR 34.8%, PF 0.72, Net -$1,692.55, MaxDD -$1,967.35, Sharpe -2.20).
+  3. Verified Belfort Step 04 In-Sample breach: In-Sample (2021–2024) generated PF 0.66, Net -$1,414.05, failing mandatory PF >= 1.25 threshold. Out-of-Sample generated PF 0.86 (-$278.50). Negative in 5 of 6 years (2022 PF 0.31, -$1,127.85).
+  4. Forensic root cause analysis: The 16:00 London Fix (11:00 AM ET) is primarily an FX hedging benchmark that transmits no directional drift to US equity index futures. Furthermore, 10:50 ET directly precedes the 11:30 ET European cash close where participants square books and flatten delta. Entering momentum at 10:50 ET buys the terminal exhaustion of morning drives ahead of 0DTE midday pinning, triggering stop losses at an extreme 4.0:1 ratio over target fills (139 stops vs 35 targets).
+  5. Issued BINDING VETO and documented detailed autopsy as Entry #37 in `wiki/failed_ideas.md`.
+- **Verification**: `python3 scripts/research_london_fix_equity_s7.py` executed cleanly. `python3 scripts/verify_wiki_integrity.py` confirms 15/15 checks clean.
+
+
+## [2026-11-07 17:03:00 UTC] [adversarial-auditor] [VETO] | Evaluated and permanently vetoed Candidate 8 (H38 0DTE Dealer Gamma Absorption & IB Re-entry Trap on MES)
+- **Pages Modified**: `wiki/failed_ideas.md`, `wiki/hot.md`, `wiki/log.md`
+- **Summary**:
+  1. Implemented point-in-time backtest for Candidate 8 (H38: 10:15 ET 0DTE Dealer Gamma Absorption & IB Re-entry Trap on MES when session opens inside prior Value Area) in `scripts/research_gamma_absorption_s8.py`.
+  2. Recorded candidate walkforward run `candidate_gamma_absorption_s8_2021_2026` in `results/backtest_provenance.db` (315 trades, WR 29.5%, PF 0.54, Net -$2,870.04, MaxDD -$2,843.04, Sharpe -4.23).
+  3. Verified catastrophic Belfort Step 04 In-Sample breach: In-Sample (2021–2024) generated PF 0.43, Net -$2,577.33, failing mandatory PF >= 1.25 threshold. Out-of-Sample generated PF 0.84 (-$292.71). Negative in all 6 consecutive years.
+  4. Forensic root cause analysis: Shallow re-entry into the 30-minute Initial Balance is not a "failed auction" or "dealer gamma trap" — it is standard liquidity re-testing before primary trend continuation. Fading this re-test steps directly in front of institutional trend continuation. Furthermore, attributing this action to daily 0DTE dealer gamma hedging is anachronistic (Tuesday/Thursday 0DTE SPX options did not exist prior to November 2022). When real institutional order flow initiates a breakout, options dealers short gamma dynamically hedge in the direction of the break, acting as a trend accelerant rather than a pin. Stop losses were triggered at nearly a 2:1 ratio over target fills (155 stops vs 87 targets).
+  5. Issued BINDING VETO and documented detailed autopsy as Entry #38 in `wiki/failed_ideas.md`.
+- **Verification**: `python3 scripts/research_gamma_absorption_s8.py` executed cleanly. `python3 scripts/verify_wiki_integrity.py` confirms 15/15 checks clean.
+
+
+
 
 
