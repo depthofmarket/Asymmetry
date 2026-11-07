@@ -7,7 +7,7 @@ tags:
   - sqlite
   - governance
 created: "2026-11-05"
-updated: "2026-11-06"
+updated: "2026-11-07"
 status: active
 strategies:
   - morning_va_breakout_s1
@@ -83,46 +83,80 @@ To eliminate selection bias and data-mining overfitting across multiple strategy
 - **Deflation Mechanism**: The benchmark Sharpe ratio is elevated to $\max(\text{SR}_{\text{benchmark}}, \text{SR}^*)$, adjusting the Probabilistic Sharpe Ratio (PSR) for the selection bias of multiple trials.
 - **Integration**: Available in `backtest/dashboard_analytics.py` via `deflated_sharpe_ratio()` and returned directly by `performance_metrics()` under keys `"dsr"` and `"sr_star"`.
 
+### Open Backtest Format (.obtf) Portable Bundles (backtest/bundle.py)
+To preserve complete vector and event-driven backtest results without bloating SQLite, Asymmetry implements the Open Backtest Format (`.obtf`). Each `.obtf` file is a ZIP-compressed container storing:
+- `manifest.json`: JSON metadata, configuration parameters, data hashes, and the complete 92 institutional metrics snapshot.
+- `trades.parquet`: Complete tick/bar level trade ledger with entry/exit timestamps, prices, commissions, slippage, and PnL.
+- `equity.parquet`: High-resolution equity curve and drawdown trajectory across all evaluated trading sessions.
+- `audit_log.json`: Chronological event log of order intents, fill confirmations, and risk guardrail interventions.
+
+#### Tiered Storage & Sub-Millisecond Indexing
+- High-level queries, strategy rankings, and multi-run sweeps query indexed columns in `results/backtest_provenance.db` in $< 1\text{ms}$.
+- Granular post-trade inspection and trade log forensic analytics stream directly from `.obtf` bundles using `BacktestBundle.read_manifest()` or `BacktestBundle.load()`.
+- CLI bundle inspection:
+  ```bash
+  python scripts/query_provenance.py --strategy lucid_flex_ensemble --latest --inspect-bundle
+  ```
+
+### Native Model Context Protocol (MCP) Server (scripts/asymmetry_mcp_server.py)
+Asymmetry provides a native, pure-standard-library Model Context Protocol server operating over JSON-RPC 2.0 (stdio). AI agents (Antigravity, Claude, Codex) query backtest provenance, inspect `.obtf` bundles, and compare strategies directly through standard tool calls:
+1. `asymmetry_query_stat`: Queries any of 92 institutional metrics for authorized strategies, automatically returning the mandatory Rule 2/3 provenance verification footer.
+2. `asymmetry_list_runs`: Lists verified canonical backtest runs with strategy tiers, sample sizes, and warning flags.
+3. `asymmetry_compare_strategies`: Side-by-side institutional tearsheet comparing risk-adjusted metrics, drawdown topologies, and tail risk.
+4. `asymmetry_inspect_bundle`: Extracts granular trade metrics, top winning trades, and worst losses directly from `.obtf` containers.
+5. `asymmetry_verify_data_hash`: Computes SHA-256 hashes of dataset files and cross-references them against recorded backtests.
+
 ## Empirical Evidence & Provenance
-The active database contains exactly 5 canonical verified runs as of 2026-11-05:
+The active database contains exactly 9 canonical verified runs as of 2026-11-07:
 
 ```text
-==========================================================================================
-RUN ID                           | STRATEGY               | METHOD       | PF     | WIN%   | NET PNL    | WARN 
-==========================================================================================
-run_canonical_forward_demo_live_parity | lucid_flex_forward_demo | forward_demo | 99.00  | 100.0% | $145       | ⚠️ 
-run_canonical_lucid_flex_ensemble_2021_2026 | lucid_flex_ensemble    | multi_year_walkforward | 1.56   | 55.1 % | $14,916    | ✅ 
-run_canonical_s3_gold_london_fix_2021_2026 | gold_london_fix_s3     | multi_year_walkforward | 1.59   | 58.3 % | $1,387     | ✅ 
-run_canonical_s2_macro_momentum_2021_2026 | macro_momentum_s2      | multi_year_walkforward | 1.44   | 49.0 % | $4,573     | ✅ 
-run_canonical_s1_va_breakout_2021_2026 | morning_va_breakout_s1 | multi_year_walkforward | 1.65   | 57.0 % | $8,956     | ✅ 
-==========================================================================================
+=========================================================================================================
+RUN ID                           | STRATEGY               | TIER         | METHOD       | PF     | WIN%   | NET PNL    | WARN 
+=========================================================================================================
+run_canonical_forward_demo_live_parity | lucid_flex_forward_demo | FORWARD_DEMO | forward_demo | 99.00  | 100.0% | $145       | ⚠️ 
+run_canonical_lucid_flex_ensemble_2021_2026 | lucid_flex_ensemble    | BASELINE     | multi_year_walkforward | 1.56   | 55.1 % | $14,916    | ✅ 
+run_canonical_s3_gold_london_fix_2021_2026 | gold_london_fix_s3     | BASELINE     | multi_year_walkforward | 1.59   | 58.3 % | $1,387     | ✅ 
+run_canonical_s2_macro_momentum_2021_2026 | macro_momentum_s2      | BASELINE     | multi_year_walkforward | 1.44   | 49.0 % | $4,573     | ✅ 
+run_canonical_s1_va_breakout_2021_2026 | morning_va_breakout_s1 | BASELINE     | multi_year_walkforward | 1.65   | 57.0 % | $8,956     | ✅ 
+run_alpha_factory_lucid_flex_ensemble_20261106_043319 | lucid_flex_ensemble    | BASELINE     | alpha_factory_adversarial_walkforward | 1.56   | 55.1 % | $14,916    | ✅ 
+run_plateau_sweep_s3_gold_london_fix | gold_london_fix_s3     | BASELINE     | sensitivity_analysis_plateau | 1.59   | 58.3 % | $1,387     | ✅ 
+run_plateau_sweep_s2_macro_momentum | macro_momentum_s2      | BASELINE     | sensitivity_analysis_plateau | 1.44   | 49.0 % | $4,573     | ✅ 
+run_plateau_sweep_s1_va_breakout | morning_va_breakout_s1 | BASELINE     | sensitivity_analysis_plateau | 1.65   | 57.0 % | $8,956     | ✅ 
+=========================================================================================================
 ```
 
-Example verified provenance record for `lucid_flex_forward_demo`:
+Example verified provenance record for `lucid_flex_ensemble` with Institutional Risk Metrics:
 ```text
 ────────────────────────────────────────────────────────────────────────────
 PROVENANCE VERIFICATION FOOTER (Rule 2 & 3)
 ────────────────────────────────────────────────────────────────────────────
-Run ID       : run_canonical_forward_demo_live_parity
-Strategy     : lucid_flex_forward_demo — Forward Demo Parity Ledger
-Methodology  : forward_demo
-Date Range   : 2026-10-30 to 2026-10-30 (8 days)
-Data File    : results/forward_test/demo_trades_ledger.csv
-Data SHA-256 : 696515c0e649bc3371ea13e9a4f66a7071720d297ffb12db9845d4a13824bbcd
-Git Commit   : 7d63ca2a3e8
-Cost Model   : CQG Live Fill Parity [NET]
-Metrics      : Trades: 1 | Win%: 100.00% | PF: 99.00 | Net: $144.70 | MaxDD: $0.00
-Warning Flags: LOW_SAMPLE_SIZE, OUTLIER_DOMINANCE, SHORT_EVALUATION_WINDOW
+Run ID       : run_canonical_lucid_flex_ensemble_2021_2026
+Strategy     : lucid_flex_ensemble — LucidFlex 25K Multi-Strategy Ensemble
+Strategy Tier: BASELINE
+Methodology  : MULTI_YEAR_WALKFORWARD
+Date Range   : 2021-01-07 to 2026-10-30 (2423 days)
+Data File    : data/processed/unified_three_strategy_markov_portfolio_trades_2021_2026.parquet
+Data SHA-256 : ecad8d063caa18344491c5c3050211c35f7383b0e8802f1178e3902306b686ca
+Git Commit   : 5b58930e15
+Bundle (.obtf): results/bundles/run_canonical_lucid_flex_ensemble_2021_2026.obtf
+Cost Model   : Multi-Asset CQG Adverse Realism | $1.40 RT ($0.70/side micro) [NET (Includes slippage & comms)]
+Core Metrics : Trades: 543 | Win%: 55.06% | PF: 1.56 | Net: $14,916.04 | MaxDD: -$1,511.51
+Risk Metrics : Sortino: 2.22 | Calmar: 1.03 | Omega: 1.63 | CVaR95: $178.25 | Ulcer: 1.06% | Half-Kelly: 0.099
+Warning Flags:
+None (Clean Run)
 ────────────────────────────────────────────────────────────────────────────
 ```
 
 ## Implementation & File Map
-- **Query CLI**: `scripts/query_provenance.py`
+- **Query CLI**: `scripts/query_provenance.py` (Supports `--stat`, `--inspect-bundle`, `--hash-file`, `--tier`, `--list`)
 - **Database Engine**: `backtest/provenance.py` (ACID SQLite schema + JSONL mirror)
+- **Open Backtest Format Engine**: `backtest/bundle.py` (`.obtf` container packaging and extraction)
+- **Institutional Metrics Engine**: `backtest/metrics.py` (92-metric vectorized analytics suite)
+- **MCP Server**: `scripts/asymmetry_mcp_server.py` (JSON-RPC 2.0 stdio AI agent interface)
 - **Autonomous Alpha Factory**: `scripts/alpha_factory.py` (gated `--record`, dynamic Git commit, dynamic dates, true `gross_profit`, and empirical DSR trials)
 - **Primary Store**: `results/backtest_provenance.db`
 - **Audit Mirror**: `results/backtest_provenance.jsonl`
-- **Unit & Regression Tests**: `tests/test_provenance_system.py`, `tests/test_alpha_factory_provenance.py`
+- **Unit & Regression Tests**: `tests/test_provenance_system.py`, `tests/test_institutional_metrics.py`, `tests/test_bundle.py`, `tests/test_asymmetry_mcp_server.py`, `tests/test_alpha_factory_provenance.py`
 
 ## Invariant Rules & Failure Modes
 1. **Rule 1: Never Fabricate Numbers**: If a strategy is not recorded in `results/backtest_provenance.db`, refuse to guess.

@@ -25,6 +25,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from backtest import dashboard_analytics as da
 from backtest import metrics as bm
+from backtest.bundle import BacktestBundle
 from backtest.provenance import ProvenanceStore, default_store
 from backtest.demo_parity_engine import DemoParityJournal, TRADES_LEDGER_PATH
 
@@ -58,6 +59,23 @@ def ingest_canonical_runs():
     m_s1 = da.performance_metrics(s1_trades, calendar, "research_pnl")
     daily_s1 = da.daily_series(s1_trades, calendar, "research_pnl")
     m_s1_ext = bm.calculate_institutional_metrics(s1_trades["research_pnl"].to_numpy(), daily_returns=daily_s1)
+    bundle_s1 = BacktestBundle.create(
+        run_id="run_canonical_s1_va_breakout_2021_2026",
+        strategy_id="morning_va_breakout_s1",
+        strategy_name="Morning VA Breakout (09:45 ET)",
+        trades_df=s1_trades,
+        daily_series=daily_s1,
+        capital=25000.0,
+        methodology="multi_year_walkforward",
+        data_path=str(parquet_path.relative_to(REPO_ROOT)),
+        data_hash=parquet_hash,
+        git_commit=store.get_git_commit(),
+        slippage_model="CQG 1-Tick Adverse + Limit Fill Parity",
+        commission_model="$1.40 RT ($0.70/side micro)",
+        is_net=True,
+        strategy_tier="BASELINE",
+        notes="Canonical multi-year walk-forward backtest across 2021-2026 NQ/MNQ and ES/MES with Markov regime sizing.",
+    )
     r_s1 = store.record_run(
         run_id="run_canonical_s1_va_breakout_2021_2026",
         strategy_id="morning_va_breakout_s1",
@@ -79,15 +97,33 @@ def ingest_canonical_runs():
         commission_model="$1.40 RT ($0.70/side micro)",
         is_net=True,
         extended_metrics=m_s1_ext,
+        bundle=bundle_s1,
         notes="Canonical multi-year walk-forward backtest across 2021-2026 NQ/MNQ and ES/MES with Markov regime sizing.",
     )
-    print(f"  [Recorded] {r_s1.strategy_id:<25} | Trades: {r_s1.total_trades} | PF: {r_s1.profit_factor:.2f} | Sortino: {r_s1.sortino_ratio:.2f} | Calmar: {r_s1.calmar_ratio:.2f} | Net: ${r_s1.net_profit:,.2f} | Warnings: {len(r_s1.warnings)}")
+    print(f"  [Recorded] {r_s1.strategy_id:<25} | Trades: {r_s1.total_trades} | PF: {r_s1.profit_factor:.2f} | Bundle: {r_s1.bundle_path} | Warnings: {len(r_s1.warnings)}")
 
     # Ingest S2: Macro Momentum (08:35 ET) - mapped to 'S3' in dataset
     s2_trades = trades[trades["strat"] == "S3"]
     m_s2 = da.performance_metrics(s2_trades, calendar, "research_pnl")
     daily_s2 = da.daily_series(s2_trades, calendar, "research_pnl")
     m_s2_ext = bm.calculate_institutional_metrics(s2_trades["research_pnl"].to_numpy(), daily_returns=daily_s2)
+    bundle_s2 = BacktestBundle.create(
+        run_id="run_canonical_s2_macro_momentum_2021_2026",
+        strategy_id="macro_momentum_s2",
+        strategy_name="Macro Release Momentum (08:35 ET)",
+        trades_df=s2_trades,
+        daily_series=daily_s2,
+        capital=25000.0,
+        methodology="multi_year_walkforward",
+        data_path=str(parquet_path.relative_to(REPO_ROOT)),
+        data_hash=parquet_hash,
+        git_commit=store.get_git_commit(),
+        slippage_model="CQG 1-Tick Adverse Parity",
+        commission_model="$1.40 RT ($0.70/side micro)",
+        is_net=True,
+        strategy_tier="BASELINE",
+        notes="Canonical pre-market CPI/NFP release momentum breakout on NQ/MNQ with 09:25 cash flatten.",
+    )
     r_s2 = store.record_run(
         run_id="run_canonical_s2_macro_momentum_2021_2026",
         strategy_id="macro_momentum_s2",
@@ -109,15 +145,33 @@ def ingest_canonical_runs():
         commission_model="$1.40 RT ($0.70/side micro)",
         is_net=True,
         extended_metrics=m_s2_ext,
+        bundle=bundle_s2,
         notes="Canonical pre-market CPI/NFP release momentum breakout on NQ/MNQ with 09:25 cash flatten.",
     )
-    print(f"  [Recorded] {r_s2.strategy_id:<25} | Trades: {r_s2.total_trades} | PF: {r_s2.profit_factor:.2f} | Sortino: {r_s2.sortino_ratio:.2f} | Calmar: {r_s2.calmar_ratio:.2f} | Net: ${r_s2.net_profit:,.2f} | Warnings: {len(r_s2.warnings)}")
+    print(f"  [Recorded] {r_s2.strategy_id:<25} | Trades: {r_s2.total_trades} | PF: {r_s2.profit_factor:.2f} | Bundle: {r_s2.bundle_path} | Warnings: {len(r_s2.warnings)}")
 
     # Ingest S3: Gold London Fix (10:15 ET) - mapped to 'S2' in dataset
     s3_trades = trades[trades["strat"] == "S2"]
     m_s3 = da.performance_metrics(s3_trades, calendar, "research_pnl")
     daily_s3 = da.daily_series(s3_trades, calendar, "research_pnl")
     m_s3_ext = bm.calculate_institutional_metrics(s3_trades["research_pnl"].to_numpy(), daily_returns=daily_s3)
+    bundle_s3 = BacktestBundle.create(
+        run_id="run_canonical_s3_gold_london_fix_2021_2026",
+        strategy_id="gold_london_fix_s3",
+        strategy_name="Gold London Fix Breakout (10:15 ET)",
+        trades_df=s3_trades,
+        daily_series=daily_s3,
+        capital=25000.0,
+        methodology="multi_year_walkforward",
+        data_path=str(parquet_path.relative_to(REPO_ROOT)),
+        data_hash=parquet_hash,
+        git_commit=store.get_git_commit(),
+        slippage_model="COMEX 1-Tick Adverse Parity",
+        commission_model="$1.40 RT ($0.70/side micro)",
+        is_net=True,
+        strategy_tier="BASELINE",
+        notes="Canonical LBMA PM Fix 3-way barrier breakout on GC/MGC with 11:00 cash flatten.",
+    )
     r_s3 = store.record_run(
         run_id="run_canonical_s3_gold_london_fix_2021_2026",
         strategy_id="gold_london_fix_s3",
@@ -139,14 +193,32 @@ def ingest_canonical_runs():
         commission_model="$1.40 RT ($0.70/side micro)",
         is_net=True,
         extended_metrics=m_s3_ext,
+        bundle=bundle_s3,
         notes="Canonical LBMA PM Fix 3-way barrier breakout on GC/MGC with 11:00 cash flatten.",
     )
-    print(f"  [Recorded] {r_s3.strategy_id:<25} | Trades: {r_s3.total_trades} | PF: {r_s3.profit_factor:.2f} | Sortino: {r_s3.sortino_ratio:.2f} | Calmar: {r_s3.calmar_ratio:.2f} | Net: ${r_s3.net_profit:,.2f} | Warnings: {len(r_s3.warnings)}")
+    print(f"  [Recorded] {r_s3.strategy_id:<25} | Trades: {r_s3.total_trades} | PF: {r_s3.profit_factor:.2f} | Bundle: {r_s3.bundle_path} | Warnings: {len(r_s3.warnings)}")
 
     # Ingest Unified Ensemble (S1 + S2 + S3)
     m_comp = da.performance_metrics(trades, calendar, "research_pnl")
     daily_comp = da.daily_series(trades, calendar, "research_pnl")
     m_comp_ext = bm.calculate_institutional_metrics(trades["research_pnl"].to_numpy(), daily_returns=daily_comp)
+    bundle_comp = BacktestBundle.create(
+        run_id="run_canonical_lucid_flex_ensemble_2021_2026",
+        strategy_id="lucid_flex_ensemble",
+        strategy_name="LucidFlex 25K Multi-Strategy Ensemble",
+        trades_df=trades,
+        daily_series=daily_comp,
+        capital=25000.0,
+        methodology="multi_year_walkforward",
+        data_path=str(parquet_path.relative_to(REPO_ROOT)),
+        data_hash=parquet_hash,
+        git_commit=store.get_git_commit(),
+        slippage_model="Multi-Asset CQG Adverse Realism",
+        commission_model="$1.40 RT ($0.70/side micro)",
+        is_net=True,
+        strategy_tier="BASELINE",
+        notes="Master 3-strategy ensemble with Markov 3-state volatility weighting across 2021-2026.",
+    )
     r_comp = store.record_run(
         run_id="run_canonical_lucid_flex_ensemble_2021_2026",
         strategy_id="lucid_flex_ensemble",
@@ -168,9 +240,10 @@ def ingest_canonical_runs():
         commission_model="$1.40 RT ($0.70/side micro)",
         is_net=True,
         extended_metrics=m_comp_ext,
+        bundle=bundle_comp,
         notes="Master 3-strategy ensemble with Markov 3-state volatility weighting across 2021-2026.",
     )
-    print(f"  [Recorded] {r_comp.strategy_id:<25} | Trades: {r_comp.total_trades} | PF: {r_comp.profit_factor:.2f} | Sortino: {r_comp.sortino_ratio:.2f} | Calmar: {r_comp.calmar_ratio:.2f} | Net: ${r_comp.net_profit:,.2f} | Warnings: {len(r_comp.warnings)}")
+    print(f"  [Recorded] {r_comp.strategy_id:<25} | Trades: {r_comp.total_trades} | PF: {r_comp.profit_factor:.2f} | Bundle: {r_comp.bundle_path} | Warnings: {len(r_comp.warnings)}")
 
     # 2. Ingest Forward Demo / Live Parity Ledger if available
     if TRADES_LEDGER_PATH.exists():

@@ -75,6 +75,7 @@ class ProvenanceRecord:
     tail_risk_ratio: float = 0.0
     recovery_factor: float = 0.0
     deflated_sharpe: float = 0.0
+    bundle_path: str = ""
     metrics: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     params: dict[str, Any] = field(default_factory=dict)
@@ -147,6 +148,7 @@ class ProvenanceStore:
                     tail_risk_ratio REAL DEFAULT 0.0,
                     recovery_factor REAL DEFAULT 0.0,
                     deflated_sharpe REAL DEFAULT 0.0,
+                    bundle_path TEXT DEFAULT '',
                     metrics_json TEXT DEFAULT '{}',
                     warnings_json TEXT NOT NULL,
                     params_json TEXT NOT NULL,
@@ -170,6 +172,7 @@ class ProvenanceStore:
                 "tail_risk_ratio": "REAL DEFAULT 0.0",
                 "recovery_factor": "REAL DEFAULT 0.0",
                 "deflated_sharpe": "REAL DEFAULT 0.0",
+                "bundle_path": "TEXT DEFAULT ''",
                 "metrics_json": "TEXT DEFAULT '{}'",
             }
             for col_name, col_def in migrations.items():
@@ -327,6 +330,8 @@ class ProvenanceStore:
         tail_risk_ratio: float = 0.0,
         recovery_factor: float = 0.0,
         deflated_sharpe: float = 0.0,
+        bundle_path: str = "",
+        bundle: Optional[Any] = None,
         extended_metrics: Optional[dict[str, Any]] = None,
     ) -> ProvenanceRecord:
         """
@@ -442,6 +447,10 @@ class ProvenanceStore:
         elif deflated_sharpe == 0.0 and "dsr" in ext:
             deflated_sharpe = float(ext["dsr"])
 
+        if bundle is not None and hasattr(bundle, "save"):
+            saved_p = bundle.save()
+            bundle_path = str(saved_p.relative_to(REPO_ROOT)) if saved_p.is_relative_to(REPO_ROOT) else str(saved_p)
+
         record = ProvenanceRecord(
             run_id=run_id,
             timestamp=timestamp_str,
@@ -479,6 +488,7 @@ class ProvenanceStore:
             tail_risk_ratio=round(tail_risk_ratio, 2),
             recovery_factor=round(recovery_factor, 2),
             deflated_sharpe=round(deflated_sharpe, 4),
+            bundle_path=str(bundle_path or ""),
             metrics=ext,
             warnings=all_warnings,
             params=params or {},
@@ -497,9 +507,9 @@ class ProvenanceStore:
                     largest_win, largest_win_pct_of_net, strategy_tier,
                     sortino_ratio, calmar_ratio, omega_ratio, cvar_95, ulcer_index,
                     expectancy, sqn, kelly_fraction, half_kelly, tail_risk_ratio,
-                    recovery_factor, deflated_sharpe, metrics_json,
+                    recovery_factor, deflated_sharpe, bundle_path, metrics_json,
                     warnings_json, params_json, notes
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(run_id) DO UPDATE SET
                     timestamp = excluded.timestamp,
                     strategy_id = excluded.strategy_id,
@@ -536,6 +546,7 @@ class ProvenanceStore:
                     tail_risk_ratio = excluded.tail_risk_ratio,
                     recovery_factor = excluded.recovery_factor,
                     deflated_sharpe = excluded.deflated_sharpe,
+                    bundle_path = excluded.bundle_path,
                     metrics_json = excluded.metrics_json,
                     warnings_json = excluded.warnings_json,
                     params_json = excluded.params_json,
@@ -578,6 +589,7 @@ class ProvenanceStore:
                     record.tail_risk_ratio,
                     record.recovery_factor,
                     record.deflated_sharpe,
+                    record.bundle_path,
                     json.dumps(record.metrics),
                     json.dumps(record.warnings),
                     json.dumps(record.params),
@@ -646,6 +658,7 @@ class ProvenanceStore:
             tail_risk_ratio=float(row["tail_risk_ratio"]) if ("tail_risk_ratio" in keys and row["tail_risk_ratio"] is not None) else 0.0,
             recovery_factor=float(row["recovery_factor"]) if ("recovery_factor" in keys and row["recovery_factor"] is not None) else 0.0,
             deflated_sharpe=float(row["deflated_sharpe"]) if ("deflated_sharpe" in keys and row["deflated_sharpe"] is not None) else 0.0,
+            bundle_path=row["bundle_path"] if ("bundle_path" in keys and row["bundle_path"]) else "",
             metrics=json.loads(row["metrics_json"]) if ("metrics_json" in keys and row["metrics_json"]) else {},
             warnings=json.loads(row["warnings_json"]) if row["warnings_json"] else [],
             params=json.loads(row["params_json"]) if row["params_json"] else {},
@@ -759,6 +772,8 @@ class ProvenanceStore:
                 f"Half-Kelly: {record.half_kelly:.3f}"
             )
 
+        bundle_str = f"\nBundle (.obtf): {record.bundle_path}" if record.bundle_path else ""
+
         return f"""
 ────────────────────────────────────────────────────────────────────────────
 PROVENANCE VERIFICATION FOOTER (Rule 2 & 3)
@@ -770,7 +785,7 @@ Methodology  : {record.methodology.upper()}
 Date Range   : {record.date_start} to {record.date_end} ({record.days_count} days)
 Data File    : {record.data_path}
 Data SHA-256 : {record.data_hash}
-Git Commit   : {record.git_commit}
+Git Commit   : {record.git_commit}{bundle_str}
 Cost Model   : {record.slippage_model} | {record.commission_model} [{net_tag}]
 Core Metrics : Trades: {record.total_trades} | Win%: {record.win_rate}% | PF: {record.profit_factor} | Net: ${record.net_profit:,.2f} | MaxDD: -${abs(record.max_drawdown):,.2f}{risk_str}
 Warning Flags:

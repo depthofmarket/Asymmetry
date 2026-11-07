@@ -38,6 +38,7 @@ def main():
     parser.add_argument("--list", action="store_true", help="List all verified backtest runs in the database")
     parser.add_argument("--run-id", type=str, help="Fetch a specific backtest run by ID")
     parser.add_argument("--stat", type=str, help="Quote a specific stat (e.g. profit_factor, win_rate, net_profit, max_drawdown)")
+    parser.add_argument("--inspect-bundle", action="store_true", help="Inspect granular trade execution analytics from associated .obtf bundle")
     parser.add_argument("--hash-file", type=str, help="Compute or lookup cryptographic SHA-256 for a data file")
     parser.add_argument("--json", action="store_true", help="Output raw JSON record instead of human-readable text")
     args = parser.parse_args()
@@ -110,7 +111,50 @@ def main():
     if getattr(record, "strategy_tier", "") == "CANDIDATE":
         print(CANDIDATE_BANNER)
 
-    # 5. Quote specific stat or full summary
+    # 5. Inspect .obtf bundle
+    if args.inspect_bundle:
+        if not getattr(record, "bundle_path", ""):
+            print(f"Error: Run '{record.run_id}' has no associated .obtf bundle recorded in provenance store.", file=sys.stderr)
+            sys.exit(1)
+        bundle_file = REPO_ROOT / record.bundle_path
+        if not bundle_file.exists():
+            print(f"Error: Bundle file '{bundle_file}' not found on disk.", file=sys.stderr)
+            sys.exit(1)
+
+        from backtest.bundle import BacktestBundle
+        bundle = BacktestBundle.load(bundle_file)
+        summary = bundle.get_summary()
+
+        print("=" * 80)
+        print("OPEN BACKTEST FORMAT (.obtf) BUNDLE INSPECTION")
+        print("=" * 80)
+        print(f"Run ID       : {summary['run_id']}")
+        print(f"Strategy     : {summary['strategy_id']} ({summary['strategy_name']}) [{summary['tier']}]")
+        print(f"Bundle File  : {record.bundle_path} ({bundle_file.stat().st_size:,} bytes)")
+        print(f"Date Range   : {summary['date_range']} | Trades: {summary['trades_count']}")
+        print("-" * 80)
+        print("CORE EXECUTION METRICS:")
+        for k, v in summary["core_metrics"].items():
+            print(f"  {k:<22}: {v}")
+        print("-" * 80)
+        print("INSTITUTIONAL RISK DYNAMICS:")
+        for k, v in summary["institutional_risk"].items():
+            print(f"  {k:<25}: {v}")
+        print("-" * 80)
+        if not bundle.trades.empty:
+            pnl_col = "research_pnl" if "research_pnl" in bundle.trades.columns else ("net_pnl" if "net_pnl" in bundle.trades.columns else "pnl")
+            top_wins = bundle.trades.nlargest(3, pnl_col)[[pnl_col, "date"]].to_dict(orient="records")
+            worst_losses = bundle.trades.nsmallest(3, pnl_col)[[pnl_col, "date"]].to_dict(orient="records")
+            print("TOP 3 WINNING TRADES:")
+            for t in top_wins:
+                print(f"  +${t[pnl_col]:,.2f} on {t.get('date', 'N/A')}")
+            print("WORST 3 LOSING TRADES:")
+            for t in worst_losses:
+                print(f"  -${abs(t[pnl_col]):,.2f} on {t.get('date', 'N/A')}")
+        print("=" * 80)
+        return
+
+    # 6. Quote specific stat or full summary
     if args.stat:
         print(store.quote_stat(record, args.stat))
     else:

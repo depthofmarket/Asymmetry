@@ -27,21 +27,12 @@ The active production baseline is the **LucidFlex Tri-Asset Ensemble** (`lucid_f
 
 ## Active Tasks & Work in Progress
 
-- [x] **Milestone 6: Institutional 88+ Quantitative Metrics Engine & Provenance Protocol Upgrade**:
-  - Implemented `backtest/metrics.py` computing 92 distinct institutional metrics across 9 dimensions:
-    1. Return & Capital Growth (10 metrics: Net PnL, Gross Profit/Loss, Annual PnL, CAGR, Daily & Traded Session Avg, Benchmark Relative).
-    2. Risk-Adjusted Ratios (14 metrics: Sharpe, Sortino, Calmar, Omega, Gain-to-Pain, UPI/Martin, Sterling, Burke, Modified Burke, Kappa 3, Pezier Adjusted Sharpe).
-    3. Drawdown Topology (12 metrics: Max DD $ & %, Avg DD, CDD Calendar Days, Underwater Exposure %, Ulcer Index, Pain Index, Recovery Factor).
-    4. Tail Risk & EVT (10 metrics: Parametric & Historical VaR 95/99, Cornish-Fisher VaR 95, CVaR/Expected Shortfall 95/99, Tail Risk Ratio).
-    5. Trade Microstructure & Edge Distribution (16 metrics: Expectancy, Payoff Ratio, Edge Ratio, Scratch Rate, Trimmed PF top 2%, Top 5 Dominance %).
-    6. Higher Statistical Moments & Tests (8 metrics: Skewness, Kurtosis, SQN, Student's t-stat, P-value, Jarque-Bera Normality Test).
-    7. Multiple Testing & Selection Bias (6 metrics: PSR, DSR, EVT Expected Max Sharpe SR*, MinTRL Track Record Length).
-    8. Capital Sizing & Ruin (8 metrics: Full Kelly, Half Kelly, Analytical Gambler's Ruin, Max Win/Loss streaks).
-    9. Market Microstructure (8 metrics: MFE, MAE, Edge Efficiency, Exposure %).
-  - Upgraded SQLite store `results/backtest_provenance.db` schema with 13 new dedicated indexed columns + JSON extended metrics payload.
-  - Upgraded `backtest/provenance.py` and `scripts/query_provenance.py` with alias resolution (`sortino`, `calmar`, `omega`, `cvar95`, `ulcer_index`, `half_kelly`, `trimmed_profit_factor`, etc.).
-  - Re-ingested canonical runs in `scripts/ingest_historical_provenance.py` recording full institutional metrics.
-  - Implemented comprehensive test suite in `tests/test_institutional_metrics.py` (14/14 passing).
+- [x] **Milestone 6: Institutional Quantitative Framework Upgrade (92 Metrics, .obtf Bundles & MCP Server)**:
+  - **Step 1: 92 Institutional Metrics Engine (`backtest/metrics.py`)**: Vectorized pure-Python analytics covering Return Dynamics (10), Risk-Adjusted Ratios (14: Sortino, Calmar, Omega, Gain-to-Pain, UPI, Burke, Kappa 3), Drawdown Topology (12: CDD, Ulcer, Pain Index), Tail Risk (10: Cornish-Fisher VaR, CVaR 95/99), Microstructure (16: Expectancy, Trimmed PF ex-2%, Top 5 Win Dominance), Statistical Moments (8: Skew, Kurtosis, SQN, Jarque-Bera), Multiple Testing (6: PSR, DSR, EVT SR*), and Sizing/Ruin (8: Full/Half Kelly, Gambler's Ruin).
+  - **Step 2: ACID SQLite Provenance Store Upgrade (`backtest/provenance.py`)**: Migrated `results/backtest_provenance.db` schema with 14 new indexed columns (`sortino_ratio`, `calmar_ratio`, `cvar_95`, `ulcer_index`, `half_kelly`, `bundle_path`, etc.) and multi-key alias resolution in CLI.
+  - **Step 3: Open Backtest Format (`.obtf`) Portable Containers (`backtest/bundle.py`)**: Implemented compressed ZIP container standard packaging `manifest.json`, `trades.parquet`, `equity.parquet`, and `audit_log.json`. Generated canonical `.obtf` bundles across all baseline strategies. Added `--inspect-bundle` to `scripts/query_provenance.py`.
+  - **Step 4: Native Asymmetry Model Context Protocol Server (`scripts/asymmetry_mcp_server.py`)**: Built standard JSON-RPC 2.0 stdio server exposing 5 tools (`asymmetry_query_stat`, `asymmetry_list_runs`, `asymmetry_compare_strategies`, `asymmetry_inspect_bundle`, `asymmetry_verify_data_hash`) directly to AI agents.
+  - **Testing & Verification**: 59/59 institutional tests passing (`tests/test_institutional_metrics.py`, `tests/test_bundle.py`, `tests/test_asymmetry_mcp_server.py`, `tests/test_provenance_system.py`, `tests/test_strategy_registry.py`). Full suite 812+ tests green.
 
 - [x] **Milestone 1**: Karpathy LLM Wiki Architecture Implementation
   - Full `wiki/` directory layout created with `SCHEMA.md`, `index.md`, `log.md`, `hot.md`, `failed_ideas.md`.

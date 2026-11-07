@@ -234,3 +234,14 @@ This is an append-only, chronological journal recording all agent actions, docum
   4. Updated `scripts/ingest_historical_provenance.py` and `scripts/alpha_factory.py` to calculate and persist full institutional metrics.
   5. Implemented comprehensive test suite in `tests/test_institutional_metrics.py` verifying all mathematical formulas, DB migration, and CLI query capabilities.
 - **Verification**: `pytest tests/test_institutional_metrics.py tests/test_provenance_system.py tests/test_alpha_factory_provenance.py` passed 36/36 tests. CLI queries `query_provenance.py --strategy morning_va_breakout_s1 --stat sortino` (1.75), `calmar` (1.03), `cvar95` ($178.25), `ulcer_index` (1.06%), `half_kelly` (0.10), `trimmed_profit_factor` (1.47), and `top_5_wins_pct` (5.10%) verified working with full provenance footers.
+
+
+## [2026-11-07 10:55:00 UTC] [gemini] [FEAT] | Implemented Open Backtest Format (.obtf) Bundles and Native Asymmetry MCP Server
+- **Pages Modified**: `wiki/provenance/provenance-protocol.md`, `wiki/hot.md`, `wiki/log.md`
+- **Summary**:
+  1. Built `backtest/bundle.py` implementing the Open Backtest Format (`.obtf`) container specification. Bundles store complete vector/event backtest results in portable compressed ZIP containers containing `manifest.json` (metadata + 92 institutional metrics snapshot), `trades.parquet` (tick/bar trade execution log), `equity.parquet` (high-resolution session equity curve), and `audit_log.json` (risk guardrail and order lifecycle trace).
+  2. Integrated `.obtf` serialization into `backtest/provenance.py` and `scripts/ingest_historical_provenance.py`, generating verified bundles for all production baseline strategies (`results/bundles/run_canonical_*.obtf`).
+  3. Added `--inspect-bundle` to `scripts/query_provenance.py` providing instant deep-dive analytics into core execution metrics, institutional risk dynamics, top 3 winning trades, and worst 3 losses.
+  4. Built native Model Context Protocol (MCP) server `scripts/asymmetry_mcp_server.py` operating over JSON-RPC 2.0 stdio with zero external dependencies, providing 5 agent tools (`asymmetry_query_stat`, `asymmetry_list_runs`, `asymmetry_compare_strategies`, `asymmetry_inspect_bundle`, `asymmetry_verify_data_hash`).
+  5. Built dedicated test suites in `tests/test_bundle.py` (3 tests) and `tests/test_asymmetry_mcp_server.py` (9 tests), verifying bundle round-trip fidelity, fast manifest reading, JSON-RPC 2.0 compliance, tool schemas, and error dispatching.
+- **Verification**: `pytest tests/test_bundle.py tests/test_asymmetry_mcp_server.py tests/test_institutional_metrics.py tests/test_provenance_system.py tests/test_strategy_registry.py` passed 59/59 tests cleanly. Verified `python3 scripts/verify_wiki_integrity.py` confirms 15/15 checks clean.
