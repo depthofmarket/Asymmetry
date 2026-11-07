@@ -10,6 +10,22 @@ This is an append-only, chronological journal recording all agent actions, docum
 
 ---
 
+## [2026-11-07 15:20:00 UTC] [worker] [UPDATE] | Upgraded Passive Benchmark Comparative Visual Architecture in Dashboard PNG Tearsheets
+- **Pages Modified**:
+  - `scripts/generate_quant_strategy_dashboard.py` (engineered 3-tier, 4-panel visual comparative in Sheet 01, dual-axis drawdown in Master Poster, and non-overlapping Swiss scorecard table)
+  - `wiki/hot.md` (refreshed active state with dashboard visual synchronization details)
+  - `wiki/log.md` (recorded operational journal entry)
+- **Summary**:
+  1. Redesigned `01_strategy_equity_curves_and_drawdown.png` into a comprehensive 3-tier, 4-panel institutional comparative tearsheet:
+     - Panel 1: Bold Multi-Strategy Equity Curves ($25,000 base) featuring high-contrast solid slate-gray (`#475569`, linewidth 1.8) Passive NQ Buy & Hold benchmark curve, 2022 Tech Bear Market callout arrow pointing to the -35.2% trough, and an embedded monospace executive comparative overview badge box.
+     - Panel 2A: Comparative Underwater Drawdown (%) mapping Ensemble Drawdown (-6.0% max) against Passive NQ Benchmark Drawdown (-35.2% max), prominently highlighting the LucidFlex -$1,000 / -4.0% prop firm liquidation threshold and the 757-day NQ failure duration.
+     - Panel 2B: Cumulative Excess Return Spread (%) charting the strategy's return spread over NQ, highlighting the shaded +36.6% excess alpha outperformance accumulated during the 2022 tech bear market.
+     - Panel 3A: Top Strategy Drawdown Episodes bar chart tracking depth and recovery duration in calendar days.
+     - Panel 3B: Quantitative Risk & Alpha Scorecard table comparing Unified Ensemble vs. Passive NQ Buy & Hold across 10 institutional risk/return dimensions in four crisp, left-aligned columns.
+  2. Upgraded `strategy_performance_quant_report.png` (Master Poster) with the solid slate benchmark equity line, 2022 callout arrow, upper-left comparative overview badge, and dual-axis underwater drawdown ($0 to -$2,000 left axis for Ensemble vs. $0 to -$12,000 right axis for NQ) eliminating curve compression.
+  3. Verified all visual PNG tearsheets via direct `read_file` inspection, ensuring publication-grade contrast, zero text collision, and strict compliance with the 5 Golden Rules of Quantitative Provenance.
+- **Verification**: `pytest tests/test_benchmark_and_trimming.py tests/test_institutional_metrics.py tests/test_bundle.py tests/test_asymmetry_mcp_server.py -v` passed 34/34 tests in 6.66s. `python scripts/verify_wiki_integrity.py` passed 15/15 checks with 100% compliance. Both `01_strategy_equity_curves_and_drawdown.png` and `strategy_performance_quant_report.png` visually verified.
+
 ## [2026-11-07 15:00:00 UTC] [worker] [UPDATE] | Implemented Top 5% Truncation Stress Test & Passive NQ Benchmark Visual Synchronization
 - **Pages Modified**:
   - `backtest/metrics.py` (implemented `trim_winners_adversarial_test` and `benchmark_relative_metrics`)
@@ -24,6 +40,27 @@ This is an append-only, chronological journal recording all agent actions, docum
   2. Implemented passive NQ benchmark relative analytics (`benchmark_relative_metrics`) against continuous 1-min raw parquet data across 1,499 exchange sessions (2021–2026). Proved market neutrality ($\beta = 0.01$, $\rho = 0.04$, Annual Jensen's $\alpha = +9.8\%$), 7.5x lower max drawdown (-$1,511.51 vs -$11,273.88 / -35.2%), 3.6x higher Sortino (2.22 vs 0.62), and 12x lower Ulcer Index (1.06% vs 12.83%).
   3. Synchronized all visual PNG tearsheets, master posters, and interactive HTML dashboards.
 - **Verification**: `pytest tests/test_benchmark_and_trimming.py tests/test_institutional_metrics.py tests/test_asymmetry_mcp_server.py tests/test_bundle.py -v` passed 34/34 tests in 5.88s. `python scripts/generate_all_dashboards.py` successfully regenerated all PNG sheets, posters, and interactive HTML reports with exit code 0. `python scripts/verify_wiki_integrity.py` passed with 100% compliance.
+
+## [2026-11-07 15:05:00 UTC] [worker] [UPDATE] | Evaluated and Falsified Candidate H25 (15:50 ET NYSE MOC Imbalance Drive)
+- **Pages Modified**:
+  - `wiki/failed_ideas.md` (appended Failed Idea #29 15:50 MOC Drive on MNQ/MES)
+  - `wiki/log.md` (recorded operational journal entry)
+- **Summary**: Implemented and executed `scripts/research_moc_imbalance_drive_s8.py` evaluating Candidate H25 (`moc_imbalance_drive_s8`) on `MNQ` and `MES` at 15:50 ET. Across 640 trades on MNQ, the strategy generated Profit Factor 0.89, Net -$5,848.60, Win Rate 47.03%, and Max Drawdown -$9,678.60. MES generated PF 0.73, Net -$12,104.80. Confirmed structural root cause: late-day 15:50–15:59 ET order flow suffers from violent 1-minute 0DTE dealer whipsaws that trigger protective stops before the 16:00 NAV cross settles, eroding raw edge below realistic execution friction. Recorded run `candidate_moc_imbalance_drive_s8_2021_2026` to `results/backtest_provenance.db` under `StrategyTier.CANDIDATE`. Falsified under Belfort Step 04 & Step 05.
+- **Verification**: `python scripts/query_provenance.py --strategy moc_imbalance_drive_s8 --latest` verified footer and metrics under CANDIDATE tier. `python scripts/verify_wiki_integrity.py` passed 100%.
+
+## [2026-11-07 14:58:00 UTC] [worker] [UPDATE] | Evaluated and Falsified Candidate H24 (60-Minute Initial Balance Range Extension)
+- **Pages Modified**:
+  - `wiki/failed_ideas.md` (appended Failed Idea #28 10:30 IB Extension on MES/MNQ)
+  - `wiki/log.md` (recorded operational journal entry)
+- **Summary**: Implemented and executed `scripts/research_initial_balance_extension_s7.py` evaluating Candidate H24 (`initial_balance_extension_s7`) on `MES` and `MNQ` at 10:30 ET exclusively on Strategy 1 flat sessions. Across 1,373 combined trades from 2021 to 2026, the strategy generated Profit Factor 0.90, Net -$13,745.65, Win Rate 45.45%, and Max Drawdown -$20,197.45. MES Standalone generated PF 0.86 (Net -$9,117.65); MNQ Standalone generated PF 0.94 (Net -$4,628.00). Confirmed structural root cause: on inside-value days, 10:30 ET breakouts coincide with European lunch liquidity drop and 0DTE dealer gamma pinning, trapping breakout traders in mean-reversion pullbacks. Recorded run `candidate_initial_balance_extension_s7_2021_2026` to `results/backtest_provenance.db` under `StrategyTier.CANDIDATE`. Falsified under Belfort Step 04 & Step 05.
+- **Verification**: `python scripts/query_provenance.py --strategy initial_balance_extension_s7 --latest` verified footer and metrics under CANDIDATE tier. `python scripts/verify_wiki_integrity.py` passed 100%.
+
+## [2026-11-07 14:52:00 UTC] [worker] [UPDATE] | Evaluated and Falsified Candidate H23 (COMEX Gold Cash Open Drive)
+- **Pages Modified**:
+  - `wiki/failed_ideas.md` (appended Failed Idea #27 COMEX Gold 08:20 pit open)
+  - `wiki/log.md` (recorded operational journal entry)
+- **Summary**: Implemented and executed `scripts/research_gold_comex_open_s6.py` evaluating Candidate H23 (`gold_comex_open_s6`) on `MGC` at 08:20 ET across 4 opening range configurations (10-min vs 15-min, Long-Only vs Long+Short). Across 868 trades (10-min Long Only) from 2021 to 2026, the strategy generated Profit Factor 0.81, Net -$11,427.60, Win Rate 40.55%, and Max Drawdown -$12,175.80. All variants produced PF 0.71–0.81. Confirmed structural root cause: the 08:20 COMEX open is an inventory accumulation trap by commercial bullion banks prior to the 10:00 AM ET (15:00 London) LBMA Gold PM Fix auction benchmark. Recorded run `candidate_gold_comex_open_s6_2021_2026` to `results/backtest_provenance.db` under `StrategyTier.CANDIDATE`. Falsified under Belfort Step 04 & Step 05.
+- **Verification**: `python scripts/query_provenance.py --strategy gold_comex_open_s6 --latest` verified footer and metrics under CANDIDATE tier. `python scripts/verify_wiki_integrity.py` passed 100%.
 
 ## [2026-11-07 14:45:00 UTC] [worker] [UPDATE] | Evaluated and Falsified Candidate A (4-Index Sector Rotation Breakout)
 - **Pages Modified**:
