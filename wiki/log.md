@@ -212,3 +212,14 @@ This is an append-only, chronological journal recording all agent actions, docum
   2. Restructured `scripts/` graveyard: segregated 56 zero-reference one-off CSV exporters, obsolete hypothesis evaluators, and ad-hoc sweeps into `scripts/archive/` with dedicated documentation, reducing root `scripts/` footprint by 40% while preserving historical provenance.
   3. Fixed directory relative pathing in `scripts/run_monday_forward_test.sh` to ensure execution parity from `scripts/`.
 - **Verification**: Executed full repository test suite (`pytest -q`): 853 passed, 2 subtests passed (0 failures, 0 errors). Verified wiki integrity (`python scripts/verify_wiki_integrity.py`): 15/15 checks clean.
+
+
+## [2026-11-07 04:55:00 UTC] [CEO] [CLEANUP] | Ruthless pruning of 111 dead-end signals, zombie tests, and legacy exports
+- **Pages Modified**: `wiki/log.md`
+- **Summary**:
+  1. Pruned 20 failed hypothesis signals in `backtest/` (e.g., `afternoon_vwap_pullback_signal.py`, `compression_breakout_signal.py`, `es_nq_smt_tick_divergence_signal.py`, `gap_fade_signal.py`, etc.) whose postmortems and negative invariants are permanently preserved in `wiki/failed_ideas.md`.
+  2. Pruned 2 ghost modules (`feature_attribution.py`, `online_regime_leakage.py`) and obsolete options surface state (`options_surface_state.py`).
+  3. Pruned 21 zombie unit test files in `tests/` dedicated to testing rejected hypotheses.
+  4. Pruned 12 zero-caller one-off signal export scripts in `scripts/` and removed `scripts/archive/`.
+  5. Total tracked files reduced from 475 to 364 (-111 dead files).
+- **Verification**: Executed full test suite (`pytest -q`): 795 passed, 2 subtests passed in 274.18s (0 failures, 0 errors). Verified wiki integrity: 15/15 checks clean.
