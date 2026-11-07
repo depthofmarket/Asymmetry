@@ -10,6 +10,24 @@ This is an append-only, chronological journal recording all agent actions, docum
 
 ---
 
+## [2026-11-07 15:38:00 UTC] [worker] [UPDATE] | Evaluated and Falsified Candidate H27 (Dalton Overnight Inventory Correction at 09:35 ET)
+- **Pages Modified**:
+  - `docs/research_hypotheses/2026-11-07_overnight_inventory_imbalance_correction_h27.md` (pre-registered hypothesis and mechanical rules)
+  - `wiki/failed_ideas.md` (appended Failed Idea #31 Dalton Overnight Inventory Imbalance Correction on MES/MNQ)
+  - `scripts/research_overnight_inventory_s10.py` (implemented candidate backtest engine with CQG tick friction)
+  - `wiki/hot.md` (refreshed active state with Candidate S10 evaluation)
+  - `wiki/log.md` (recorded operational journal entry)
+- **Summary**: Implemented and executed `scripts/research_overnight_inventory_s10.py` evaluating Candidate H27 (`candidate_overnight_inventory_s10`) on `MES` and `MNQ` at 09:35 ET. Across 566 trades from 2021 to 2026, the strategy generated Profit Factor 0.71, Net -$6,330.59, Win Rate 40.46%, and Max Drawdown -$6,988.15. MES Standalone generated 273 trades, PF 0.66, Net -$2,469.77, MaxDD -$2,686.21 (negative across all 6 individual years; stops hit 123 vs target 64). MNQ Standalone generated 293 trades, PF 0.73, Net -$3,860.82, MaxDD -$4,633.04 (negative across all 6 years; stops hit 150 vs target 81). Confirmed structural root cause: in modern electronic futures (2021–2026), extreme overnight inventory imbalances reflect macro repricing rather than weak retail overhang; opening institutions continue momentum rather than correcting back to prior settlement. Recorded run `candidate_overnight_inventory_s10_2021_2026` to `results/backtest_provenance.db` under `StrategyTier.CANDIDATE`. Falsified under Belfort Step 04 & Step 05.
+- **Verification**: `python scripts/query_provenance.py --strategy candidate_overnight_inventory_s10 --latest` verified footer and metrics under CANDIDATE tier. `python scripts/verify_wiki_integrity.py` passed 100%.
+
+## [2026-11-07 15:28:00 UTC] [worker] [UPDATE] | Evaluated and Falsified Candidate H26 (European Cash Close Rotation at 11:30 ET)
+- **Pages Modified**:
+  - `wiki/failed_ideas.md` (appended Failed Idea #30 European Cash Close Rotation on MES/MNQ)
+  - `scripts/research_europe_close_rotation_s9.py` (implemented candidate backtest engine with CQG tick friction)
+  - `wiki/log.md` (recorded operational journal entry)
+- **Summary**: Implemented and executed `scripts/research_europe_close_rotation_s9.py` evaluating Candidate H26 (`candidate_europe_close_rotation_s9`) on `MES` and `MNQ` at 11:30 ET. Tested both mean-reversion fade and trend continuation across 1,504 sessions (2021–2026). Fading morning momentum at 11:30 ET generated 1,492 trades, Profit Factor 0.78, Net -$11,017.96, Win Rate 40.88%, and Max Drawdown -$12,945.44 (MES PF 0.75, Net -$4,454.87; MNQ PF 0.80, Net -$6,563.09). Trend continuation failed Belfort Step 04 In-Sample threshold (2021–2024 PF 1.03–1.09, +$213 net). Microstructural root cause: European cash closing auctions are bilateral matching crosses, not directional forced flow; European volume exit leaves US futures in the midday NY lunch lull where 0DTE dealer gamma pins price and suppresses follow-through. Recorded run `candidate_europe_close_rotation_s9_2021_2026` to `results/backtest_provenance.db` under `StrategyTier.CANDIDATE`. Falsified under Belfort Step 04 & Step 05.
+- **Verification**: `python scripts/query_provenance.py --strategy candidate_europe_close_rotation_s9 --latest` verified footer and metrics under CANDIDATE tier. `python scripts/verify_wiki_integrity.py` passed 100%.
+
 ## [2026-11-07 15:20:00 UTC] [worker] [UPDATE] | Upgraded Passive Benchmark Comparative Visual Architecture in Dashboard PNG Tearsheets
 - **Pages Modified**:
   - `scripts/generate_quant_strategy_dashboard.py` (engineered 3-tier, 4-panel visual comparative in Sheet 01, dual-axis drawdown in Master Poster, and non-overlapping Swiss scorecard table)

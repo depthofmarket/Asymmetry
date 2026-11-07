@@ -6,7 +6,6 @@ Belfort Systematic Trading Framework (2026) — Step 03 (Code It), Step 04 (In-S
 
 from __future__ import annotations
 
-import argparse
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -34,154 +33,158 @@ SLIP_PTS_MARKET = 0.20  # 2 ticks ($2.00)
 COMM_RT = 1.20  # $1.20 round-turn per micro contract
 
 
-def simulate_gold_open(
+def simulate_gold_orb(
     df: pd.DataFrame,
-    variant: str = "B_15min",  # 'A_10min' (08:20-08:29, entry 08:30) or 'B_15min' (08:20-08:34, entry 08:35)
+    or_start_str: str = "08:20",
+    or_end_str: str = "08:29",
+    exec_cutoff_str: str = "09:15",
     long_only: bool = True,
-    min_ret_pct: float = 0.0008,
     rr_ratio: float = 1.5,
     min_stop_pts: float = 2.5,
     max_stop_pts: float = 8.0,
+    buffer_pts: float = 0.20,
 ) -> pd.DataFrame:
     """
-    Simulates COMEX Gold open drive strictly without lookahead bias.
+    Simulates genuine Opening Range Breakout (ORB) on COMEX Gold.
+    1. Establishes OR from or_start_str to or_end_str.
+    2. Enters on the first 1-minute bar closing outside OR +/- buffer before exec_cutoff_str.
+    3. Manages trade until target, stop, or exec_cutoff_str time exit.
     """
-    # Filter bars to morning window: 08:00 to 09:20 ET
     m = df["time"].dt.hour * 60 + df["time"].dt.minute
     df_window = df[(m >= 480) & (m <= 560)].copy()  # 08:00 to 09:20 ET
     df_window["date_str"] = df_window["time"].dt.strftime("%Y-%m-%d")
     df_window["m"] = df_window["time"].dt.hour * 60 + df_window["time"].dt.minute
 
-    # Config parameters based on variant
-    if variant == "A_10min":
-        or_start_m = 500  # 08:20
-        or_end_m = 509    # 08:29
-        entry_m = 510     # 08:30
-    else:  # B_15min
-        or_start_m = 500  # 08:20
-        or_end_m = 514    # 08:34
-        entry_m = 515     # 08:35
+    h_s, m_s = map(int, or_start_str.split(":"))
+    h_e, m_e = map(int, or_end_str.split(":"))
+    h_c, m_c = map(int, exec_cutoff_str.split(":"))
 
-    exit_cutoff_m = 555   # 09:15 ET flat
+    or_start_m = h_s * 60 + m_s
+    or_end_m = h_e * 60 + m_e
+    cutoff_m = h_c * 60 + m_c
 
     trades: List[Dict[str, Any]] = []
 
-    # Group by date
     for d_str, day_df in df_window.groupby("date_str"):
         if d_str < "2021-01-01":
             continue
 
         day_bars = day_df.sort_values("time").reset_index(drop=True)
         or_bars = day_bars[(day_bars["m"] >= or_start_m) & (day_bars["m"] <= or_end_m)]
-        exec_bars = day_bars[(day_bars["m"] >= entry_m) & (day_bars["m"] <= exit_cutoff_m)]
+        exec_bars = day_bars[(day_bars["m"] > or_end_m) & (day_bars["m"] <= cutoff_m)]
 
         if len(or_bars) < (or_end_m - or_start_m):
             continue
         if len(exec_bars) < 5:
             continue
 
-        # Opening Range metrics
         or_high = float(or_bars["high"].max())
         or_low = float(or_bars["low"].min())
-        or_open = float(or_bars.iloc[0]["open"])
-        or_close = float(or_bars.iloc[-1]["close"])
         or_range = or_high - or_low
 
-        if or_range <= 0:
+        if or_range < 1.0 or or_range > 15.0:
             continue
 
-        ret_pct = (or_close - or_open) / or_open
-        cl = (or_close - or_low) / or_range
+        # Look for the first breakout bar in exec_bars
+        triggered = False
+        for idx, bar in exec_bars.iterrows():
+            b_close = float(bar["close"])
+            b_open = float(bar["open"])
+            b_high = float(bar["high"])
+            b_low = float(bar["low"])
+            b_time = pd.Timestamp(bar["time"])
 
-        # Determine signal
-        sig = 0
-        if or_close > or_high - 0.20 and cl >= 0.65 and ret_pct >= min_ret_pct:
-            sig = 1
-        elif not long_only and or_close < or_low + 0.20 and cl <= 0.35 and ret_pct <= -min_ret_pct:
-            sig = -1
+            sig = 0
+            if b_close > or_high + buffer_pts:
+                sig = 1
+            elif not long_only and b_close < or_low - buffer_pts:
+                sig = -1
 
-        if sig == 0:
-            continue
+            if sig == 0:
+                continue
 
-        # Trade Execution
-        entry_bar = exec_bars.iloc[0]
-        entry_p = float(entry_bar["open"])
-        entry_time = pd.Timestamp(entry_bar["time"])
+            # Signal confirmed on bar close -> entry on next bar open (or current close if market order)
+            entry_p = b_close
+            entry_time = b_time
 
-        stop_pts = float(np.clip(0.50 * or_range, min_stop_pts, max_stop_pts))
-        target_pts = float(stop_pts * rr_ratio)
+            stop_pts = float(np.clip(0.50 * or_range, min_stop_pts, max_stop_pts))
+            target_pts = float(stop_pts * rr_ratio)
+            stop_price = entry_p - sig * stop_pts
+            target_price = entry_p + sig * target_pts
 
-        stop_price = entry_p - sig * stop_pts
-        target_price = entry_p + sig * target_pts
+            remaining_bars = exec_bars[exec_bars["time"] > entry_time]
+            if remaining_bars.empty:
+                continue
 
-        exit_p = float(exec_bars.iloc[-1]["close"])
-        exit_time = pd.Timestamp(exec_bars.iloc[-1]["time"])
-        reason = "time_exit_0915"
+            exit_p = float(remaining_bars.iloc[-1]["close"])
+            exit_time = pd.Timestamp(remaining_bars.iloc[-1]["time"])
+            reason = "time_exit_cutoff"
 
-        for _, b in exec_bars.iterrows():
-            bh = float(b["high"])
-            bl = float(b["low"])
-            b_open = float(b["open"])
-            b_time = pd.Timestamp(b["time"])
+            for _, rb in remaining_bars.iterrows():
+                rh = float(rb["high"])
+                rl = float(rb["low"])
+                ro = float(rb["open"])
+                rt = pd.Timestamp(rb["time"])
 
-            if sig == 1:
-                if bl <= stop_price:
-                    exit_p = min(stop_price, b_open)
-                    exit_time = b_time
-                    reason = "stop_loss"
-                    break
-                elif bh >= target_price:
-                    exit_p = target_price
-                    exit_time = b_time
-                    reason = "profit_target"
-                    break
-            else:
-                if bh >= stop_price:
-                    exit_p = max(stop_price, b_open)
-                    exit_time = b_time
-                    reason = "stop_loss"
-                    break
-                elif bl <= target_price:
-                    exit_p = target_price
-                    exit_time = b_time
-                    reason = "profit_target"
-                    break
+                if sig == 1:
+                    if rl <= stop_price:
+                        exit_p = min(stop_price, ro)
+                        exit_time = rt
+                        reason = "stop_loss"
+                        break
+                    elif rh >= target_price:
+                        exit_p = target_price
+                        exit_time = rt
+                        reason = "profit_target"
+                        break
+                else:
+                    if rh >= stop_price:
+                        exit_p = max(stop_price, ro)
+                        exit_time = rt
+                        reason = "stop_loss"
+                        break
+                    elif rl <= target_price:
+                        exit_p = target_price
+                        exit_time = rt
+                        reason = "profit_target"
+                        break
 
-        raw_pts = (exit_p - entry_p) * sig
-        slip_total = SLIP_PTS_LIMIT if reason == "profit_target" else (SLIP_PTS_MARKET * 2.0)
-        net_pts = raw_pts - slip_total
+            raw_pts = (exit_p - entry_p) * sig
+            slip_total = SLIP_PTS_LIMIT if reason == "profit_target" else (SLIP_PTS_MARKET * 2.0)
+            net_pts = raw_pts - slip_total
 
-        # Position Sizing under $250 max-risk budget
-        stop_risk = stop_pts * PT_VAL
-        contracts = int(np.clip(np.floor(250.0 / max(stop_risk, 1.0)), 1, 4))
-        comm = COMM_RT * contracts
-        net_dollars = (net_pts * PT_VAL * contracts) - comm
+            # Position Sizing under $250 max-risk budget
+            stop_risk = stop_pts * PT_VAL
+            contracts = int(np.clip(np.floor(250.0 / max(stop_risk, 1.0)), 1, 4))
+            comm = COMM_RT * contracts
+            net_dollars = (net_pts * PT_VAL * contracts) - comm
 
-        trades.append({
-            "date_str": d_str,
-            "year": entry_time.year,
-            "instrument": "MGC",
-            "variant": variant,
-            "direction": "long" if sig == 1 else "short",
-            "entry_time": entry_time,
-            "exit_time": exit_time,
-            "entry_price": entry_p,
-            "exit_price": exit_p,
-            "or_range": or_range,
-            "stop_pts": stop_pts,
-            "target_pts": target_pts,
-            "contracts": contracts,
-            "net_pts": net_pts,
-            "net_dollars": net_dollars,
-            "reason": reason,
-        })
+            trades.append({
+                "date_str": d_str,
+                "year": entry_time.year,
+                "instrument": "MGC",
+                "direction": "long" if sig == 1 else "short",
+                "entry_time": entry_time,
+                "exit_time": exit_time,
+                "entry_price": entry_p,
+                "exit_price": exit_p,
+                "or_range": or_range,
+                "stop_pts": stop_pts,
+                "target_pts": target_pts,
+                "contracts": contracts,
+                "net_pts": net_pts,
+                "net_dollars": net_dollars,
+                "reason": reason,
+            })
+            triggered = True
+            break
 
     return pd.DataFrame(trades)
 
 
 def compute_metrics(trades: pd.DataFrame, label: str = "Window") -> Dict[str, Any]:
     if trades.empty:
-        return {"label": label, "trades": 0, "net_pnl": 0.0, "pf": 0.0, "win_rate": 0.0, "max_dd": 0.0}
+        return {"label": label, "trades": 0, "net_pnl": 0.0, "pf": 0.0, "win_rate": 0.0, "max_dd": 0.0, "trades_per_yr": 0.0, "active_days": 0, "payoff": 0.0, "max_streak": 0, "largest_win": 0.0, "outlier_ratio": 0.0, "gross_profit": 0.0, "gross_loss": 0.0, "avg_trade": 0.0}
 
     n = len(trades)
     wins = trades[trades["net_dollars"] > 0]
@@ -267,21 +270,24 @@ def main():
     df_raw = pd.read_parquet(GC_PATH)
     print(f"   Total bars loaded: {len(df_raw):,}")
 
-    # Evaluate Variant A (08:20-08:29, entry 08:30) vs Variant B (08:20-08:34, entry 08:35)
-    # Also evaluate Long-Only vs Long+Short
+    # Test matrix:
+    # 1. 08:20-08:29 (10 min OR), Long Only
+    # 2. 08:20-08:29 (10 min OR), Long + Short
+    # 3. 08:20-08:34 (15 min OR post-macro), Long Only
+    # 4. 08:20-08:34 (15 min OR post-macro), Long + Short
     experiments = [
-        ("Variant A (08:30 Entry) - Long Only", "A_10min", True),
-        ("Variant A (08:30 Entry) - Long + Short", "A_10min", False),
-        ("Variant B (08:35 Post-Macro Entry) - Long Only", "B_15min", True),
-        ("Variant B (08:35 Post-Macro Entry) - Long + Short", "B_15min", False),
+        ("10-min OR (08:20–08:29) - Long Only", "08:20", "08:29", True),
+        ("10-min OR (08:20–08:29) - Long + Short", "08:20", "08:29", False),
+        ("15-min OR (08:20–08:34) - Long Only", "08:20", "08:34", True),
+        ("15-min OR (08:20–08:34) - Long + Short", "08:20", "08:34", False),
     ]
 
     results_summary = []
     trade_dfs = {}
 
     print("\n Running In-Sample (2021–2024) and Out-of-Sample (2025–2026) Matrix...")
-    for label, var_key, l_only in experiments:
-        tdf = simulate_gold_open(df_raw, variant=var_key, long_only=l_only)
+    for label, s_time, e_time, l_only in experiments:
+        tdf = simulate_gold_orb(df_raw, or_start_str=s_time, or_end_str=e_time, long_only=l_only)
         trade_dfs[label] = tdf
 
         m_full = compute_metrics(tdf, "Full")
@@ -306,12 +312,12 @@ def main():
 
     summary_df = pd.DataFrame(results_summary)
     print("\n" + "=" * 80)
-    print(" EXPERIMENT MATRIX SUMMARY")
+    print(" OPENING RANGE BREAKOUT (ORB) EXPERIMENT MATRIX")
     print("=" * 80)
     print(summary_df.to_string(index=False))
 
-    # Pick the best configuration
-    best_label = "Variant B (08:35 Post-Macro Entry) - Long Only"
+    # Evaluate best candidate
+    best_label = "10-min OR (08:20–08:29) - Long Only"
     best_df = trade_dfs[best_label]
     best_full = compute_metrics(best_df, best_label)
 
@@ -336,14 +342,13 @@ def main():
         y_m = compute_metrics(grp, str(yr))
         print(f"     {yr}: {y_m['trades']:3d} trades | Win%: {y_m['win_rate']:5.1f}% | PF: {y_m['pf']:4.2f} | Net: ${y_m['net_pnl']:8,.2f} | MaxDD: -${abs(y_m['max_dd']):6,.2f}")
 
-    # Check correlation against baseline strategies
+    # Correlation Check
     if BASELINE_TRADES_PATH.exists():
         base_df = pd.read_parquet(BASELINE_TRADES_PATH)
-        # Compute daily pnl for best candidate
         cand_daily = best_df.groupby("date_str")["net_dollars"].sum().rename("pnl_cand")
-        base_s1 = base_df[base_df["strategy"].str.contains("Strategy 1")].groupby("date_str")["net_dollars"].sum().rename("pnl_s1")
-        base_s2 = base_df[base_df["strategy"].str.contains("Strategy 2")].groupby("date_str")["net_dollars"].sum().rename("pnl_s2")
-        base_s3 = base_df[base_df["strategy"].str.contains("Strategy 3")].groupby("date_str")["net_dollars"].sum().rename("pnl_s3")
+        base_s1 = base_df[base_df["strategy"].str.contains("Strategy 1")].groupby("date_str")["scaled_pnl"].sum().rename("pnl_s1")
+        base_s2 = base_df[base_df["strategy"].str.contains("Strategy 2")].groupby("date_str")["scaled_pnl"].sum().rename("pnl_s2")
+        base_s3 = base_df[base_df["strategy"].str.contains("Strategy 3")].groupby("date_str")["scaled_pnl"].sum().rename("pnl_s3")
 
         pnl_matrix = pd.concat([cand_daily, base_s1, base_s2, base_s3], axis=1).fillna(0.0)
         corr_matrix = pnl_matrix.corr()

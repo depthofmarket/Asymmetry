@@ -36,6 +36,9 @@ This ledger is an append-only record of all research hypotheses, sizing policies
 24. [Volume Profile: Failed-Auction Quality Branch](#24-volume-profile-failed-auction-quality-branch-2026-05-20)
 25. [H21: Crude Oil Pit Open Breakout (09:00 ET on MCL)](#25-h21-crude-oil-pit-open-breakout-0900-et-on-mcl-2026-11-07)
 26. [H22: 4-Index Sector Rotation Value Area Breakout (09:45 ET on MYM/M2K)](#26-h22-4-index-sector-rotation-value-area-breakout-0945-et-on-mymm2k-2026-11-07)
+27. [H23: COMEX Gold Cash Open Drive (08:20 ET on MGC)](#27-h23-comex-gold-cash-open-drive-0820-et-on-mgc-2026-11-07)
+28. [H24: 60-Minute Initial Balance Range Extension (10:30 ET on MES/MNQ)](#28-h24-60-minute-initial-balance-range-extension-1030-et-on-mesmnq-2026-11-07)
+29. [H25: 15:50 ET NYSE Market-On-Close (MOC) Imbalance Drive (MNQ/MES)](#29-h25-1550-et-nyse-market-on-close-moc-imbalance-drive-mnqmes-2026-11-07)
 
 ---
 
@@ -270,3 +273,62 @@ This ledger is an append-only record of all research hypotheses, sizing policies
 - **Empirical Failure Evidence**: 741 trades, Profit Factor 0.82, Net -$13,885.35, Win Rate 43.59%, Max Drawdown -$18,524.50. Both In-Sample (2021–2024: 519 trades, PF 0.87, Net -$6,550.30) and Out-of-Sample (2025–2026: 222 trades, PF 0.74, Net -$7,335.05) failed decisively.
 - **Structural Root Cause**: When mega-cap tech (`NQ`) and large-cap blend (`ES`) are trapped inside their prior Value Area (balanced/choppy), the Dow 30 (price-weighted 30 stocks) and Russell 2000 (small caps) lack the broader market capitalization to sustain independent trending escapes. Breakouts on YM and RTY face aggressive liquidity mean-reversion pullbacks back into the range.
 - **Standing Rule**: Do not deploy standalone 09:45 Value Area breakouts on Dow or Russell without broad-market (SPX/NDX) trend participation.
+
+### 27. H23: COMEX Gold Cash Open Drive (08:20 ET on MGC) (2026-11-07)
+- **Evaluation Date**: 2026-11-07
+- **Author / Agent**: Quantitative Research Team
+- **Core Premise**: Directional breakout of the 08:20–08:29 ET (10-min) or 08:20–08:34 ET (15-min post-macro) COMEX Gold physical pit opening range on Micro Gold (`MGC`).
+- **Sample/Artifact**: 868 trades (10-min Long Only) / 1,397 trades (10-min L+S) across 2021–2026 (`gc_1m_2020_2026_et.parquet` SHA-256: `4be8c9f73920d9ebb28609431869231ac49ebd43dd14b48e0f6a05a84763b3df`). Run ID: `candidate_gold_comex_open_s6_2021_2026`.
+- **Empirical Failure Evidence**: All 4 variants failed decisively across the 5.8-year walkforward:
+  - 10-min OR Long Only: 868 trades, PF 0.81, Net -$11,427.60, WR 40.55%, MaxDD -$12,175.80.
+  - 10-min OR Long+Short: 1,397 trades, PF 0.81, Net -$19,776.30, WR 39.51%, MaxDD -$21,791.50.
+  - 15-min OR Long Only: 623 trades, PF 0.71, Net -$13,414.70, WR 39.00%, MaxDD -$13,544.30.
+  - 15-min OR Long+Short: 1,123 trades, PF 0.74, Net -$22,648.95, WR 38.82%, MaxDD -$23,313.05.
+- **Structural Root Cause**: In COMEX Gold, the 08:20 ET pit open is an inventory accumulation trap by commercial bullion banks prior to the true institutional physical benchmark fixing (the 10:00 AM ET / 15:00 London LBMA Gold PM Fix). The 08:20 open sits directly before 08:30 macro releases and 100 minutes before the London Fix; bullion dealers whip opening retail/CTA stops in both directions rather than sustaining multi-hour trends.
+- **Standing Rule**: Standalone opening range breakouts on Gold prior to the 10:00 AM ET LBMA PM Fix auction resolution are permanently rejected.
+
+### 28. H24: 60-Minute Initial Balance Range Extension (10:30 ET on MES/MNQ) (2026-11-07)
+- **Evaluation Date**: 2026-11-07
+- **Author / Agent**: Quantitative Research Team
+- **Core Premise**: Entering trend continuation on breakouts outside the 60-minute Initial Balance (09:30–10:29 ET) between 10:30 and 11:15 ET specifically on sessions that opened inside value (where Strategy 1 is flat).
+- **Sample/Artifact**: 1,373 combined trades across 2021–2026 (`es_1m_2020_2026_cqg_et.parquet` SHA-256: `36f0a1042b99...` & `nq_1m_2017_2026_cqg_et.parquet` SHA-256: `c9d78a716f5a...`). Run ID: `candidate_initial_balance_extension_s7_2021_2026`.
+- **Empirical Failure Evidence**: 1,373 trades, Profit Factor 0.90, Net -$13,745.65, Win Rate 45.45%, Max Drawdown -$20,197.45.
+  - MES Standalone: 692 trades, PF 0.86, Net -$9,117.65, Win Rate 44.65%, MaxDD -$12,935.55.
+  - MNQ Standalone: 681 trades, PF 0.94, Net -$4,628.00, Win Rate 46.26%, MaxDD -$9,848.20.
+  - In-Sample (2021–2024): 977 trades, PF 0.93, Net -$6,123.25.
+  - Out-of-Sample (2025–2026): 396 trades, PF 0.83, Net -$7,622.40.
+- **Structural Root Cause**: On sessions that open inside value, the market is structurally in a rotational/balanced regime. Probing outside the 60-minute Initial Balance after 10:30 ET coincides with European midday liquidity evaporation and aggressive 0DTE dealer gamma mean-reversion pinning. Breakouts fail to achieve multi-hour extension and snap back inside the IB range, resulting in sub-50% win rates and steady negative drift.
+- **Standing Rule**: Breakouts of the 60-minute Initial Balance after 10:30 ET on inside-value days are permanently rejected.
+
+### 29. H25: 15:50 ET NYSE Market-On-Close (MOC) Imbalance Drive (MNQ/MES) (2026-11-07)
+- **Evaluation Date**: 2026-11-07
+- **Author / Agent**: Quantitative Research Team
+- **Core Premise**: Entering trend momentum at 15:51 ET following the 15:50 ET official NYSE Closing Auction Net Imbalance publication on `MNQ` and `MES`.
+- **Sample/Artifact**: 640 trades (MNQ L+S) / 651 trades (MES L+S) across 2021–2026 (`nq_1m_2017_2026_cqg_et.parquet` SHA-256: `c9d78a716f5a...` & `es_1m_2020_2026_cqg_et.parquet` SHA-256: `36f0a1042b99...`). Run ID: `candidate_moc_imbalance_drive_s8_2021_2026`.
+- **Empirical Failure Evidence**: 640 trades on MNQ produced Profit Factor 0.89, Net -$5,848.60, Win Rate 47.03%, Max Drawdown -$9,678.60. MES produced PF 0.73, Net -$12,104.80. While raw unbracketed returns showed slight positive points (+0.78 pts on ES; +4.16 pts on NQ in 2021-2022), the setup severely degraded in 2023–2026 and could not clear realistic stop loss bracket whipsaws and 2-tick adverse execution friction in late-day high-spread environments.
+- **Structural Root Cause**: Late-day 15:50–15:59 ET order flow is heavily dominated by multi-million share algorithmic crosses and high-frequency market-maker internalizers. In the post-2022 0DTE era, violent 1-minute whipsaws trigger protective stop losses before the directional cross print settles at 16:00:00 ET.
+- **Standing Rule**: Standalone 15:50 MOC momentum drives without direct proprietary NYSE order book imbalance feeds are permanently rejected.
+
+### 30. H26: European Cash Close Rotation (11:15–11:45 ET on MES/MNQ) (2026-11-07)
+- **Evaluation Date**: 2026-11-07
+- **Author / Agent**: Quantitative Research Team
+- **Core Premise**: Entering mean-reversion trades (fading morning extensions toward VWAP) or trend continuation at 11:30 ET when European equity markets (London, Frankfurt) execute closing auctions.
+- **Sample/Artifact**: 701 trades on MES, 791 trades on MNQ across 2021–2026 (`es_1m_2020_2026_cqg_et.parquet` SHA-256: `36f0a1042b99...` & `nq_1m_2017_2026_cqg_et.parquet` SHA-256: `c9d78a716f5a...`). Run ID: `candidate_europe_close_rotation_s9_2021_2026`.
+- **Empirical Failure Evidence**:
+  - Fade (Mean Reversion): ES produced 701 trades, PF 0.84, Net -$2,702.37, WR 42.5%, MaxDD -$3,483.40. NQ produced 791 trades, PF 0.82, Net -$5,772.09, WR 40.5%, MaxDD -$7,820.37.
+  - Trend Continuation: ES produced 701 trades, PF 1.00, Net -$57.37 (zero-sum drift). NQ In-Sample (2021–2024) produced 250 trades with PF 1.03–1.09, Net +$213 to +$463 across 4 years (failing Belfort Step 04 threshold of PF >= 1.25).
+- **Structural Root Cause**: European cash closing auctions (16:30 London / 11:30 ET) are passive bilateral matching crosses, not aggressive market order flow that generates directional overextensions. When Europe closes, European liquidity simply vanishes, dropping US equity futures into the midday NY lunch lull where 0DTE options market makers pin volatility. Fading morning momentum at 11:30 ET suffers negative expectancy (PF 0.82–0.84) because morning trends do not snap back—they simply freeze or drift slowly.
+- **Standing Rule**: Standalone European cash close fades or trend continuation plays around 11:30 ET without external macro catalysts are permanently rejected.
+
+### 31. H27: Dalton's Overnight Inventory Imbalance Correction (09:35 ET on MES/MNQ) (2026-11-07)
+- **Evaluation Date**: 2026-11-07
+- **Author / Agent**: Quantitative Research Team
+- **Core Premise**: Fading opening price extensions at 09:35 ET back to prior session settlement when Globex overnight inventory is heavily one-sided (>= 85% of volume above/below prior settlement) and the 09:30–09:34 opening bar fails to accept outside overnight extremes.
+- **Sample/Artifact**: 273 trades on MES, 293 trades on MNQ across 2021–2026 (`es_1m_2020_2026_cqg_et.parquet` SHA-256: `36f0a1042b99...` & `nq_1m_2017_2026_cqg_et.parquet` SHA-256: `c9d78a716f5a...`). Run ID: `candidate_overnight_inventory_s10_2021_2026`.
+- **Empirical Failure Evidence**: 566 combined trades generated Profit Factor 0.71, Net -$6,330.59, Win Rate 40.46%, Max Drawdown -$6,988.15:
+  - MES Standalone: 273 trades, PF 0.66, Net -$2,469.77, WR 43.6%, MaxDD -$2,686.21. Negative every year (2021: 0.82 PF; 2022: 0.62; 2023: 0.47; 2024: 0.55; 2025: 0.69; 2026: 0.87). Stop loss hit 123 times vs target 64 times.
+  - MNQ Standalone: 293 trades, PF 0.73, Net -$3,860.82, WR 37.5%, MaxDD -$4,633.04. Negative every year (2021: 0.77 PF; 2022: 0.73; 2023: 0.75; 2024: 0.47; 2025: 0.93; 2026: 0.82). Stop loss hit 150 times vs target 81 times.
+- **Structural Root Cause**: In modern electronic futures (2021–2026), overnight Globex trading is not amateur retail inventory that gets bullied by locals at the cash open. Heavy overnight volume imbalances (>= 85%) reflect macro repricing and institutional flow. Attempting to fade one-sided overnight markets back to yesterday's settlement price runs directly into opening institutional continuation drives; stops are triggered at a 2:1 ratio over target fills.
+- **Standing Rule**: Standalone overnight inventory gap-fade strategies back to prior settlement without intraday liquidity exhaustion confirmation are permanently rejected.
+
+

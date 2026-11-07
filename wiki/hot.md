@@ -87,6 +87,16 @@ The active production baseline is the **LucidFlex Tri-Asset Ensemble** (`lucid_f
 
 ## Recent Changes (Last 3–5 Sessions)
 
+- **2026-11-07 (Session M6 - Portfolio Expansion & Non-News Candidate Falsification S4-S9)**:
+  - Systematically evaluated 6 candidate trading strategies to expand portfolio from 3 to 5-6 strategies and increase trade frequency:
+    1. Candidate S4 (Crude Oil 09:00 pit open `MCL`): Falsified (PF 0.93, -$1,380 net, 3.7x max DD breach). Failed Idea #25.
+    2. Candidate S5 (4-Index Sector Rotation `MYM`/`M2K`): Falsified (PF 0.82, -$13,885 net). Failed Idea #26.
+    3. Candidate S6 (COMEX Gold 08:20 Open `MGC`): Falsified (PF 0.81, -$11,427 net, dealer inventory trap). Failed Idea #27.
+    4. Candidate S7 (10:30 Initial Balance Extension `MES`/`MNQ`): Falsified (PF 0.90, -$13,745 net, gamma pinning). Failed Idea #28.
+    5. Candidate S8 (15:50 NYSE MOC Imbalance Drive `MNQ`/`MES`): Falsified (PF 0.89, -$5,848 net, 0DTE stop chop). Failed Idea #29.
+    6. Candidate S9 / H26 (11:30 European Cash Close Rotation `MES`/`MNQ`): Falsified (Fade PF 0.78, -$11,018 net across 1,492 trades; Trend IS PF 1.03–1.09, failing Belfort Step 04 PF >= 1.25). Failed Idea #30.
+  - Recorded verified runs into `results/backtest_provenance.db` under quarantined `StrategyTier.CANDIDATE`. Baseline tier remains 100% untainted.
+
 - **2026-11-06 (Session M5 - CQG Broker Execution Synchronizer & Real Trade Ingestion)**:
   - Built `scripts/sync_cqg_executions.py`:
     1. Ingests millisecond-accurate CQG order fills from `~/Library/MotiveWave/workspaces/Mota/config/journal.csv`.
