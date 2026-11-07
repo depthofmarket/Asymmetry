@@ -223,3 +223,14 @@ This is an append-only, chronological journal recording all agent actions, docum
   4. Pruned 12 zero-caller one-off signal export scripts in `scripts/` and removed `scripts/archive/`.
   5. Total tracked files reduced from 475 to 364 (-111 dead files).
 - **Verification**: Executed full test suite (`pytest -q`): 795 passed, 2 subtests passed in 274.18s (0 failures, 0 errors). Verified wiki integrity: 15/15 checks clean.
+
+
+## [2026-11-07 10:35:00 UTC] [gemini] [UPDATE] | Implemented Institutional 88+ Quantitative Metrics Engine and Provenance Protocol Upgrade
+- **Pages Modified**: `wiki/provenance/provenance-protocol.md`, `wiki/hot.md`, `wiki/log.md`
+- **Summary**:
+  1. Built `backtest/metrics.py` computing 92 distinct institutional quantitative performance and risk metrics spanning 9 dimensions (Return Dynamics, Risk-Adjusted Ratios, Drawdown Topology, Tail Risk & EVT, Trade Microstructure & Edge Distribution, Higher Statistical Moments & Tests, Multiple Testing & Selection Bias Controls, Capital Sizing & Ruin, Market Microstructure).
+  2. Upgraded SQLite provenance store (`results/backtest_provenance.db`) schema and `backtest/provenance.py` with 13 new dedicated indexed columns (`sortino_ratio`, `calmar_ratio`, `omega_ratio`, `cvar_95`, `ulcer_index`, `expectancy`, `sqn`, `kelly_fraction`, `half_kelly`, `tail_risk_ratio`, `recovery_factor`, `deflated_sharpe`) and a full `metrics_json` payload for all 92 metrics.
+  3. Upgraded `scripts/query_provenance.py` and `ProvenanceStore.quote_stat()` with comprehensive alias resolution (`sortino`, `calmar`, `omega`, `cvar95`, `ulcer_index`, `half_kelly`, `trimmed_profit_factor`, `top_5_wins_pct`, etc.) and enhanced footer reporting of Risk Metrics.
+  4. Updated `scripts/ingest_historical_provenance.py` and `scripts/alpha_factory.py` to calculate and persist full institutional metrics.
+  5. Implemented comprehensive test suite in `tests/test_institutional_metrics.py` verifying all mathematical formulas, DB migration, and CLI query capabilities.
+- **Verification**: `pytest tests/test_institutional_metrics.py tests/test_provenance_system.py tests/test_alpha_factory_provenance.py` passed 36/36 tests. CLI queries `query_provenance.py --strategy morning_va_breakout_s1 --stat sortino` (1.75), `calmar` (1.03), `cvar95` ($178.25), `ulcer_index` (1.06%), `half_kelly` (0.10), `trimmed_profit_factor` (1.47), and `top_5_wins_pct` (5.10%) verified working with full provenance footers.

@@ -43,15 +43,30 @@ Under this protocol, all performance statistics (Profit Factor, Win Rate, Net Pn
 # List all verified canonical backtest runs
 python scripts/query_provenance.py --list
 
-# Query specific strategy metric
+# Query specific strategy metric (Core or Institutional 88+ Metrics)
 python scripts/query_provenance.py --strategy morning_va_breakout_s1 --stat profit_factor
-python scripts/query_provenance.py --strategy macro_momentum_s2 --stat win_rate
+python scripts/query_provenance.py --strategy morning_va_breakout_s1 --stat sortino
+python scripts/query_provenance.py --strategy macro_momentum_s2 --stat calmar
 python scripts/query_provenance.py --strategy gold_london_fix_s3 --stat net_profit
+python scripts/query_provenance.py --strategy lucid_flex_ensemble --stat cvar95
+python scripts/query_provenance.py --strategy lucid_flex_ensemble --stat ulcer_index
+python scripts/query_provenance.py --strategy lucid_flex_ensemble --stat half_kelly
+python scripts/query_provenance.py --strategy lucid_flex_ensemble --stat trimmed_profit_factor
 python scripts/query_provenance.py --strategy lucid_flex_ensemble --latest
 
 # Compute or verify data file cryptographic SHA-256
 python scripts/query_provenance.py --hash-file <filepath>
 ```
+
+### Institutional 88+ Metrics Taxonomy & Schema (backtest/metrics.py)
+In addition to the 9 scalar legacy metrics, the provenance database schema and `backtest/metrics.py` natively calculate and persist the complete 88+ institutional metric taxonomy:
+- **Risk-Adjusted Ratios**: Sharpe, Sortino, Calmar, Omega, Gain-to-Pain (Schwager), Ulcer Performance Index (Martin), Sterling, Burke, Modified Burke, Kappa 3, Pezier Adjusted Sharpe.
+- **Drawdown & Underwater Topology**: Max Drawdown ($ and %), Average Drawdown, Longest Drawdown Calendar Days (CDD), Longest Sessions Underwater, Average DD Duration, Ulcer Index, Pain Index, Underwater Exposure %, Recovery Factor.
+- **Tail Risk & Value at Risk (VaR)**: Parametric VaR (95%, 99%), Historical VaR (95%, 99%), Cornish-Fisher expansion VaR (95%), Conditional VaR / Expected Shortfall (CVaR 95%, CVaR 99%), Traded-session CVaR 95%, Tail Risk Ratio (95th/5th percentile).
+- **Trade Microstructure & Distribution**: Expectancy ($/trade), Expectancy Score / Edge Ratio, Payoff Ratio, Scratch Rate %, Trimmed Profit Factor (excluding top 2% outlier wins), Top 5 Wins Dominance %, Median Trade PnL.
+- **Higher Statistical Moments & Tests**: Fisher-Pearson Skewness, Excess Kurtosis, Student's t-statistic, Edge P-value, Van Tharp System Quality Number (SQN), Jarque-Bera Normality Test Statistic & P-value.
+- **Multiple Testing & Overfitting**: Probabilistic Sharpe Ratio (PSR), Deflated Sharpe Ratio (DSR), Expected Max Sharpe ($\text{SR}^*$), Minimum Track Record Length (MinTRL).
+- **Capital Sizing & Ruin**: Full Kelly Criterion fraction, Half Kelly sizing, Analytical Gambler's Ruin, Max Win/Loss streaks.
 
 ### Automated Warning Flag Criteria
 Warning flags are permanently attached to run records:

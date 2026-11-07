@@ -63,6 +63,19 @@ class ProvenanceRecord:
     largest_win: float
     largest_win_pct_of_net: float
     strategy_tier: str = "BASELINE"
+    sortino_ratio: float = 0.0
+    calmar_ratio: float = 0.0
+    omega_ratio: float = 0.0
+    cvar_95: float = 0.0
+    ulcer_index: float = 0.0
+    expectancy: float = 0.0
+    sqn: float = 0.0
+    kelly_fraction: float = 0.0
+    half_kelly: float = 0.0
+    tail_risk_ratio: float = 0.0
+    recovery_factor: float = 0.0
+    deflated_sharpe: float = 0.0
+    metrics: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     params: dict[str, Any] = field(default_factory=dict)
     notes: str = ""
@@ -122,19 +135,50 @@ class ProvenanceStore:
                     largest_win REAL NOT NULL,
                     largest_win_pct_of_net REAL NOT NULL,
                     strategy_tier TEXT DEFAULT 'BASELINE',
+                    sortino_ratio REAL DEFAULT 0.0,
+                    calmar_ratio REAL DEFAULT 0.0,
+                    omega_ratio REAL DEFAULT 0.0,
+                    cvar_95 REAL DEFAULT 0.0,
+                    ulcer_index REAL DEFAULT 0.0,
+                    expectancy REAL DEFAULT 0.0,
+                    sqn REAL DEFAULT 0.0,
+                    kelly_fraction REAL DEFAULT 0.0,
+                    half_kelly REAL DEFAULT 0.0,
+                    tail_risk_ratio REAL DEFAULT 0.0,
+                    recovery_factor REAL DEFAULT 0.0,
+                    deflated_sharpe REAL DEFAULT 0.0,
+                    metrics_json TEXT DEFAULT '{}',
                     warnings_json TEXT NOT NULL,
                     params_json TEXT NOT NULL,
                     notes TEXT
                 )
             """)
-            # Migration check: Ensure strategy_tier column exists for backwards compatibility
+            # Migration check: Ensure new institutional metrics columns exist for backwards compatibility
             cur = conn.execute("PRAGMA table_info(backtest_runs)")
             existing_cols = {row["name"] for row in cur.fetchall()}
-            if "strategy_tier" not in existing_cols:
-                conn.execute("ALTER TABLE backtest_runs ADD COLUMN strategy_tier TEXT DEFAULT 'BASELINE'")
-                conn.execute(
-                    "UPDATE backtest_runs SET strategy_tier = 'FORWARD_DEMO' WHERE strategy_id = 'lucid_flex_forward_demo'"
-                )
+            migrations = {
+                "strategy_tier": "TEXT DEFAULT 'BASELINE'",
+                "sortino_ratio": "REAL DEFAULT 0.0",
+                "calmar_ratio": "REAL DEFAULT 0.0",
+                "omega_ratio": "REAL DEFAULT 0.0",
+                "cvar_95": "REAL DEFAULT 0.0",
+                "ulcer_index": "REAL DEFAULT 0.0",
+                "expectancy": "REAL DEFAULT 0.0",
+                "sqn": "REAL DEFAULT 0.0",
+                "kelly_fraction": "REAL DEFAULT 0.0",
+                "half_kelly": "REAL DEFAULT 0.0",
+                "tail_risk_ratio": "REAL DEFAULT 0.0",
+                "recovery_factor": "REAL DEFAULT 0.0",
+                "deflated_sharpe": "REAL DEFAULT 0.0",
+                "metrics_json": "TEXT DEFAULT '{}'",
+            }
+            for col_name, col_def in migrations.items():
+                if col_name not in existing_cols:
+                    conn.execute(f"ALTER TABLE backtest_runs ADD COLUMN {col_name} {col_def}")
+                    if col_name == "strategy_tier":
+                        conn.execute(
+                            "UPDATE backtest_runs SET strategy_tier = 'FORWARD_DEMO' WHERE strategy_id = 'lucid_flex_forward_demo'"
+                        )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_strategy ON backtest_runs(strategy_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_strategy_tier ON backtest_runs(strategy_tier)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_timestamp ON backtest_runs(timestamp)")
@@ -270,6 +314,20 @@ class ProvenanceStore:
         params: Optional[dict[str, Any]] = None,
         notes: str = "",
         explicit_warnings: Optional[list[str]] = None,
+        # Institutional Metrics
+        sortino_ratio: float = 0.0,
+        calmar_ratio: float = 0.0,
+        omega_ratio: float = 0.0,
+        cvar_95: float = 0.0,
+        ulcer_index: float = 0.0,
+        expectancy: float = 0.0,
+        sqn: float = 0.0,
+        kelly_fraction: float = 0.0,
+        half_kelly: float = 0.0,
+        tail_risk_ratio: float = 0.0,
+        recovery_factor: float = 0.0,
+        deflated_sharpe: float = 0.0,
+        extended_metrics: Optional[dict[str, Any]] = None,
     ) -> ProvenanceRecord:
         """
         Fail-safe automatic backtest recording (Rule 5).
@@ -334,6 +392,56 @@ class ProvenanceStore:
         )
         all_warnings = list(dict.fromkeys(auto_warnings + (explicit_warnings or [])))
 
+        # Auto-populate institutional metrics from extended_metrics dict if provided
+        ext = dict(extended_metrics or {})
+        if sortino_ratio == 0.0 and "sortino_ratio" in ext:
+            sortino_ratio = float(ext["sortino_ratio"])
+        elif sortino_ratio == 0.0 and "sortino" in ext:
+            sortino_ratio = float(ext["sortino"])
+
+        if calmar_ratio == 0.0 and "calmar_ratio" in ext:
+            calmar_ratio = float(ext["calmar_ratio"])
+        elif calmar_ratio == 0.0 and "calmar" in ext:
+            calmar_ratio = float(ext["calmar"])
+
+        if omega_ratio == 0.0 and "omega_ratio" in ext:
+            omega_ratio = float(ext["omega_ratio"])
+        elif omega_ratio == 0.0 and "omega" in ext:
+            omega_ratio = float(ext["omega"])
+
+        if cvar_95 == 0.0 and "cvar_95" in ext:
+            cvar_95 = float(ext["cvar_95"])
+        elif cvar_95 == 0.0 and "cvar95" in ext:
+            cvar_95 = float(ext["cvar95"])
+
+        if ulcer_index == 0.0 and "ulcer_index" in ext:
+            ulcer_index = float(ext["ulcer_index"])
+
+        if expectancy == 0.0 and "expectancy" in ext:
+            expectancy = float(ext["expectancy"])
+
+        if sqn == 0.0 and "sqn" in ext:
+            sqn = float(ext["sqn"])
+
+        if kelly_fraction == 0.0 and "full_kelly_fraction" in ext:
+            kelly_fraction = float(ext["full_kelly_fraction"])
+        elif kelly_fraction == 0.0 and "kelly_fraction" in ext:
+            kelly_fraction = float(ext["kelly_fraction"])
+
+        if half_kelly == 0.0 and "half_kelly" in ext:
+            half_kelly = float(ext["half_kelly"])
+
+        if tail_risk_ratio == 0.0 and "tail_risk_ratio" in ext:
+            tail_risk_ratio = float(ext["tail_risk_ratio"])
+
+        if recovery_factor == 0.0 and "recovery_factor" in ext:
+            recovery_factor = float(ext["recovery_factor"])
+
+        if deflated_sharpe == 0.0 and "deflated_sharpe" in ext:
+            deflated_sharpe = float(ext["deflated_sharpe"])
+        elif deflated_sharpe == 0.0 and "dsr" in ext:
+            deflated_sharpe = float(ext["dsr"])
+
         record = ProvenanceRecord(
             run_id=run_id,
             timestamp=timestamp_str,
@@ -359,6 +467,19 @@ class ProvenanceStore:
             largest_win=round(largest_win, 2),
             largest_win_pct_of_net=round(largest_win_pct, 1),
             strategy_tier=strategy_tier_str,
+            sortino_ratio=round(sortino_ratio, 2),
+            calmar_ratio=round(calmar_ratio, 2),
+            omega_ratio=round(omega_ratio, 2),
+            cvar_95=round(cvar_95, 2),
+            ulcer_index=round(ulcer_index, 2),
+            expectancy=round(expectancy, 2),
+            sqn=round(sqn, 2),
+            kelly_fraction=round(kelly_fraction, 4),
+            half_kelly=round(half_kelly, 4),
+            tail_risk_ratio=round(tail_risk_ratio, 2),
+            recovery_factor=round(recovery_factor, 2),
+            deflated_sharpe=round(deflated_sharpe, 4),
+            metrics=ext,
             warnings=all_warnings,
             params=params or {},
             notes=notes,
@@ -373,8 +494,12 @@ class ProvenanceStore:
                     date_start, date_end, days_count, data_path, data_hash, git_commit,
                     slippage_model, commission_model, is_net, total_trades, win_rate,
                     profit_factor, gross_profit, net_profit, max_drawdown, sharpe_ratio,
-                    largest_win, largest_win_pct_of_net, strategy_tier, warnings_json, params_json, notes
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    largest_win, largest_win_pct_of_net, strategy_tier,
+                    sortino_ratio, calmar_ratio, omega_ratio, cvar_95, ulcer_index,
+                    expectancy, sqn, kelly_fraction, half_kelly, tail_risk_ratio,
+                    recovery_factor, deflated_sharpe, metrics_json,
+                    warnings_json, params_json, notes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(run_id) DO UPDATE SET
                     timestamp = excluded.timestamp,
                     strategy_id = excluded.strategy_id,
@@ -399,6 +524,19 @@ class ProvenanceStore:
                     largest_win = excluded.largest_win,
                     largest_win_pct_of_net = excluded.largest_win_pct_of_net,
                     strategy_tier = excluded.strategy_tier,
+                    sortino_ratio = excluded.sortino_ratio,
+                    calmar_ratio = excluded.calmar_ratio,
+                    omega_ratio = excluded.omega_ratio,
+                    cvar_95 = excluded.cvar_95,
+                    ulcer_index = excluded.ulcer_index,
+                    expectancy = excluded.expectancy,
+                    sqn = excluded.sqn,
+                    kelly_fraction = excluded.kelly_fraction,
+                    half_kelly = excluded.half_kelly,
+                    tail_risk_ratio = excluded.tail_risk_ratio,
+                    recovery_factor = excluded.recovery_factor,
+                    deflated_sharpe = excluded.deflated_sharpe,
+                    metrics_json = excluded.metrics_json,
                     warnings_json = excluded.warnings_json,
                     params_json = excluded.params_json,
                     notes = excluded.notes
@@ -428,6 +566,19 @@ class ProvenanceStore:
                     record.largest_win,
                     record.largest_win_pct_of_net,
                     record.strategy_tier,
+                    record.sortino_ratio,
+                    record.calmar_ratio,
+                    record.omega_ratio,
+                    record.cvar_95,
+                    record.ulcer_index,
+                    record.expectancy,
+                    record.sqn,
+                    record.kelly_fraction,
+                    record.half_kelly,
+                    record.tail_risk_ratio,
+                    record.recovery_factor,
+                    record.deflated_sharpe,
+                    json.dumps(record.metrics),
                     json.dumps(record.warnings),
                     json.dumps(record.params),
                     record.notes,
@@ -450,7 +601,8 @@ class ProvenanceStore:
 
     def _row_to_record(self, row: sqlite3.Row) -> ProvenanceRecord:
         tier_val = "BASELINE"
-        if "strategy_tier" in row.keys() and row["strategy_tier"]:
+        keys = row.keys()
+        if "strategy_tier" in keys and row["strategy_tier"]:
             tier_val = row["strategy_tier"]
         else:
             known = get_strategy_tier(row["strategy_id"])
@@ -482,6 +634,19 @@ class ProvenanceStore:
             largest_win=row["largest_win"],
             largest_win_pct_of_net=row["largest_win_pct_of_net"],
             strategy_tier=tier_val,
+            sortino_ratio=float(row["sortino_ratio"]) if ("sortino_ratio" in keys and row["sortino_ratio"] is not None) else 0.0,
+            calmar_ratio=float(row["calmar_ratio"]) if ("calmar_ratio" in keys and row["calmar_ratio"] is not None) else 0.0,
+            omega_ratio=float(row["omega_ratio"]) if ("omega_ratio" in keys and row["omega_ratio"] is not None) else 0.0,
+            cvar_95=float(row["cvar_95"]) if ("cvar_95" in keys and row["cvar_95"] is not None) else 0.0,
+            ulcer_index=float(row["ulcer_index"]) if ("ulcer_index" in keys and row["ulcer_index"] is not None) else 0.0,
+            expectancy=float(row["expectancy"]) if ("expectancy" in keys and row["expectancy"] is not None) else 0.0,
+            sqn=float(row["sqn"]) if ("sqn" in keys and row["sqn"] is not None) else 0.0,
+            kelly_fraction=float(row["kelly_fraction"]) if ("kelly_fraction" in keys and row["kelly_fraction"] is not None) else 0.0,
+            half_kelly=float(row["half_kelly"]) if ("half_kelly" in keys and row["half_kelly"] is not None) else 0.0,
+            tail_risk_ratio=float(row["tail_risk_ratio"]) if ("tail_risk_ratio" in keys and row["tail_risk_ratio"] is not None) else 0.0,
+            recovery_factor=float(row["recovery_factor"]) if ("recovery_factor" in keys and row["recovery_factor"] is not None) else 0.0,
+            deflated_sharpe=float(row["deflated_sharpe"]) if ("deflated_sharpe" in keys and row["deflated_sharpe"] is not None) else 0.0,
+            metrics=json.loads(row["metrics_json"]) if ("metrics_json" in keys and row["metrics_json"]) else {},
             warnings=json.loads(row["warnings_json"]) if row["warnings_json"] else [],
             params=json.loads(row["params_json"]) if row["params_json"] else {},
             notes=row["notes"] or "",
@@ -577,6 +742,23 @@ class ProvenanceStore:
 
         net_tag = "NET (Includes slippage & comms)" if record.is_net else "GROSS (UNVERIFIED COSTS)"
 
+        risk_str = ""
+        if (
+            record.sortino_ratio > 0
+            or record.calmar_ratio > 0
+            or record.cvar_95 > 0
+            or record.ulcer_index > 0
+            or record.half_kelly > 0
+        ):
+            risk_str = (
+                f"\nRisk Metrics : Sortino: {record.sortino_ratio:.2f} | "
+                f"Calmar: {record.calmar_ratio:.2f} | "
+                f"Omega: {record.omega_ratio:.2f} | "
+                f"CVaR95: ${record.cvar_95:,.2f} | "
+                f"Ulcer: {record.ulcer_index:.2f}% | "
+                f"Half-Kelly: {record.half_kelly:.3f}"
+            )
+
         return f"""
 ────────────────────────────────────────────────────────────────────────────
 PROVENANCE VERIFICATION FOOTER (Rule 2 & 3)
@@ -590,7 +772,7 @@ Data File    : {record.data_path}
 Data SHA-256 : {record.data_hash}
 Git Commit   : {record.git_commit}
 Cost Model   : {record.slippage_model} | {record.commission_model} [{net_tag}]
-Metrics      : Trades: {record.total_trades} | Win%: {record.win_rate}% | PF: {record.profit_factor} | Net: ${record.net_profit:,.2f} | MaxDD: -${abs(record.max_drawdown):,.2f}
+Core Metrics : Trades: {record.total_trades} | Win%: {record.win_rate}% | PF: {record.profit_factor} | Net: ${record.net_profit:,.2f} | MaxDD: -${abs(record.max_drawdown):,.2f}{risk_str}
 Warning Flags:
 {warn_str}
 ────────────────────────────────────────────────────────────────────────────"""
@@ -599,10 +781,65 @@ Warning Flags:
     def quote_stat(cls, record: ProvenanceRecord, stat_name: str) -> str:
         """
         Quotes a single stat with mandatory provenance context (Rule 2 + Rule 4).
-        Refuses to return a 'naked number'.
+        Searches record attributes, extended metrics, and standard aliases.
         """
-        stat_lower = stat_name.lower().replace(" ", "_")
-        val = getattr(record, stat_lower, None)
+        stat_lower = stat_name.lower().replace(" ", "_").strip()
+
+        alias_map = {
+            "sortino": "sortino_ratio",
+            "calmar": "calmar_ratio",
+            "omega": "omega_ratio",
+            "cvar": "cvar_95",
+            "cvar95": "cvar_95",
+            "var95": "var_95_historical",
+            "ulcer": "ulcer_index",
+            "kelly": "kelly_fraction",
+            "half_kelly": "half_kelly",
+            "edge": "expectancy_score",
+            "dsr": "deflated_sharpe",
+            "psr": "probabilistic_sharpe_ratio",
+            "sqn": "sqn",
+            "tail_ratio": "tail_risk_ratio",
+            "recovery": "recovery_factor",
+            "winrate": "win_rate",
+            "pf": "profit_factor",
+            "net": "net_profit",
+            "gross": "gross_profit",
+            "dd": "max_drawdown",
+            "maxdd": "max_drawdown",
+            "sharpe": "sharpe_ratio",
+        }
+
+        lookup_keys = [stat_lower]
+        if stat_lower in alias_map:
+            lookup_keys.append(alias_map[stat_lower])
+
+        val = None
+        matched_key = stat_name
+        for k in lookup_keys:
+            if hasattr(record, k):
+                attr_val = getattr(record, k)
+                if attr_val is not None and not (isinstance(attr_val, (int, float)) and attr_val == 0.0 and k not in ("max_drawdown", "net_profit")):
+                    val = attr_val
+                    matched_key = k
+                    break
+            if hasattr(record, "metrics") and isinstance(record.metrics, dict) and k in record.metrics:
+                val = record.metrics[k]
+                matched_key = k
+                break
+
+        # Fallback if val is still None (e.g. 0.0 values)
+        if val is None:
+            for k in lookup_keys:
+                if hasattr(record, k):
+                    val = getattr(record, k)
+                    matched_key = k
+                    break
+                if hasattr(record, "metrics") and isinstance(record.metrics, dict) and k in record.metrics:
+                    val = record.metrics[k]
+                    matched_key = k
+                    break
+
         if val is None:
             return f"Error: Metric '{stat_name}' not tracked in provenance record {record.run_id}."
 

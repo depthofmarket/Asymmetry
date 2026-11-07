@@ -254,6 +254,7 @@ def evaluate_candidate_trades(
         "warnings": warnings,
         "veto_reasons": veto_reasons,
         "verdict": verdict,
+        "raw_metrics": m,
     }
 
 
@@ -386,6 +387,7 @@ def main() -> int:
     gross_profit = float(audit["gross_profit"])
     run_id = f"run_alpha_factory_{strat_id}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
 
+    raw_m = audit.get("raw_metrics", {})
     if args.record:
         rec = store.record_run(
             run_id=run_id,
@@ -408,6 +410,7 @@ def main() -> int:
             sharpe_ratio=audit["sharpe"],
             largest_win=audit["largest_win"],
             explicit_warnings=audit["warnings"],
+            extended_metrics=raw_m,
             notes=f"Alpha Factory evaluation | DSR: {audit['dsr']:.4f} | EVT SR*: {audit['sr_star']:.2f} | Trials: {trials}",
         )
         print(ProvenanceStore.format_footer(rec))
@@ -456,6 +459,12 @@ def main() -> int:
             sharpe_ratio=round(audit["sharpe"], 2),
             largest_win=round(audit["largest_win"], 2),
             largest_win_pct_of_net=round(largest_win_pct, 1),
+            sortino_ratio=round(float(raw_m.get("sortino", 0.0)), 2),
+            calmar_ratio=round(float(raw_m.get("calmar", 0.0)), 2),
+            cvar_95=round(float(raw_m.get("cvar95", 0.0)), 2),
+            ulcer_index=round(float(raw_m.get("ulcer_index", 0.0)), 2),
+            deflated_sharpe=round(float(audit.get("dsr", 0.0)), 4),
+            metrics=raw_m,
             warnings=all_warnings,
             params={},
             notes=f"Alpha Factory evaluation | DSR: {audit['dsr']:.4f} | EVT SR*: {audit['sr_star']:.2f} | Trials: {trials} | DRY RUN (not recorded to database; pass --record to persist)",

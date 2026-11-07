@@ -27,6 +27,22 @@ The active production baseline is the **LucidFlex Tri-Asset Ensemble** (`lucid_f
 
 ## Active Tasks & Work in Progress
 
+- [x] **Milestone 6: Institutional 88+ Quantitative Metrics Engine & Provenance Protocol Upgrade**:
+  - Implemented `backtest/metrics.py` computing 92 distinct institutional metrics across 9 dimensions:
+    1. Return & Capital Growth (10 metrics: Net PnL, Gross Profit/Loss, Annual PnL, CAGR, Daily & Traded Session Avg, Benchmark Relative).
+    2. Risk-Adjusted Ratios (14 metrics: Sharpe, Sortino, Calmar, Omega, Gain-to-Pain, UPI/Martin, Sterling, Burke, Modified Burke, Kappa 3, Pezier Adjusted Sharpe).
+    3. Drawdown Topology (12 metrics: Max DD $ & %, Avg DD, CDD Calendar Days, Underwater Exposure %, Ulcer Index, Pain Index, Recovery Factor).
+    4. Tail Risk & EVT (10 metrics: Parametric & Historical VaR 95/99, Cornish-Fisher VaR 95, CVaR/Expected Shortfall 95/99, Tail Risk Ratio).
+    5. Trade Microstructure & Edge Distribution (16 metrics: Expectancy, Payoff Ratio, Edge Ratio, Scratch Rate, Trimmed PF top 2%, Top 5 Dominance %).
+    6. Higher Statistical Moments & Tests (8 metrics: Skewness, Kurtosis, SQN, Student's t-stat, P-value, Jarque-Bera Normality Test).
+    7. Multiple Testing & Selection Bias (6 metrics: PSR, DSR, EVT Expected Max Sharpe SR*, MinTRL Track Record Length).
+    8. Capital Sizing & Ruin (8 metrics: Full Kelly, Half Kelly, Analytical Gambler's Ruin, Max Win/Loss streaks).
+    9. Market Microstructure (8 metrics: MFE, MAE, Edge Efficiency, Exposure %).
+  - Upgraded SQLite store `results/backtest_provenance.db` schema with 13 new dedicated indexed columns + JSON extended metrics payload.
+  - Upgraded `backtest/provenance.py` and `scripts/query_provenance.py` with alias resolution (`sortino`, `calmar`, `omega`, `cvar95`, `ulcer_index`, `half_kelly`, `trimmed_profit_factor`, etc.).
+  - Re-ingested canonical runs in `scripts/ingest_historical_provenance.py` recording full institutional metrics.
+  - Implemented comprehensive test suite in `tests/test_institutional_metrics.py` (14/14 passing).
+
 - [x] **Milestone 1**: Karpathy LLM Wiki Architecture Implementation
   - Full `wiki/` directory layout created with `SCHEMA.md`, `index.md`, `log.md`, `hot.md`, `failed_ideas.md`.
   - 9 domain seed pages initialized across strategies, prop firm, sizing, provenance, and execution.
