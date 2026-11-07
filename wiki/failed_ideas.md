@@ -53,6 +53,7 @@ This ledger is an append-only record of all research hypotheses, sizing policies
 41. [H41: LBMA PM Fix Pre-Hedging Drive (09:35 ET on MGC)](#41-h41-lbma-pm-fix-pre-hedging-drive-0935-et-on-mgc-2026-11-07)
 42. [H42: 80% Value Area Re-Acceptance Rotation (MNQ/MES)](#42-h42-80-value-area-re-acceptance-rotation-mnqmes-2026-11-07)
 43. [H43: Multi-Session Inside-Day Coiled Spring Breakout (MNQ)](#43-h43-multi-session-inside-day-coiled-spring-breakout-mnq-2026-11-07)
+44. [H44: Shanghai Gold Exchange AM Benchmark Fix Arbitrage Drive (21:15 ET on MGC)](#44-h44-shanghai-gold-exchange-am-benchmark-fix-arbitrage-drive-2115-et-on-mgc-2026-11-07)
 
 ---
 
@@ -501,6 +502,20 @@ This ledger is an append-only record of all research hypotheses, sizing policies
   - Fails Belfort Step 04 institutional validation threshold ($PF \ge 1.25$). Total net return of $278 over 5.8 years equates to $48/year, completely unviable for systematic prop execution.
 - **Structural Root Cause**: In modern algorithmic futures markets, Inside Day highs and lows are prominent retail reference levels that act as high-probability liquidity sweeps. When price probes outside the Inside Day boundary, it triggers resting retail breakout buy/sell stops. Institutional market makers use this liquidity surge to exit inventory, immediately fading the breakout and snapping price back inside the range. Breakout traders are consistently stopped out in the false expansion trap before any sustained multi-hour trend develops.
 - **Standing Rule**: Standalone Inside-Day boundary breakouts on equity index futures without confirmed multi-session volume consolidation or external macro catalysts are permanently rejected.
+
+### 44. H44: Shanghai Gold Exchange AM Benchmark Fix Arbitrage Drive (21:15 ET on MGC) (2026-11-07)
+- **Evaluation Date**: 2026-11-07
+- **Author / Agent**: Red-Team Quantitative Adversary (`adversarial_auditor`)
+- **Core Premise**: Entering long Micro Gold (`MGC`) at 21:15 ET (09:15 Beijing time) ahead of the 10:15 Beijing / 22:15 ET Shanghai Gold Exchange (SGE) AM Benchmark Fix auction clearing, under the hypothesis that Chinese institutional physical gold demand and onshore-offshore premium arbitrage systematically drive COMEX gold higher during Asian morning trading.
+- **Sample/Artifact**: 302 trades across 2020–2026 (`gc_1m_2020_2026_et.parquet` SHA-256: `4be8c9f73920d9ebb28609431869231ac49ebd43dd14b48e0f6a05a84763b3df`). Provenance Run ID: `candidate_shanghai_gold_s12_2020_2026`.
+- **Empirical Failure Evidence**: 302 trades produced Profit Factor 1.10, Net +$466.70, Win Rate 46.03%, Max Drawdown -$795.00, Sharpe 0.54:
+  - Belfort Step 04 Disqualification: In-Sample (2020–2024) generated 208 trades with PF 1.08, Net +$164.80, MaxDD -$412.60, completely failing the mandatory Belfort Step 04 hurdle ($PF \ge 1.25$).
+  - Negative in 5 of 7 Calendar Years: Net negative in 2020 (-$106.10, PF 0.76), 2021 (-$35.60, PF 0.91), 2022 (-$74.30, PF 0.83), 2023 (-$17.10, PF 0.94), and 2026 (-$496.90, PF 0.59). The first 4 consecutive years (2020–2023) were all negative.
+  - 2026 Out-of-Sample Collapse: In 2026, performance disintegrated to a Win Rate of 19.4%, PF 0.59, and Net -$496.90.
+  - Outlier Dominance Flag: The single largest winning trade ($171.75) represented 36.8% of the cumulative 7-year net profit (> 35% threshold).
+  - Capital Inefficiency: Total 7-year net profit of $466.70 equates to $66.67/year on a $25K account, while suffering a -$795.00 drawdown (Return/Drawdown ratio of 0.59x). Total friction ($664.40) exceeded total net profit.
+- **Structural Root Cause**: The isolated profitability in 2024–2025 was an ephemeral macro artifact of Chinese domestic capital flight and PBOC sovereign gold reserve accumulation. Due to strict PBOC import quotas, domestic Chinese demand drove the Shanghai Gold Premium to historic extremes ($50–$120/oz over international spot), sparking transient overnight speculative drives. However, once the PBOC paused official purchases and Chinese regulators tightened domestic speculative trading, the Shanghai premium normalized to historical parity. In 2026, the disappearance of the artificial premium caused the strategy to collapse (19.4% win rate, PF 0.59). Across normal market regimes (2020–2023), Globex Asian hours (21:15–22:15 ET) suffer from low liquidity, wider spreads, and zero systematic directional drift, bleeding capital to execution friction.
+- **Standing Rule**: Standalone Asian session / Shanghai fix momentum strategies on COMEX gold without verified real-time Shanghai-London physical premium divergence data are permanently rejected.
 
 
 

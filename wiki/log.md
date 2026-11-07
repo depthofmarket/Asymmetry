@@ -491,7 +491,34 @@ This is an append-only, chronological journal recording all agent actions, docum
 - **Verification**: `python3 scripts/verify_wiki_integrity.py` confirms 15/15 checks clean.
 
 
+## [2026-11-07 18:00:00 UTC] [lead-quant] [VERIFY] | Executed 10,000-Path CRN Block-Bootstrap & Trade Corridor Monte Carlo Re-Verification
+- **Pages Modified**: `wiki/hot.md`, `wiki/log.md`
+- **Summary**:
+  1. Re-executed `scripts/generate_monte_carlo_corridor.py` (`n_sims=10000`, `n_trades=30`) and `scripts/run_sizing_cushion_optimization.py --n-sims-grid 10000 --n-sims-funded 10000` (`seed=42`, `block_size=10` sessions) across all 135 evaluation ratchet configurations and 9 funded transition policies on the frozen 543-trade dataset (`ecad8d063caa18344491c5c3050211c35f7383b0e8802f1178e3902306b686ca`).
+  2. Verified 10,000-path Evaluation Ratchet stability: Baseline Ratchet (350/750) achieved 74.62% pass rate (90.0 median sessions); Live Deployed Ratchet (200/550) achieved 73.07% pass rate (79.0 median sessions); Balanced Champion (250/775) achieved 74.07% pass rate (85.0 median sessions); Max Compression Pareto point (200/500) achieved 73.00% pass rate (78.0 median sessions).
+  3. Verified 10,000-path Funded Transition & Infant Mortality stability: Safe CPPI (<$400 floor buffer) preserved low zero-payout infant mortality at 14.40% (85.60% Payout #1 survival) with median net extraction of +$662.60 and Net Lifetime EV of +$570.71 per $39 ticket, outperforming 1-micro conservative staging (21.88% infant mortality, +$455.03 EV).
+- **Verification**: `python3 scripts/verify_wiki_integrity.py` confirms 15/15 checks clean.
+
+
+## [2026-11-07 19:07:00 UTC] [adversarial-auditor] [VETO] | Evaluated and permanently vetoed Candidate 12 (H44 Shanghai Gold AM Fix on MGC)
+- **Pages Modified**: `wiki/failed_ideas.md`, `wiki/hot.md`, `wiki/log.md`
+- **Summary**:
+  1. Formulated and implemented point-in-time backtest for Candidate 12 (H44: 21:15 ET / 02:15 UTC Shanghai Gold Exchange AM Benchmark Fix Arbitrage Drive on MGC) in `scripts/research_shanghai_gold_fix_s12.py`.
+  2. Recorded candidate walkforward run `candidate_shanghai_gold_s12_2020_2026` in `results/backtest_provenance.db` (302 trades, WR 46.0%, PF 1.10, Net +$466.70 over 6.8 years, MaxDD -$795.00, Sharpe 0.54).
+  3. Falsified against Belfort Step 04 In-Sample hurdle: 208 trades generated PF 1.08, Net +$164.80, failing mandatory PF >= 1.25. Negative in 5 of 7 calendar years (2020, 2021, 2022, 2023, and 2026). In 2026, win rate collapsed to 19.4% with PF 0.59 and -$496.90 net loss.
+  4. Forensic root cause: Profitability in 2024–2025 was an ephemeral artifact of the historic $50–$120/oz Shanghai gold premium driven by Chinese domestic capital flight and PBOC accumulation. Once PBOC paused purchases in 2026 and regulators clamped down on speculative retail trading, the premium normalized to parity, causing the strategy to collapse. Outside this anomaly, Asian Globex gold trading has low volume and zero systematic drift, bleeding capital to execution friction.
+  5. Issued BINDING VETO and documented detailed autopsy as Entry #44 in `wiki/failed_ideas.md`.
+- **Verification**: `python3 scripts/verify_wiki_integrity.py` confirms 15/15 checks clean.
 
 
 
 
+## [2026-11-07 19:15:00 UTC] [lead-quant] [REFACTOR] | Purged duplicate prop PNGs and overhauled Monte Carlo dashboards to institutional publication-grade
+- **Pages Modified**: `scripts/generate_rational_edge_prop_dashboard.py`, `scripts/generate_monte_carlo_corridor.py`, `tests/test_challenger_canonical_stress.py`, `wiki/hot.md`, `wiki/log.md`
+- **Summary**:
+  1. Root-cause analysis: Diagnosed and eradicated 4 duplicate legacy PNGs in `results/prop_firm_dashboard/` (`01_equity_curve_and_drawdown.png`, `02_monte_carlo_fan_chart.png`, `03_payout_decay_and_distributions.png`, `04_ticket_batch_economics.png`) and excised the obsolete conflicting script `scripts/generate_prop_firm_dashboard.py`.
+  2. Redesigned Monte Carlo evaluation fan charts (`01_prop_evaluation_trajectories_and_corridor.png` and `lucid_flex_25k_prop_mode_report.png` Panel 1) to institutional hedge-fund standard: replaced jagged polygon fills with smooth, layered percentile corridor ribbons (P01–P99 envelope, P05–P95 90% corridor, P25–P75 50% interquartile core, bold median path, sleek individual paths, and a right-hand marginal terminal outcome density histogram/KDE).
+  3. Harmonized aesthetic theme across all dashboard suites to clean institutional white/slate (`#FFFFFF` background, `#0F172A` headings, `#475569` labels, `#E2E8F0` gridlines, and `#CBD5E1` borders), converting `scripts/generate_monte_carlo_corridor.py` away from legacy dark mode.
+  4. Purged unreferenced legacy folder `results/forward_test/charts/`.
+  5. Verified 29/29 tests pass, morning readiness 100% green, and wiki integrity 15/15 passing.
+- **Verification**: `python3 scripts/verify_wiki_integrity.py` confirms 15/15 checks clean.

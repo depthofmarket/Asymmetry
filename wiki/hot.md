@@ -21,6 +21,8 @@ The active production baseline is the **LucidFlex Tri-Asset Ensemble** (`lucid_f
 - **Data Source Parquet**: `data/processed/unified_three_strategy_markov_portfolio_trades_2021_2026.parquet`
 - **Data SHA-256**: `ecad8d063caa18344491c5c3050211c35f7383b0e8802f1178e3902306b686ca`
 - **Step 07 Sensitivity Status**: All 9 core parameters confirmed `ROBUST_PLATEAU` (Stability Ratios: 0.99x–1.02x, zero cliff fall-offs across 45 evaluations)
+- **Step 08 10,000-Path Monte Carlo Verification**: Re-verified across `n_sims=10,000` CRN block-bootstrap paths (`block_size=10` sessions, 1,499 exchange sessions, 543 frozen trades) and 10,000 trade-by-trade corridor paths: Baseline Ratchet (350/750) Pass Rate `74.62%` (median `90.0` sessions), Live Deployed Ratchet (200/550) Pass Rate `73.07%` (median `79.0` sessions), Max Compression Pareto Point (200/500) Pass Rate `73.00%` (median `78.0` sessions), and Funded Safe CPPI (<$400 de-leveraging) Infant Mortality `14.40%` (85.60% Payout #1 survival, median lifetime net extraction `+$662.60`, Net Lifetime EV `+$570.71` per $39 attempt)
+- **Asian Session Frontier Research (23:00–01:00 UTC-3)**: Candidate 12 (H44: Shanghai Gold AM Fix on MGC) evaluated across 1,744 sessions (2020–2026). In-Sample PF 1.08 breached Belfort Step 04 (hurdle >= 1.25); negative in 5 of 7 years, collapsing to 19.4% WR in 2026. Permanently vetoed as Entry #44 in `wiki/failed_ideas.md`. Production baseline quarantined at 3 strategies.
 - **Agent Swarm & Skills Status**: 5 permanent specialized agents configured in `.agents/agents/` and 5 modular skills active in `.agents/skills/`
 
 ---

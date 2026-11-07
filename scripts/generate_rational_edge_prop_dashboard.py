@@ -71,7 +71,7 @@ def run_full_simulation_suite() -> dict:
 
     print("Running 10,000 Block Bootstrap Monte Carlo Simulations (Live Ratchet)...")
     boot = da.bootstrap_prop(legs, da.POLICIES["live_ratchet"], n_sims=10_000, block=10, horizon=750,
-                             rules=rules, extra_ticks=0.0, n_paths=100, seed=42, funded=funded_rules)
+                             rules=rules, extra_ticks=0.0, n_paths=1000, seed=42, funded=funded_rules)
     boot_sum = da.summarize_prop(boot, cal_days_per_session)
 
     print("Running Chronological Back-to-Back History (2021-2026)...")
@@ -128,72 +128,151 @@ def run_full_simulation_suite() -> dict:
 # ── SHEET 01: TRAJECTORIES & CORRIDOR ─────────────────────────────────────────
 def render_prop_sheet_01_trajectories(sim: dict) -> Path:
     plt.style.use("default")
-    fig, ax = plt.subplots(figsize=(15, 8.5), dpi=200)
-    format_spines_and_grid(ax)
+    fig = plt.figure(figsize=(16, 9), dpi=300)
+    fig.patch.set_facecolor("#FFFFFF")
+    gs = fig.add_gridspec(1, 2, width_ratios=[3.6, 1.0], wspace=0.06)
+
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax2 = fig.add_subplot(gs[0, 1], sharey=ax1)
+
+    format_spines_and_grid(ax1)
+    format_spines_and_grid(ax2)
+    plt.setp(ax2.get_yticklabels(), visible=False)
 
     boot = sim["boot"]
     paths = boot["paths"]
     pass_paths = [p[1] for p in paths if p[0] == "pass"]
     fail_paths = [p[1] for p in paths if p[0] == "fail"]
+    n_paths = len(paths)
 
-    # 1. Plot failing paths in background
-    for p in fail_paths[:25]:
-        ax.plot(range(len(p)), p, color="#d62728", alpha=0.30, linewidth=0.85, zorder=2)
-        ax.plot(len(p) - 1, p[-1], marker="o", markersize=4.5, color="#d62728", markeredgecolor="#8b1819", markeredgewidth=0.5, zorder=3)
+    # 1. Build session matrix for continuous percentile corridor envelopes
+    horizon = 65
+    mat = np.zeros((n_paths, horizon))
+    term_balances = []
 
-    # 2. Plot passing paths in foreground
-    for p in pass_paths[:75]:
-        ax.plot(range(len(p)), p, color="#2ca02c", alpha=0.30, linewidth=0.85, zorder=3)
-        ax.plot(len(p) - 1, p[-1], marker="o", markersize=4.5, color="#2ca02c", markeredgecolor="#1b6e22", markeredgewidth=0.5, zorder=4)
+    for i, (status, p) in enumerate(paths):
+        term_val = p[-1]
+        term_balances.append(term_val)
+        for t in range(horizon):
+            mat[i, t] = p[min(t, len(p) - 1)]
 
-    # 3. Median & Fastest passing paths
-    med_sess = sim["boot_sum"]["pass_med"]
-    closest_med = min(pass_paths, key=lambda p: abs(len(p) - med_sess)) if pass_paths else None
-    fastest_path = min(pass_paths, key=lambda p: len(p)) if pass_paths else None
+    term_balances = np.array(term_balances)
+    x = np.arange(horizon)
 
-    if closest_med:
-        ax.plot(range(len(closest_med)), closest_med, color="#1f77b4", linewidth=2.4, zorder=5,
-                label=f"Median Path ({len(closest_med)} sessions • ~{len(closest_med)*sim['cal_days_per_session']:.0f} cal days)")
-        ax.plot(len(closest_med) - 1, closest_med[-1], marker="o", markersize=7.0, color="#1f77b4", markeredgecolor="#0d3b66", markeredgewidth=0.8, zorder=6)
+    p01 = np.percentile(mat, 1, axis=0)
+    p05 = np.percentile(mat, 5, axis=0)
+    p10 = np.percentile(mat, 10, axis=0)
+    p25 = np.percentile(mat, 25, axis=0)
+    p50 = np.percentile(mat, 50, axis=0)
+    p75 = np.percentile(mat, 75, axis=0)
+    p90 = np.percentile(mat, 90, axis=0)
+    p95 = np.percentile(mat, 95, axis=0)
+    p99 = np.percentile(mat, 99, axis=0)
 
-    if fastest_path:
-        ax.plot(range(len(fastest_path)), fastest_path, color="#ff7f0e", linewidth=1.8, linestyle="--", zorder=5,
-                label=f"Fastest Path ({len(fastest_path)} sessions • ~{len(fastest_path)*sim['cal_days_per_session']:.0f} cal days)")
-        ax.plot(len(fastest_path) - 1, fastest_path[-1], marker="o", markersize=6.0, color="#ff7f0e", markeredgecolor="#b35400", markeredgewidth=0.8, zorder=6)
+    # 2. Plot Layered Percentile Corridor Ribbons (Smooth, Publication-Grade)
+    ax1.fill_between(x, p01, p99, color="#E2E8F0", alpha=0.55, zorder=2, label="1st – 99th Percentile Envelope")
+    ax1.fill_between(x, p05, p95, color="#BAE6FD", alpha=0.50, zorder=3, label="5th – 95th Percentile Corridor (90% Conf)")
+    ax1.fill_between(x, p25, p75, color="#38BDF8", alpha=0.45, zorder=4, label="25th – 75th Interquartile Core (50% Mass)")
 
-    # Corridors
-    ax.axhline(26_250.0, color="#2ca02c", linestyle="--", linewidth=1.8, label="Profit Target ($26,250 • +$1,250)", zorder=4)
-    ax.axhline(25_100.0, color="#9467bd", linestyle=":", linewidth=1.6, label="Floor Lock ($25,100 once Peak >= $26,100)", zorder=4)
-    ax.axhline(25_000.0, color="#777777", linestyle="-", linewidth=0.9, alpha=0.7, label="Initial Capital ($25,000)", zorder=3)
-    ax.axhline(24_000.0, color="#d62728", linestyle="--", linewidth=1.8, label="Max Trailing Floor ($24,000 • -$1,000)", zorder=4)
+    # 3. Overlay curated representative sample paths
+    for p in fail_paths[:20]:
+        t_len = min(len(p), horizon)
+        ax1.plot(range(t_len), p[:t_len], color="#F43F5E", alpha=0.20, linewidth=0.75, zorder=5)
+    for p in pass_paths[:40]:
+        t_len = min(len(p), horizon)
+        ax1.plot(range(t_len), p[:t_len], color="#0D9488", alpha=0.20, linewidth=0.75, zorder=5)
 
-    ax.axhspan(26_250.0, 26_700.0, color="#2ca02c", alpha=0.04)
-    ax.axhspan(23_700.0, 24_000.0, color="#d62728", alpha=0.04)
-
-    # Titles & Subtitles
+    # 4. Median and Notable Trajectories
     b_sum = sim["boot_sum"]
+    med_sess = b_sum["pass_med"]
+    ax1.plot(x, p50, color="#0F172A", linewidth=2.4, zorder=6,
+             label=f"Median Trajectory ({med_sess:.0f} sess • ~{b_sum['pass_med_cal_days']:.0f} cal days)")
+    med_idx = min(int(round(med_sess)), horizon - 1)
+    ax1.plot(med_idx, p50[med_idx], marker="o", markersize=7.0, color="#0F172A", markeredgecolor="#FFFFFF", markeredgewidth=1.2, zorder=7)
+
+    # 5. Institutional Rule Boundaries
+    ax1.axhline(26_250.0, color="#059669", linestyle="--", linewidth=1.8, zorder=6, label="Profit Target ($26,250 • +$1,250)")
+    ax1.axhline(25_100.0, color="#7C3AED", linestyle=":", linewidth=1.6, zorder=6, label="Floor Lock ($25,100 once Peak >= $26,100)")
+    ax1.axhline(25_000.0, color="#64748B", linestyle="-", linewidth=0.9, alpha=0.7, zorder=5, label="Initial Capital ($25,000)")
+    ax1.axhline(24_000.0, color="#DC2626", linestyle="--", linewidth=1.8, zorder=6, label="Max Trailing Floor ($24,000 • -$1,000)")
+
+    ax1.axhspan(26_250.0, 27_000.0, color="#10B981", alpha=0.04, zorder=1)
+    ax1.axhspan(23_500.0, 24_000.0, color="#EF4444", alpha=0.04, zorder=1)
+
+    # Annotations and Title on ax1
     ch = sim["chrono"]["back_to_back"]
     ch_pass = (ch["status"] == "pass").sum()
     ch_total = len(ch[ch["status"].isin(["pass", "fail"])])
     ch_rate = (ch_pass / ch_total * 100.0) if ch_total > 0 else 0.0
 
-    ax.set_title("Backtest Results - LucidFlex 25K Evaluation Trajectories (Continuous Calendar Simulation)", fontsize=13, fontweight="bold", color="#000000", pad=18)
+    ax1.set_title("Institutional Monte Carlo Evaluation Corridor & Dynamic Trajectory Cones (10,000 Bootstrap Paths)",
+                  fontsize=13, fontweight="bold", color="#0F172A", pad=16)
     sub = (f"10k Bootstrap Pass Rate: {b_sum['pass_rate']:.1f}%  •  Chronological Back-to-Back: {ch_pass}/{ch_total} Passed ({ch_rate:.1f}%)  •  "
            f"Median Duration: {b_sum['pass_med']:.0f} sessions (~{b_sum['pass_med_cal_days']:.0f} cal days)  •  EV / Attempt: +${sim['f_summary']['ev_per_attempt']:,.2f}")
-    ax.text(0.5, 1.015, sub, transform=ax.transAxes, ha="center", va="bottom", fontsize=9.2, color="#444444")
+    ax1.text(0.5, 1.015, sub, transform=ax1.transAxes, ha="center", va="bottom", fontsize=9.2, color="#475569")
 
-    ax.set_xlabel("Exchange Sessions Elapsed (Full Calendar: ~1.44 Calendar Days / Session)", fontsize=10, color="#000000")
-    ax.set_ylabel("Account Balance ($)", fontsize=10, color="#000000")
-    ax.yaxis.set_major_formatter(ticker.StrMethodFormatter("${x:,.0f}"))
-    ax.set_ylim(23_700, 26_600)
-    ax.set_xlim(0, max(120, max(len(p) for p in pass_paths[:75] + fail_paths[:25]) + 5))
+    ax1.set_xlabel("Exchange Sessions Elapsed (Full Calendar: ~1.44 Calendar Days / Session)", fontsize=10, fontweight="bold", color="#0F172A")
+    ax1.set_ylabel("Account Balance ($)", fontsize=10, fontweight="bold", color="#0F172A")
+    ax1.yaxis.set_major_formatter(ticker.StrMethodFormatter("${x:,.0f}"))
+    ax1.set_ylim(23_600, 26_750)
+    ax1.set_xlim(0, horizon)
 
-    leg = ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1.0), frameon=True, facecolor="#FFFFFF", edgecolor="#000000", fontsize=9)
-    leg.get_title().set_fontsize(9.5)
-    leg.get_title().set_fontweight("bold")
+    leg = ax1.legend(loc="upper left", frameon=True, facecolor="#FFFFFF", edgecolor="#CBD5E1", fontsize=8.5)
+    leg.get_frame().set_linewidth(0.8)
+
+    # 6. Right Panel: Marginal Terminal Equity Distribution (Rotated Histogram & Density)
+    bins = np.linspace(23_600, 26_750, 36)
+    counts, edges = np.histogram(term_balances, bins=bins)
+    max_c = max(1, counts.max())
+    norm_counts = counts / max_c
+
+    for j in range(len(counts)):
+        y_bot = edges[j]
+        y_top = edges[j + 1]
+        y_mid = 0.5 * (y_bot + y_top)
+        width = norm_counts[j]
+
+        if y_mid >= 26_250.0:
+            bar_color = "#10B981"
+            edge_color = "#059669"
+            alpha = 0.65
+        elif y_mid <= 24_000.0:
+            bar_color = "#EF4444"
+            edge_color = "#DC2626"
+            alpha = 0.65
+        else:
+            bar_color = "#94A3B8"
+            edge_color = "#64748B"
+            alpha = 0.35
+
+        ax2.barh(y_mid, width, height=(y_top - y_bot) * 0.90, color=bar_color, edgecolor=edge_color,
+                 alpha=alpha, linewidth=0.7, zorder=3)
+
+    ax2.axhline(26_250.0, color="#059669", linestyle="--", linewidth=1.5, zorder=4)
+    ax2.axhline(25_100.0, color="#7C3AED", linestyle=":", linewidth=1.4, zorder=4)
+    ax2.axhline(25_000.0, color="#64748B", linestyle="-", linewidth=0.8, zorder=3)
+    ax2.axhline(24_000.0, color="#DC2626", linestyle="--", linewidth=1.5, zorder=4)
+
+    pass_pct = (term_balances >= 26_250.0).mean() * 100.0
+    fail_pct = (term_balances <= 24_000.0).mean() * 100.0
+    open_pct = max(0.0, 100.0 - pass_pct - fail_pct)
+
+    ax2.text(0.5, 26_450.0, f"PASS\n{pass_pct:.1f}%", color="#047857", fontweight="bold", fontsize=8.5,
+             ha="center", va="center", bbox=dict(boxstyle="round,pad=0.3", facecolor="#ECFDF5", edgecolor="#A7F3D0", alpha=0.9))
+    ax2.text(0.5, 23_850.0, f"FAIL\n{fail_pct:.1f}%", color="#B91C1C", fontweight="bold", fontsize=8.5,
+             ha="center", va="center", bbox=dict(boxstyle="round,pad=0.3", facecolor="#FEF2F2", edgecolor="#FECACA", alpha=0.9))
+    if open_pct > 1.0:
+        ax2.text(0.5, 25_150.0, f"IN-FLIGHT\n{open_pct:.1f}%", color="#475569", fontweight="bold", fontsize=7.5,
+                 ha="center", va="center", bbox=dict(boxstyle="round,pad=0.3", facecolor="#F8FAFC", edgecolor="#E2E8F0", alpha=0.8))
+
+    ax2.set_title("Terminal Density", fontsize=10.5, fontweight="bold", color="#0F172A", pad=16)
+    ax2.set_xlabel("Rel. Density", fontsize=9, fontweight="bold", color="#0F172A")
+    ax2.set_xlim(0, 1.15)
+    ax2.set_xticks([0, 0.5, 1.0])
+    ax2.set_xticklabels(["0", "0.5", "Max"], fontsize=8)
 
     out_path = OUT_DIR / "01_prop_evaluation_trajectories_and_corridor.png"
-    plt.savefig(out_path, dpi=200, facecolor=fig.get_facecolor(), bbox_inches="tight")
+    plt.savefig(out_path, dpi=300, facecolor=fig.get_facecolor(), bbox_inches="tight")
     plt.close()
     return out_path
 
@@ -528,42 +607,69 @@ def render_prop_poster_master(sim: dict) -> Path:
     paths = boot["paths"]
     pass_paths = [p[1] for p in paths if p[0] == "pass"]
     fail_paths = [p[1] for p in paths if p[0] == "fail"]
+    n_paths = len(paths)
 
-    for p in fail_paths[:25]:
-        ax_main.plot(range(len(p)), p, color="#d62728", alpha=0.30, linewidth=0.85, zorder=2)
-        ax_main.plot(len(p) - 1, p[-1], marker="o", markersize=4.5, color="#d62728", markeredgecolor="#8b1819", markeredgewidth=0.5, zorder=3)
+    horizon = 65
+    mat = np.zeros((n_paths, horizon))
+    for i, (status, p) in enumerate(paths):
+        for t in range(horizon):
+            mat[i, t] = p[min(t, len(p) - 1)]
+    x = np.arange(horizon)
 
-    for p in pass_paths[:75]:
-        ax_main.plot(range(len(p)), p, color="#2ca02c", alpha=0.30, linewidth=0.85, zorder=3)
-        ax_main.plot(len(p) - 1, p[-1], marker="o", markersize=4.5, color="#2ca02c", markeredgecolor="#1b6e22", markeredgewidth=0.5, zorder=4)
+    p01 = np.percentile(mat, 1, axis=0)
+    p05 = np.percentile(mat, 5, axis=0)
+    p25 = np.percentile(mat, 25, axis=0)
+    p50 = np.percentile(mat, 50, axis=0)
+    p75 = np.percentile(mat, 75, axis=0)
+    p95 = np.percentile(mat, 95, axis=0)
+    p99 = np.percentile(mat, 99, axis=0)
 
-    med_sess = sim["boot_sum"]["pass_med"]
-    closest_med = min(pass_paths, key=lambda p: abs(len(p) - med_sess)) if pass_paths else None
-    if closest_med:
-        ax_main.plot(range(len(closest_med)), closest_med, color="#1f77b4", linewidth=2.4, zorder=5,
-                     label=f"Median Path ({len(closest_med)} sessions • ~{len(closest_med)*sim['cal_days_per_session']:.0f} cal days)")
-        ax_main.plot(len(closest_med) - 1, closest_med[-1], marker="o", markersize=7.0, color="#1f77b4", zorder=6)
+    # Multi-layer Percentile Corridor Ribbons
+    ax_main.fill_between(x, p01, p99, color="#E2E8F0", alpha=0.55, zorder=2, label="1st – 99th Percentile Envelope")
+    ax_main.fill_between(x, p05, p95, color="#BAE6FD", alpha=0.50, zorder=3, label="5th – 95th Percentile Corridor (90% Conf)")
+    ax_main.fill_between(x, p25, p75, color="#38BDF8", alpha=0.45, zorder=4, label="25th – 75th Interquartile Core (50% Mass)")
 
-    ax_main.axhline(26_250.0, color="#2ca02c", linestyle="--", linewidth=1.8, label="Profit Target ($26,250 • +$1,250)")
-    ax_main.axhline(25_100.0, color="#9467bd", linestyle=":", linewidth=1.6, label="Floor Lock ($25,100 once Peak >= $26,100)")
-    ax_main.axhline(25_000.0, color="#777777", linestyle="-", linewidth=0.9, alpha=0.7, label="Initial Capital ($25,000)")
-    ax_main.axhline(24_000.0, color="#d62728", linestyle="--", linewidth=1.8, label="Max Trailing Floor ($24,000 • -$1,000)")
+    # Curated representative sample paths
+    for p in fail_paths[:20]:
+        t_len = min(len(p), horizon)
+        ax_main.plot(range(t_len), p[:t_len], color="#F43F5E", alpha=0.22, linewidth=0.75, zorder=5)
+    for p in pass_paths[:40]:
+        t_len = min(len(p), horizon)
+        ax_main.plot(range(t_len), p[:t_len], color="#0D9488", alpha=0.22, linewidth=0.75, zorder=5)
 
-    ax_main.set_title("Backtest Results - LucidFlex 25K Evaluation Corridor & Trajectories", fontsize=15, fontweight="bold", color="#000000", pad=12)
+    # Median Trajectory
     b_sum = sim["boot_sum"]
+    med_sess = b_sum["pass_med"]
+    ax_main.plot(x, p50, color="#0F172A", linewidth=2.4, zorder=6,
+                 label=f"Median Path ({med_sess:.0f} sess • ~{b_sum['pass_med_cal_days']:.0f} cal days)")
+    med_idx = min(int(round(med_sess)), horizon - 1)
+    ax_main.plot(med_idx, p50[med_idx], marker="o", markersize=7.0, color="#0F172A", markeredgecolor="#FFFFFF", markeredgewidth=1.2, zorder=7)
+
+    # Rule Boundaries
+    ax_main.axhline(26_250.0, color="#059669", linestyle="--", linewidth=1.8, zorder=6, label="Profit Target ($26,250 • +$1,250)")
+    ax_main.axhline(25_100.0, color="#7C3AED", linestyle=":", linewidth=1.6, zorder=6, label="Floor Lock ($25,100 once Peak >= $26,100)")
+    ax_main.axhline(25_000.0, color="#64748B", linestyle="-", linewidth=0.9, alpha=0.7, zorder=5, label="Initial Capital ($25,000)")
+    ax_main.axhline(24_000.0, color="#DC2626", linestyle="--", linewidth=1.8, zorder=6, label="Max Trailing Floor ($24,000 • -$1,000)")
+
+    ax_main.axhspan(26_250.0, 27_000.0, color="#10B981", alpha=0.04, zorder=1)
+    ax_main.axhspan(23_500.0, 24_000.0, color="#EF4444", alpha=0.04, zorder=1)
+
+    ax_main.set_title("LucidFlex 25K Evaluation Corridor & Dynamic Trajectory Cones (10,000 Bootstrap Paths)",
+                      fontsize=14, fontweight="bold", color="#0F172A", pad=12)
     ch_pass_m = int((sim["chrono"]["back_to_back"]["status"] == "pass").sum())
     ch_tot_m = int(len(sim["chrono"]["back_to_back"][sim["chrono"]["back_to_back"]["status"].isin(["pass", "fail"])]))
     ch_rate_m = (ch_pass_m / ch_tot_m * 100.0) if ch_tot_m > 0 else 0.0
-    sub = f"10k Bootstrap Pass Rate: {b_sum['pass_rate']:.1f}% • Chronological Replay: {ch_rate_m:.1f}% Pass • Median: {b_sum['pass_med']:.0f} sessions (~{b_sum['pass_med_cal_days']:.0f} cal days) • EV: +${sim['f_summary']['ev_per_attempt']:,.2f}"
-    ax_main.text(0.5, 1.015, sub, transform=ax_main.transAxes, ha="center", va="bottom", fontsize=9.5, color="#555555")
+    sub = (f"10k Bootstrap Pass Rate: {b_sum['pass_rate']:.1f}% • Chronological Replay: {ch_pass_m}/{ch_tot_m} Passed ({ch_rate_m:.1f}%) • "
+           f"Median Duration: {b_sum['pass_med']:.0f} sessions (~{b_sum['pass_med_cal_days']:.0f} cal days) • EV / Attempt: +${sim['f_summary']['ev_per_attempt']:,.2f}")
+    ax_main.text(0.5, 1.015, sub, transform=ax_main.transAxes, ha="center", va="bottom", fontsize=9.5, color="#475569")
 
-    ax_main.set_xlabel("Exchange Sessions Elapsed", fontsize=10.5, color="#000000")
-    ax_main.set_ylabel("Account Balance ($)", fontsize=10.5, color="#000000")
+    ax_main.set_xlabel("Exchange Sessions Elapsed", fontsize=10.5, fontweight="bold", color="#0F172A")
+    ax_main.set_ylabel("Account Balance ($)", fontsize=10.5, fontweight="bold", color="#0F172A")
     ax_main.yaxis.set_major_formatter(ticker.StrMethodFormatter("${x:,.0f}"))
-    ax_main.set_ylim(23_700, 26_600)
-    leg = ax_main.legend(loc="upper left", bbox_to_anchor=(1.01, 1.0), frameon=True, facecolor="#FFFFFF", edgecolor="#000000", fontsize=9)
-    leg.get_title().set_fontsize(9.5)
-    leg.get_title().set_fontweight("bold")
+    ax_main.set_ylim(23_600, 26_750)
+    ax_main.set_xlim(0, horizon)
+    leg = ax_main.legend(loc="upper left", bbox_to_anchor=(1.01, 1.0), frameon=True, facecolor="#FFFFFF", edgecolor="#CBD5E1", fontsize=8.5)
+    leg.get_frame().set_linewidth(0.8)
 
     # Panel 2A: Peak Equity on Failed Accounts
     ax_pk = fig.add_subplot(gs[1, 0])

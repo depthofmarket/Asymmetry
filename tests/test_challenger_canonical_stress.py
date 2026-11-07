@@ -98,7 +98,7 @@ class TestCanonicalBoundaryTransitions:
                 mult = 0.2
             m4 = int(round(mult * 10))
 
-            # Engine 5: scripts/generate_prop_firm_dashboard.py
+            # Engine 5: scripts/generate_rational_edge_prop_dashboard.py
             if p >= 500.0:
                 scale = 0.40
             elif p >= 200.0:
