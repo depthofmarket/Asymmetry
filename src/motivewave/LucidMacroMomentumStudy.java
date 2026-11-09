@@ -31,8 +31,10 @@ import java.awt.Toolkit;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
@@ -146,71 +148,19 @@ public class LucidMacroMomentumStudy extends Study {
         String flattenLabel = "09:25 CASH FLATTEN";
     }
 
-    private static class DaemonRiskState {
-        int recommendedMicros = 2;
-        double trailingCushion = 1000.0;
-        double currentDatePnl = 0.0;
-        boolean circuitBreakerHit = false;
-        boolean emergencyDelever = false;
-        boolean finishLineShield = false;
-        boolean garchDecileHalving = false;
-        double peakBalance = 25000.0;
-        double trailingFloor = 24000.0;
-    }
-
-    private static DaemonRiskState loadDaemonRiskState() {
-        DaemonRiskState state = new DaemonRiskState();
-        File f = new File(System.getProperty("user.home"), "trading_strategy/nq-scalper-backtest/results/forward_test/demo_parity_state.json");
-        if (!f.exists() || !f.canRead()) {
-            return state;
-        }
-        try {
-            String content = new String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8);
-            Matcher mMicros = Pattern.compile("\"recommended_micros\"\\s*:\\s*(\\d+)").matcher(content);
-            if (mMicros.find()) {
-                state.recommendedMicros = Integer.parseInt(mMicros.group(1));
-            }
-            Matcher mCushion = Pattern.compile("\"trailing_cushion\"\\s*:\\s*([-+]?[0-9]*\\.?[0-9]+)").matcher(content);
-            if (mCushion.find()) {
-                state.trailingCushion = Double.parseDouble(mCushion.group(1));
-            }
-            Matcher mPnl = Pattern.compile("\"current_date_pnl\"\\s*:\\s*([-+]?[0-9]*\\.?[0-9]+)").matcher(content);
-            if (mPnl.find()) {
-                state.currentDatePnl = Double.parseDouble(mPnl.group(1));
-            }
-            Matcher mShield = Pattern.compile("\"finish_line_shield\"\\s*:\\s*(true|false)").matcher(content);
-            if (mShield.find()) {
-                state.finishLineShield = Boolean.parseBoolean(mShield.group(1));
-            }
-            Matcher mGarch = Pattern.compile("\"garch_decile_halving\"\\s*:\\s*(true|false)").matcher(content);
-            if (mGarch.find()) {
-                state.garchDecileHalving = Boolean.parseBoolean(mGarch.group(1));
-            }
-            Matcher mDelever = Pattern.compile("\"defensive_delever\"\\s*:\\s*(true|false)").matcher(content);
-            if (mDelever.find()) {
-                state.emergencyDelever = Boolean.parseBoolean(mDelever.group(1));
-            }
-            Matcher mPeak = Pattern.compile("\"peak_balance\"\\s*:\\s*([-+]?[0-9]*\\.?[0-9]+)").matcher(content);
-            if (mPeak.find()) {
-                state.peakBalance = Double.parseDouble(mPeak.group(1));
-            }
-            Matcher mFloor = Pattern.compile("\"trailing_floor\"\\s*:\\s*([-+]?[0-9]*\\.?[0-9]+)").matcher(content);
-            if (mFloor.find()) {
-                state.trailingFloor = Double.parseDouble(mFloor.group(1));
-            }
-            if (state.currentDatePnl <= -600.0) {
-                state.circuitBreakerHit = true;
-            }
-            if (state.trailingCushion < 400.0 || state.emergencyDelever || state.finishLineShield || state.garchDecileHalving) {
-                state.recommendedMicros = 1;
-            }
-        } catch (Exception ignored) {
-        }
-        return state;
-    }
+    public static final String CANONICAL_STATE_FILENAME = "demo_parity_state.json";
+    public static final String FORWARD_TEST_DIR_SETTING = "forwardTestDir";
+    public static final String FORWARD_TEST_DIR_PROP = "asymmetry.forwardTestDir";
+    public static final String FORWARD_TEST_DIR_ENV = "ASYMMETRY_FORWARD_TEST_DIR";
+    public static final long DEFAULT_MAX_STATE_AGE_MS = 86_400_000L; // 24 hours
 
     private static double persistedPeakBalance = 25000.00;
     private static double persistedTrailingFloor = 24000.00;
+    private static boolean persistedFloorLocked = false;
+    private static String configuredForwardTestDir = null;
+    private static String configuredStateFilePath = null;
+    private static long maxStateAgeMs = DEFAULT_MAX_STATE_AGE_MS;
+    private static String lastAccountStateError = "";
 
     public static double getPersistedPeakBalance() {
         return persistedPeakBalance;
@@ -220,9 +170,345 @@ public class LucidMacroMomentumStudy extends Study {
         return persistedTrailingFloor;
     }
 
+    public static boolean isPersistedFloorLocked() {
+        return persistedFloorLocked;
+    }
+
     public static void setPersistedRiskState(double peak, double floor) {
         persistedPeakBalance = peak;
         persistedTrailingFloor = floor;
+        persistedFloorLocked = (peak >= 26100.00 || floor >= 25100.00);
+    }
+
+    public static void setConfiguredForwardTestDir(String dirPath) {
+        configuredForwardTestDir = dirPath;
+    }
+
+    public static void setConfiguredStateFilePath(String filePath) {
+        configuredStateFilePath = filePath;
+    }
+
+    public static void setMaxStateAgeMs(long maxAgeMs) {
+        maxStateAgeMs = maxAgeMs > 0 ? maxAgeMs : DEFAULT_MAX_STATE_AGE_MS;
+    }
+
+    public static String getLastAccountStateError() {
+        return lastAccountStateError;
+    }
+
+    public static class DaemonRiskState {
+        public boolean verified = false;
+        public String verificationError = "";
+        public double balance = Double.NaN;
+        public double peakBalance = Double.NaN;
+        public double trailingFloor = Double.NaN;
+        public double trailingCushion = Double.NaN;
+        public double currentDatePnl = Double.NaN;
+        public int recommendedMicros = 0;
+        public boolean floorLocked = false;
+        public boolean circuitBreakerHit = false;
+        public boolean emergencyDelever = false;
+        public boolean finishLineShield = false;
+        public boolean garchDecileHalving = false;
+        public String updatedAt = "";
+    }
+
+    public static File resolveCanonicalStateFile() {
+        if (configuredStateFilePath != null && !configuredStateFilePath.trim().isEmpty()) {
+            return new File(configuredStateFilePath.trim());
+        }
+        String dir = configuredForwardTestDir;
+        if (dir == null || dir.trim().isEmpty()) {
+            dir = System.getProperty(FORWARD_TEST_DIR_PROP);
+        }
+        if (dir == null || dir.trim().isEmpty()) {
+            dir = System.getenv(FORWARD_TEST_DIR_ENV);
+        }
+        if (dir == null || dir.trim().isEmpty()) {
+            dir = System.getenv("LUCIDFLEX_FORWARD_TEST_DIR");
+        }
+        if (dir != null && !dir.trim().isEmpty()) {
+            File candidate = new File(dir.trim());
+            if (candidate.getName().endsWith(".json")) {
+                return candidate;
+            }
+            return new File(candidate, CANONICAL_STATE_FILENAME);
+        }
+        File relativeDir = new File("results/forward_test");
+        if (relativeDir.exists() && relativeDir.isDirectory()) {
+            return new File(relativeDir, CANONICAL_STATE_FILENAME);
+        }
+        String userHome = System.getProperty("user.home", ".");
+        return Paths.get(userHome, "trading_strategy", "nq-scalper-backtest", "results", "forward_test", CANONICAL_STATE_FILENAME).toFile();
+    }
+
+    public static DaemonRiskState loadDaemonRiskState() {
+        DaemonRiskState state = new DaemonRiskState();
+        try {
+            File stateFile = resolveCanonicalStateFile();
+            if (stateFile == null) {
+                state.verificationError = "NULL_STATE_FILE";
+                lastAccountStateError = state.verificationError;
+                return state;
+            }
+            if (!CANONICAL_STATE_FILENAME.equals(stateFile.getName())) {
+                state.verificationError = "WRONG_FILENAME:" + stateFile.getName();
+                lastAccountStateError = state.verificationError;
+                return state;
+            }
+            if (!stateFile.exists() || !stateFile.isFile() || !stateFile.canRead()) {
+                state.verificationError = "MISSING_STATE_FILE:" + stateFile.getPath();
+                lastAccountStateError = state.verificationError;
+                return state;
+            }
+
+            String raw = Files.readString(stateFile.toPath(), StandardCharsets.UTF_8).trim();
+            if (!isValidJsonStructure(raw)) {
+                state.verificationError = "MALFORMED_JSON";
+                lastAccountStateError = state.verificationError;
+                return state;
+            }
+
+            String[] requiredNumericKeys = new String[] {
+                "balance",
+                "peak_balance",
+                "trailing_floor",
+                "trailing_cushion",
+                "current_date_pnl",
+                "recommended_micros"
+            };
+            for (String reqKey : requiredNumericKeys) {
+                if (!hasFiniteJsonNumber(raw, reqKey)) {
+                    state.verificationError = "MISSING_OR_NON_FINITE_FIELD:" + reqKey;
+                    lastAccountStateError = state.verificationError;
+                    return state;
+                }
+            }
+
+            String updatedAt = extractJsonString(raw, "updated_at");
+            if (updatedAt == null || updatedAt.isEmpty()) {
+                state.verificationError = "MISSING_TIMESTAMP:updated_at";
+                lastAccountStateError = state.verificationError;
+                return state;
+            }
+            long tsMillis = parseIsoTimestampMillis(updatedAt);
+            if (tsMillis <= 0L) {
+                state.verificationError = "INVALID_TIMESTAMP:" + updatedAt;
+                lastAccountStateError = state.verificationError;
+                return state;
+            }
+            long ageMs = System.currentTimeMillis() - tsMillis;
+            if (ageMs > maxStateAgeMs) {
+                state.verificationError = "STALE_ACCOUNT_STATE:ageMs=" + ageMs;
+                lastAccountStateError = state.verificationError;
+                return state;
+            }
+            if (ageMs < -300_000L) {
+                state.verificationError = "FUTURE_TIMESTAMP_INVALID:ageMs=" + ageMs;
+                lastAccountStateError = state.verificationError;
+                return state;
+            }
+
+            state.balance = extractJsonDouble(raw, "balance", Double.NaN);
+            state.peakBalance = extractJsonDouble(raw, "peak_balance", Double.NaN);
+            state.trailingFloor = extractJsonDouble(raw, "trailing_floor", Double.NaN);
+            state.trailingCushion = extractJsonDouble(raw, "trailing_cushion", Double.NaN);
+            state.currentDatePnl = extractJsonDouble(raw, "current_date_pnl", Double.NaN);
+            state.recommendedMicros = (int) Math.round(extractJsonDouble(raw, "recommended_micros", 0.0));
+            state.updatedAt = updatedAt;
+
+            if (state.balance <= 0.0 || state.peakBalance < 25000.0 || state.trailingFloor < 24000.0) {
+                state.verificationError = "DOMAIN_INVARIANT_VIOLATION";
+                lastAccountStateError = state.verificationError;
+                return state;
+            }
+            if (state.peakBalance + 1e-6 < state.balance) {
+                state.verificationError = "PEAK_BELOW_BALANCE";
+                lastAccountStateError = state.verificationError;
+                return state;
+            }
+            if (state.recommendedMicros < 0 || state.recommendedMicros > 10) {
+                state.verificationError = "INVALID_RECOMMENDED_MICROS:" + state.recommendedMicros;
+                lastAccountStateError = state.verificationError;
+                return state;
+            }
+
+            boolean rawFloorLocked = extractJsonBoolean(raw, "floor_locked", false);
+            state.floorLocked = rawFloorLocked
+                || state.peakBalance >= 26100.00
+                || state.trailingFloor >= 25100.00
+                || persistedPeakBalance >= 26100.00
+                || persistedTrailingFloor >= 25100.00
+                || persistedFloorLocked;
+
+            persistedPeakBalance = Math.max(persistedPeakBalance, Math.max(state.peakBalance, state.balance));
+            if (state.floorLocked || persistedPeakBalance >= 26100.00) {
+                persistedTrailingFloor = 25100.00;
+                persistedFloorLocked = true;
+                state.trailingFloor = 25100.00;
+                state.floorLocked = true;
+            } else {
+                double calcFloor = Math.max(24000.00, persistedPeakBalance - 1000.00);
+                persistedTrailingFloor = Math.max(persistedTrailingFloor, Math.max(state.trailingFloor, calcFloor));
+                state.trailingFloor = persistedTrailingFloor;
+            }
+            state.peakBalance = persistedPeakBalance;
+            state.trailingCushion = state.balance - state.trailingFloor;
+
+            String statusStr = extractJsonString(raw, "status");
+            state.circuitBreakerHit = extractJsonBoolean(raw, "circuit_breaker_hit", false)
+                || state.currentDatePnl <= -600.0
+                || state.balance <= state.trailingFloor
+                || "DAILY_HALTED".equalsIgnoreCase(statusStr)
+                || "TRAILED_OUT".equalsIgnoreCase(statusStr);
+            state.emergencyDelever = extractJsonBoolean(raw, "emergency_delever", false)
+                || extractJsonBoolean(raw, "defensive_delever", false)
+                || state.trailingCushion < 400.0;
+            state.finishLineShield = extractJsonBoolean(raw, "finish_line_shield", false)
+                || (state.balance - 25000.0 >= 1150.0);
+            state.garchDecileHalving = extractJsonBoolean(raw, "garch_decile_halving", false);
+
+            if (state.trailingCushion < 400.0 || state.emergencyDelever || state.finishLineShield || state.garchDecileHalving) {
+                state.recommendedMicros = 1;
+            }
+
+            state.verified = true;
+            state.verificationError = "";
+            lastAccountStateError = "";
+        } catch (Exception e) {
+            state.verified = false;
+            state.verificationError = "EXCEPTION:" + e.getMessage();
+            lastAccountStateError = state.verificationError;
+        }
+        return state;
+    }
+
+    private static boolean isValidJsonStructure(String raw) {
+        if (raw == null || raw.length() < 2) return false;
+        if (!raw.startsWith("{") || !raw.endsWith("}")) return false;
+        int depth = 0;
+        boolean inQuotes = false;
+        boolean escaped = false;
+        for (int i = 0; i < raw.length(); i++) {
+            char ch = raw.charAt(i);
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (ch == '\\' && inQuotes) {
+                escaped = true;
+                continue;
+            }
+            if (ch == '"') {
+                inQuotes = !inQuotes;
+                continue;
+            }
+            if (!inQuotes) {
+                if (ch == '{') depth++;
+                else if (ch == '}') {
+                    depth--;
+                    if (depth < 0) return false;
+                }
+            }
+        }
+        return !inQuotes && depth == 0;
+    }
+
+    private static boolean hasFiniteJsonNumber(String json, String key) {
+        String token = "\"" + key + "\"";
+        int idx = json.indexOf(token);
+        if (idx < 0) return false;
+        int colon = json.indexOf(":", idx + token.length());
+        if (colon < 0) return false;
+        int end = colon + 1;
+        while (end < json.length() && Character.isWhitespace(json.charAt(end))) end++;
+        if (end >= json.length()) return false;
+        char first = json.charAt(end);
+        if (first == '"' || first == 't' || first == 'f' || first == 'n') return false;
+        int start = end;
+        while (end < json.length() && (Character.isDigit(json.charAt(end))
+                || json.charAt(end) == '.'
+                || json.charAt(end) == '-'
+                || json.charAt(end) == '+'
+                || json.charAt(end) == 'e'
+                || json.charAt(end) == 'E')) {
+            end++;
+        }
+        if (end <= start) return false;
+        String numToken = json.substring(start, end).trim();
+        try {
+            double val = Double.parseDouble(numToken);
+            return Double.isFinite(val);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static double extractJsonDouble(String json, String key, double fallback) {
+        try {
+            String token = "\"" + key + "\"";
+            int idx = json.indexOf(token);
+            if (idx < 0) return fallback;
+            int colon = json.indexOf(":", idx + token.length());
+            if (colon < 0) return fallback;
+            int end = colon + 1;
+            while (end < json.length() && Character.isWhitespace(json.charAt(end))) end++;
+            int start = end;
+            while (end < json.length() && (Character.isDigit(json.charAt(end))
+                    || json.charAt(end) == '.'
+                    || json.charAt(end) == '-'
+                    || json.charAt(end) == '+'
+                    || json.charAt(end) == 'e'
+                    || json.charAt(end) == 'E')) {
+                end++;
+            }
+            double val = Double.parseDouble(json.substring(start, end).trim());
+            return Double.isFinite(val) ? val : fallback;
+        } catch (Exception e) {
+            return fallback;
+        }
+    }
+
+    private static boolean extractJsonBoolean(String json, String key, boolean fallback) {
+        try {
+            String token = "\"" + key + "\"";
+            int idx = json.indexOf(token);
+            if (idx < 0) return fallback;
+            int colon = json.indexOf(":", idx + token.length());
+            if (colon < 0) return fallback;
+            String sub = json.substring(colon + 1, Math.min(json.length(), colon + 15)).trim().toLowerCase();
+            if (sub.startsWith("true")) return true;
+            if (sub.startsWith("false")) return false;
+            return fallback;
+        } catch (Exception e) {
+            return fallback;
+        }
+    }
+
+    private static String extractJsonString(String json, String key) {
+        String token = "\"" + key + "\"";
+        int idx = json.indexOf(token);
+        if (idx < 0) return null;
+        int colon = json.indexOf(":", idx + token.length());
+        if (colon < 0) return null;
+        int q1 = json.indexOf('"', colon + 1);
+        if (q1 < 0) return null;
+        int q2 = json.indexOf('"', q1 + 1);
+        if (q2 < 0) return null;
+        return json.substring(q1 + 1, q2).trim();
+    }
+
+    private static long parseIsoTimestampMillis(String iso) {
+        if (iso == null || iso.isEmpty()) return -1L;
+        try {
+            return Instant.parse(iso).toEpochMilli();
+        } catch (Exception e1) {
+            try {
+                return OffsetDateTime.parse(iso).toInstant().toEpochMilli();
+            } catch (Exception e2) {
+                return -1L;
+            }
+        }
     }
 
     public static int resolveContracts(OrderContext ctx, int fallbackContracts) {
@@ -237,6 +523,9 @@ public class LucidMacroMomentumStudy extends Study {
             }
 
             DaemonRiskState riskState = loadDaemonRiskState();
+            if (riskState == null || !riskState.verified || riskState.circuitBreakerHit) {
+                return 0;
+            }
             persistedPeakBalance = Math.max(persistedPeakBalance, Math.max(riskState.peakBalance, balance));
 
             double floor = Math.max(24000.00, persistedPeakBalance - 1000.00);
@@ -458,7 +747,7 @@ public class LucidMacroMomentumStudy extends Study {
                         }
 
                         // 2. Dynamic Contract Sizing with Cushion De-leveraging
-                        int contracts = riskState.recommendedMicros;
+                        int contracts = riskState.verified ? riskState.recommendedMicros : 2;
                         if (ratchetOverride >= 1 && ratchetOverride <= 4) {
                             contracts = ratchetOverride;
                         }
@@ -678,7 +967,7 @@ public class LucidMacroMomentumStudy extends Study {
                         }
 
                         // 2. Dynamic Contract Sizing with Cushion De-leveraging
-                        int contracts = riskState.recommendedMicros;
+                        int contracts = riskState.verified ? riskState.recommendedMicros : 2;
                         if (ratchetOverride >= 1 && ratchetOverride <= 4) {
                             contracts = ratchetOverride;
                         }
@@ -1137,8 +1426,10 @@ public class LucidMacroMomentumStudy extends Study {
     private static synchronized void logExecutionEvent(String event, String studyId, String symbol,
         String action, double price, double sl, double tp, int contracts, String reason) {
         try {
-            String home = System.getProperty("user.home");
-            File dir = new File(home, "trading_strategy/nq-scalper-backtest/results/forward_test");
+            File stateFile = resolveCanonicalStateFile();
+            File dir = (stateFile != null && stateFile.getParentFile() != null)
+                ? stateFile.getParentFile()
+                : new File(System.getProperty("user.home", "."), "trading_strategy/nq-scalper-backtest/results/forward_test");
             if (!dir.exists()) dir.mkdirs();
             File alertLog = new File(dir, "motivewave_alerts.log");
             String isoNow = Instant.now().toString();

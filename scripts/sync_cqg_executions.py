@@ -98,7 +98,7 @@ class ReconstructedBrokerTrade:
 
 
 def normalize_cqg_symbol(raw_sym: str) -> str:
-    """Extract standard base symbol (e.g. MESZ26.CQG -> MES, MNQZ26.CQG -> MNQ, MGCZ26.CQG -> MGC)."""
+    """Extract standard base symbol (e.g. MESZ26.CQG -> MES, MNQZ26.CQG -> MNQ, MGCZ26.CQG -> MGC, MCLZ26.CQG -> MCL)."""
     s = raw_sym.strip().upper().split(".")[0]
     if s.startswith("MES"):
         return "MES"
@@ -106,6 +106,8 @@ def normalize_cqg_symbol(raw_sym: str) -> str:
         return "MNQ"
     if s.startswith("MGC"):
         return "MGC"
+    if s.startswith("MCL"):
+        return "MCL"
     if s.startswith("ENQ"):
         return "NQ"  # Full-size or mapped NQ
     if s.startswith("NQ"):
@@ -114,6 +116,8 @@ def normalize_cqg_symbol(raw_sym: str) -> str:
         return "ES"
     if s.startswith("GC"):
         return "GC"
+    if s.startswith("CL"):
+        return "CL"
     return s[:3]
 
 
@@ -125,12 +129,17 @@ def infer_strategy_from_window(time_str: str, sym: str) -> str:
             return "Macro Momentum (08:35)"
         elif "09:44" <= hhmm <= "10:15":
             return "VA Breakout (v2.0)"
+        elif "21:00" <= hhmm <= "23:00":
+            return "Asian Evening Reversion (S4)"
     elif sym in ("MES", "ES"):
         if "09:44" <= hhmm <= "10:15":
             return "VA Breakout (v2.0)"
     elif sym in ("MGC", "GC"):
         if "10:14" <= hhmm <= "11:00":
             return "Gold London Fix (H14)"
+    elif sym in ("MCL", "CL"):
+        if "10:14" <= hhmm <= "12:30":
+            return "Crude RTH Expansion (S5)"
     return "Discretionary / Manual Scalp"
 
 
@@ -147,6 +156,10 @@ def infer_exit_type(order_type: str, exit_time_str: str) -> str:
         return "TIME_EXIT_1100"
     if hhmm in ("09:25", "09:26"):
         return "TIME_EXIT_0925"
+    if hhmm in ("12:30", "12:31"):
+        return "TIME_EXIT_1230"
+    if hhmm in ("23:00", "23:01"):
+        return "TIME_EXIT_2300"
     return "MARKET_EXIT"
 
 

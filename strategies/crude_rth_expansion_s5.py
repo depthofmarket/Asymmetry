@@ -275,15 +275,9 @@ def simulate_intrabar_execution(
             b_time = bar["time"]
             b_m = int(bar["m"])
 
-            # 1. Breakeven Ratchet at +1.0R (+45 cents)
-            if not be:
-                if (pos == 1 and b_high >= ep + params.breakeven_trigger_pts) or (
-                    pos == -1 and b_low <= ep - params.breakeven_trigger_pts
-                ):
-                    sp = ep + params.breakeven_lock_pts if pos == 1 else ep - params.breakeven_lock_pts
-                    be = True
-
-            # 2. Conflict & Hit Evaluation
+            # 1. Conflict & Hit Evaluation against the stop price active at the start of bar k.
+            # OHLC data does not establish intrabar sequencing; a breakeven ratchet triggered
+            # during bar k cannot protect on the same bar k.
             hit_stop = (b_low <= sp) if pos == 1 else (b_high >= sp)
             hit_target = (b_high >= tp) if pos == 1 else (b_low <= tp)
 
@@ -319,6 +313,14 @@ def simulate_intrabar_execution(
                 slip_dollars = (params.slippage_entry_pts + params.slippage_stop_pts) * params.contract_value
                 exit_time = b_time
                 break
+
+            # 2. Breakeven Ratchet at +1.0R (+45 cents) — activates for subsequent bars k + 1 onwards
+            if not be:
+                if (pos == 1 and b_high >= ep + params.breakeven_trigger_pts) or (
+                    pos == -1 and b_low <= ep - params.breakeven_trigger_pts
+                ):
+                    sp = ep + params.breakeven_lock_pts if pos == 1 else ep - params.breakeven_lock_pts
+                    be = True
 
         if exit_price is not None:
             gross_pts = (exit_price - ep) if pos == 1 else (ep - exit_price)

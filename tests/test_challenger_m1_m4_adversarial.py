@@ -57,6 +57,7 @@ from scripts.alpha_factory import evaluate_candidate_trades, get_baseline_trial_
 # ==============================================================================
 # Challenge 1: --record Flag Non-Mutation & Dry-Run Invariance
 # ==============================================================================
+@pytest.mark.generated_results
 class TestAlphaFactoryRecordNonMutation:
     """Empirical verification that alpha_factory dry-run never mutates the database."""
 
@@ -468,6 +469,7 @@ class TestGrossProfitAndDSRStress:
 # ==============================================================================
 # Challenge 4: SQLite Database Concurrency & Integrity
 # ==============================================================================
+@pytest.mark.generated_results
 class TestSQLiteDatabaseIntegrityAndConcurrency:
     """Stress tests on persistent database schema, tiers, hashes, and concurrent access."""
 

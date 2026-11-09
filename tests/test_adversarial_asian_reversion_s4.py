@@ -309,8 +309,8 @@ class TestAdversarialDataDegradation:
 
 class TestAdversarialExecutionAndLookahead:
     def test_simultaneous_stop_and_target_conflict(self, base_evening_session):
-        """Intrabar Conflict: Conservative resolution ensures stop loss prevails over target."""
-        params = AsianEveningReversionParams(breakeven_trigger_r=999.0)  # Pure stop vs target
+        """Intrabar Conflict: Conservative resolution ensures stop loss prevails over target (even with default 1.0R breakeven trigger)."""
+        params = AsianEveningReversionParams(breakeven_trigger_r=1.0)
         df = base_evening_session.copy()
         features = calculate_asian_session_features(df, params)
         signals = generate_signals(features, params)
@@ -319,8 +319,8 @@ class TestAdversarialExecutionAndLookahead:
         entry_idx = sig_idx + 1
         conflict_idx = entry_idx + 1
 
-        features.loc[conflict_idx, "high"] = 5300.0  # Above target
-        features.loc[conflict_idx, "low"] = 5200.0   # Below stop
+        features.loc[conflict_idx, "high"] = 5300.0  # Above target and +1R trigger
+        features.loc[conflict_idx, "low"] = 5200.0   # Below initial stop
 
         trades = simulate_intrabar_execution(features, signals, params)
         assert len(trades) == 1

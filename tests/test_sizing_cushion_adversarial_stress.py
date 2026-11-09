@@ -44,6 +44,9 @@ from backtest.dashboard_analytics import (
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RESULTS_DIR = REPO_ROOT / "results" / "sizing_cushion_optimization"
 
+# Requirement 7: Mark as requiring private market datasets (opt in via RUN_PRIVATE_DATA_TESTS=1)
+pytestmark = pytest.mark.private_data
+
 
 @pytest.fixture(scope="module")
 def trade_data() -> pd.DataFrame:

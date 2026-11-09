@@ -10,18 +10,26 @@ import com.motivewave.platform.sdk.common.Enums$Position;
 import com.motivewave.platform.sdk.common.Enums$Size;
 import com.motivewave.platform.sdk.common.Enums$StrategyState;
 import com.motivewave.platform.sdk.common.Enums$TIF;
+import com.motivewave.platform.sdk.common.FontInfo;
+import com.motivewave.platform.sdk.common.Instrument;
 import com.motivewave.platform.sdk.common.MarkerInfo;
+import com.motivewave.platform.sdk.common.Settings;
+import com.motivewave.platform.sdk.common.Util;
 import com.motivewave.platform.sdk.common.desc.BooleanDescriptor;
+import com.motivewave.platform.sdk.common.desc.ColorDescriptor;
 import com.motivewave.platform.sdk.common.desc.DoubleDescriptor;
+import com.motivewave.platform.sdk.common.desc.FontDescriptor;
 import com.motivewave.platform.sdk.common.desc.IntegerDescriptor;
-import com.motivewave.platform.sdk.common.desc.SettingGroup;
+import com.motivewave.platform.sdk.common.desc.MarkerDescriptor;
+import com.motivewave.platform.sdk.common.desc.PathDescriptor;
 import com.motivewave.platform.sdk.common.desc.SettingTab;
-import com.motivewave.platform.sdk.common.desc.SettingsDescriptor;
+import com.motivewave.platform.sdk.common.desc.StringDescriptor;
+import com.motivewave.platform.sdk.draw.Label;
 import com.motivewave.platform.sdk.draw.Line;
 import com.motivewave.platform.sdk.draw.Marker;
 import com.motivewave.platform.sdk.order_mgmt.Order;
 import com.motivewave.platform.sdk.order_mgmt.OrderContext;
-import com.motivewave.platform.sdk.study.RuntimeDescriptor;
+import com.motivewave.platform.sdk.study.Plot;
 import com.motivewave.platform.sdk.study.Study;
 import com.motivewave.platform.sdk.study.StudyHeader;
 
@@ -29,218 +37,753 @@ import java.awt.Color;
 import java.awt.Font;
 import java.awt.Toolkit;
 import java.io.File;
-import java.nio.charset.StandardCharsets;
+import java.io.FileWriter;
+import java.io.PrintWriter;
 import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
+/**
+ * Strategy 4 (Candidate): Asian / Evening Session Liquidity Sweep & Mean Reversion (21:00–23:00 ET).
+ *
+ * Candidate Governance Invariants:
+ * - Classified strictly as StrategyTier.CANDIDATE ("CANDIDATE").
+ * - Automated execution defaults to FALSE (@StudyHeader autoEntry = false, ENABLE_LIVE_AUTOTRADE = false).
+ * - Missing, null, or invalid settings default fail-closed to disabled.
+ * - Study reloads and upgrades sanitize execution settings to remain disabled unless explicitly enabled by user action.
+ * - Visual signals, level lines, and sound alerts remain active when automated order execution is disabled.
+ *
+ * Account-State & Broker Execution Invariants:
+ * - Uses canonical 'demo_parity_state.json' in configurable forward-test directory (no hardcoded /Users/novo paths).
+ * - Mandatory fail-closed blocking when account state is missing, wrong filename, malformed, missing fields, or stale.
+ * - Preserves historical high-water mark and permanent $25,100 floor lock across restarts.
+ * - Evaluates signals strictly on completed bars (series.isBarComplete(index)).
+ * - Reconciles actual entry fill price from broker order fill and anchors stop/target bracket distances from actual fill.
+ * - Modifies working broker stop order in-place via Order.setAdjStopPrice() + OrderContext.submitOrders(slOrder)
+ *   without cancelling protective orders; applies protective failure policy if modification is rejected.
+ */
 @StudyHeader(
-    namespace = "com.motivewave.platform.study.custom",
-    id = "ASIAN_EVENING_REVERSION_S4",
-    name = "Lucid 25K — 4. Asian Evening Reversion (21:00 ET)",
-    desc = "21:00 ET Tokyo Cash Open Globex Drift Reversion on MNQ (21:00–23:00 ET) with 35.0 pt Stop, 37.5 pt Target, +1.0R Breakeven Ratchet, 23:00 ET Flatten, Live CQG Bracket Execution, and Pareto Ratchet Sizing",
-    menu = "Custom",
+    namespace = "com.lucidprop",
+    id = "LUCID_ASIAN_EVENING_REVERSION_V1",
+    name = "Lucid Asian Evening Reversion (21:15 ET) [CANDIDATE]",
+    label = "Asian Rev S4 [CANDIDATE]",
+    desc = "Candidate S4: Tokyo/Globex Evening Drift Exhaustion & VWAP Band Mean Reversion (MNQ/MES). Automated trading disabled by default.",
+    menu = "Lucid Prop Strategies",
     overlay = true,
+    studyOverlay = true,
     signals = true,
     strategy = true,
-    autoEntry = true,
+    autoEntry = false,
     manualEntry = false,
     supportsEnterOnActivate = false,
     supportsUnrealizedPL = true,
     supportsRealizedPL = true,
     supportsTotalPL = true,
+    supportsPosition = true,
     showTradeOptions = true,
-    supportsTradeLots = true,
-    supportsPosition = true
+    supportsTradeLots = true
 )
 public class LucidAsianEveningReversionStudy extends Study {
 
-    private static final Font LINE_FONT = new Font("SansSerif", Font.BOLD, 10);
+    public static final String STRATEGY_TIER = "CANDIDATE";
+    public static final String STRATEGY_ID = "asian_evening_reversion_s4";
+    public static final boolean DEFAULT_LIVE_AUTOTRADE = false;
 
-    // Settings Keys
-    private static final String ENABLE_LIVE_AUTOTRADE = "enableLiveAutoTrade";
-    private static final String STOP_POINTS = "stopPoints";
-    private static final String TARGET_POINTS = "targetPoints";
-    private static final String MIN_OR15_RANGE = "minOr15Range";
-    private static final String MAX_OR15_RANGE = "maxOr15Range";
-    private static final String ENABLE_SOUND_ALERT = "enableSoundAlert";
-    private static final String SHOW_LEVEL_LINES = "showLevelLines";
-    private static final String HIDE_LINES_WHEN_LIVE = "hideLinesWhenLive";
+    public static final String CANONICAL_STATE_FILENAME = "demo_parity_state.json";
+    public static final String FORWARD_TEST_DIR_PROP = "asymmetry.forwardTestDir";
+    public static final String FORWARD_TEST_DIR_ENV = "ASYMMETRY_FORWARD_TEST_DIR";
+    public static final String FORWARD_TEST_DIR_SETTING = "forwardTestDir";
+    public static final long DEFAULT_MAX_STATE_AGE_MS = 86_400_000L; // 24 hours
+
+    // --- Setting Keys ---
+    public static final String REVERSION_MODE = "reversionMode"; // 0 = Tokyo Globex Drift (MNQ), 1 = VWAP Band (MES)
+    public static final String MIN_OR15_RANGE = "minOr15Range";
+    public static final String MAX_OR15_RANGE = "maxOr15Range";
+    public static final String MIN_DRIFT_ATR = "minDriftAtr";
+    public static final String MAX_DRIFT_ATR = "maxDriftAtr";
+    public static final String STOP_PTS = "stopPts";
+    public static final String TARGET_PTS = "targetPts";
+    public static final String BREAKEVEN_TRIGGER_R = "breakevenTriggerR";
+    public static final String BREAKEVEN_LOCK_PTS = "breakevenLockPts";
+    public static final String VWAP_ZSCORE_ENTRY = "vwapZscoreEntry";
+    public static final String MAX_ADX_5M = "maxAdx5m";
+    public static final String MAX_DISPLACEMENT_PTS = "maxDisplacementPts";
+    public static final String ENABLE_RATCHET_SIZING = "enableRatchetSizing";
+    public static final String BASE_CONTRACTS = "baseContracts";
+    public static final String ENABLE_LIVE_AUTOTRADE = "enableLiveAutoTrade";
+    public static final String SHOW_LEVEL_LINES = "showLevelLines";
+    public static final String SHOW_VWAP_BANDS = "showVwapBands";
+    public static final String ENABLE_SOUND_ALERT = "enableSoundAlert";
+    public static final String BUY_MARKER = "buyMarker";
+    public static final String SELL_MARKER = "sellMarker";
+    public static final String TARGET_COLOR = "targetColor";
+    public static final String STOP_COLOR = "stopColor";
+    public static final String ENTRY_COLOR = "entryColor";
+    public static final String VWAP_PATH = "vwapPath";
+    public static final String UPPER_BAND_PATH = "upperBandPath";
+    public static final String LOWER_BAND_PATH = "lowerBandPath";
+    public static final String SIGNAL_FONT = "signalFont";
+
+    // --- Value Series Keys ---
+    public enum Values {
+        SESSION_VWAP,
+        UPPER_BAND_2SD,
+        LOWER_BAND_2SD,
+        OR15_HIGH,
+        OR15_LOW,
+        ENTRY_LEVEL,
+        STOP_LEVEL,
+        TARGET_LEVEL
+    }
+
+    // --- Signals ---
+    public enum Signals {
+        BUY_ASIAN_REVERSION,
+        SELL_ASIAN_REVERSION,
+        EXIT_TIME_2300
+    }
 
     private static final ZoneId NY_ZONE = ZoneId.of("America/New_York");
+    private static final DateTimeFormatter TS_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
-    // Signal Keys
-    private static final String SIGNAL_BUY = "LUCID_ASIAN_BUY";
-    private static final String SIGNAL_SELL = "LUCID_ASIAN_SELL";
-
-    // Session State Tracking
-    private final Map<LocalDate, GlobexDriftStats> globexByDate = new HashMap<>();
-    private final Map<LocalDate, TokyoOr15Stats> orByDate = new HashMap<>();
+    private final Map<LocalDate, OpeningRangeState> or15Map = new HashMap<>();
+    private final Map<LocalDate, SessionVwapState> vwapMap = new HashMap<>();
+    private final Map<LocalDate, GlobexDriftState> globexMap = new HashMap<>();
+    private final Map<LocalDate, ActiveTrade> tradeMap = new HashMap<>();
     private final Set<LocalDate> processedDays = new HashSet<>();
-    private final Map<LocalDate, ActiveTrade> tradesByDate = new HashMap<>();
+    private final Adx5mState adxState = new Adx5mState();
 
-    // IAF Session Cooldown Lock: strictly enforces <= 1 automated trade per session
-    private static final Set<LocalDate> DAILY_SUBMITTED_DATES = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    // Explicit user opt-in tracking across reloads/upgrades
+    private boolean userExplicitlyAuthorizedAutoTrade = false;
 
-    private static class GlobexDriftStats {
-        double open1800 = Double.NaN;
-        double close2114 = Double.NaN;
-        boolean openSet = false;
-        boolean closeSet = false;
-    }
-
-    private static class TokyoOr15Stats {
-        double open2100 = Double.NaN;
-        double high = Double.NEGATIVE_INFINITY;
-        double low = Double.POSITIVE_INFINITY;
-        double close2114 = Double.NaN;
-        boolean complete = false;
-
-        void addBar(int min, double o, double h, double l, double c) {
-            if (Double.isNaN(open2100)) open2100 = o;
-            high = Math.max(high, h);
-            low = Math.min(low, l);
-            if (min == 14) {
-                close2114 = c;
-                complete = true;
-            }
-        }
-    }
-
-    private static class ActiveTrade {
-        LocalDate date;
-        boolean isLong;
-        double entryPrice;
-        double stopPrice;
-        double targetPrice;
-        long entryTime;
-        long maxExitTime;
-        int contracts;
-        String microSym;
-        double ptVal;
-        boolean closed = false;
-        boolean orderSubmitted = false;
-        boolean entryFilled = false;
-        boolean bracketsSubmitted = false;
-        boolean breakevenMoved = false;
-        String entryOrderId;
-        String slOrderId;
-        String tpOrderId;
-    }
-
-    // Capital & Sizing Persistence
+    // Static monotonic account state across study reloads inside the JVM
     private static double persistedPeakBalance = 25000.00;
     private static double persistedTrailingFloor = 24000.00;
+    private static boolean persistedFloorLocked = false;
+    private static String configuredForwardTestDir = null;
+    private static String configuredStateFilePath = null;
+    private static long maxStateAgeMs = DEFAULT_MAX_STATE_AGE_MS;
+    private static String lastAccountStateError = "";
 
-    public static double getPersistedPeakBalance() {
-        return persistedPeakBalance;
-    }
-
-    public static double getPersistedTrailingFloor() {
-        return persistedTrailingFloor;
-    }
+    public static double getPersistedPeakBalance() { return persistedPeakBalance; }
+    public static double getPersistedTrailingFloor() { return persistedTrailingFloor; }
+    public static boolean isPersistedFloorLocked() { return persistedFloorLocked; }
 
     public static void setPersistedRiskState(double peak, double floor) {
         persistedPeakBalance = peak;
         persistedTrailingFloor = floor;
+        persistedFloorLocked = (peak >= 26100.00 || floor >= 25100.00);
     }
 
-    private static class DaemonRiskState {
-        double peakBalance = 25000.00;
-        double trailingFloor = 24000.00;
+    public static void setConfiguredForwardTestDir(String dirPath) {
+        configuredForwardTestDir = dirPath;
     }
 
-    private static DaemonRiskState loadDaemonRiskState() {
+    public static void setConfiguredStateFilePath(String filePath) {
+        configuredStateFilePath = filePath;
+    }
+
+    public static void setMaxStateAgeMs(long maxAgeMs) {
+        maxStateAgeMs = maxAgeMs > 0 ? maxAgeMs : DEFAULT_MAX_STATE_AGE_MS;
+    }
+
+    public static String getLastAccountStateError() {
+        return lastAccountStateError;
+    }
+
+    public static class DaemonRiskState {
+        public boolean verified = false;
+        public String verificationError = "";
+        public double balance = Double.NaN;
+        public double peakBalance = Double.NaN;
+        public double trailingFloor = Double.NaN;
+        public double trailingCushion = Double.NaN;
+        public double currentDatePnl = Double.NaN;
+        public int recommendedMicros = 0;
+        public boolean floorLocked = false;
+        public boolean circuitBreakerHit = false;
+        public boolean emergencyDelever = false;
+        public boolean finishLineShield = false;
+        public boolean garchDecileHalving = false;
+        public String updatedAt = "";
+    }
+
+    protected File resolveCanonicalStateFile() {
+        if (configuredStateFilePath != null && !configuredStateFilePath.trim().isEmpty()) {
+            return new File(configuredStateFilePath.trim());
+        }
+        String dir = configuredForwardTestDir;
+        if ((dir == null || dir.trim().isEmpty()) && getSettings() != null) {
+            String settingDir = getSettings().getString(FORWARD_TEST_DIR_SETTING, "");
+            if (settingDir != null && !settingDir.trim().isEmpty()) {
+                dir = settingDir.trim();
+            }
+        }
+        if (dir == null || dir.trim().isEmpty()) {
+            dir = System.getProperty(FORWARD_TEST_DIR_PROP);
+        }
+        if (dir == null || dir.trim().isEmpty()) {
+            dir = System.getenv(FORWARD_TEST_DIR_ENV);
+        }
+        if (dir == null || dir.trim().isEmpty()) {
+            dir = System.getenv("LUCIDFLEX_FORWARD_TEST_DIR");
+        }
+        if (dir != null && !dir.trim().isEmpty()) {
+            File candidate = new File(dir.trim());
+            if (candidate.getName().endsWith(".json")) {
+                return candidate;
+            }
+            return new File(candidate, CANONICAL_STATE_FILENAME);
+        }
+        File relativeDir = new File("results/forward_test");
+        if (relativeDir.exists() && relativeDir.isDirectory()) {
+            return new File(relativeDir, CANONICAL_STATE_FILENAME);
+        }
+        String userHome = System.getProperty("user.home", ".");
+        return Paths.get(userHome, "trading_strategy", "nq-scalper-backtest", "results", "forward_test", CANONICAL_STATE_FILENAME).toFile();
+    }
+
+    protected DaemonRiskState loadDaemonRiskState() {
         DaemonRiskState state = new DaemonRiskState();
         try {
-            File stateFile = new File("/Users/novo/trading_strategy/nq-scalper-backtest/results/forward_test/account_state.json");
-            if (!stateFile.exists()) return state;
-            String json = new String(Files.readAllBytes(stateFile.toPath()), StandardCharsets.UTF_8);
+            File stateFile = resolveCanonicalStateFile();
+            if (stateFile == null) {
+                state.verificationError = "NULL_STATE_FILE";
+                lastAccountStateError = state.verificationError;
+                return state;
+            }
+            if (!CANONICAL_STATE_FILENAME.equals(stateFile.getName())) {
+                state.verificationError = "WRONG_FILENAME:" + stateFile.getName();
+                lastAccountStateError = state.verificationError;
+                return state;
+            }
+            if (!stateFile.exists() || !stateFile.isFile() || !stateFile.canRead()) {
+                state.verificationError = "MISSING_STATE_FILE:" + stateFile.getPath();
+                lastAccountStateError = state.verificationError;
+                return state;
+            }
 
-            Matcher mPeak = Pattern.compile("\"peak_balance\"\\s*:\\s*([0-9.]+)").matcher(json);
-            if (mPeak.find()) state.peakBalance = Double.parseDouble(mPeak.group(1));
+            String raw = Files.readString(stateFile.toPath()).trim();
+            if (!isValidJsonStructure(raw)) {
+                state.verificationError = "INVALID_JSON";
+                lastAccountStateError = state.verificationError;
+                return state;
+            }
 
-            Matcher mFloor = Pattern.compile("\"trailing_floor\"\\s*:\\s*([0-9.]+)").matcher(json);
-            if (mFloor.find()) state.trailingFloor = Double.parseDouble(mFloor.group(1));
-        } catch (Exception ignored) {}
+            String[] requiredNumericKeys = new String[] {
+                "balance",
+                "peak_balance",
+                "trailing_floor",
+                "trailing_cushion",
+                "current_date_pnl",
+                "recommended_micros"
+            };
+            for (String reqKey : requiredNumericKeys) {
+                if (!hasFiniteJsonNumber(raw, reqKey)) {
+                    state.verificationError = "MISSING_OR_NON_FINITE_FIELD:" + reqKey;
+                    lastAccountStateError = state.verificationError;
+                    return state;
+                }
+            }
+
+            String updatedAt = extractJsonString(raw, "updated_at");
+            if (updatedAt == null || updatedAt.isEmpty()) {
+                state.verificationError = "MISSING_TIMESTAMP:updated_at";
+                lastAccountStateError = state.verificationError;
+                return state;
+            }
+            long tsMillis = parseIsoTimestampMillis(updatedAt);
+            if (tsMillis <= 0L) {
+                state.verificationError = "INVALID_TIMESTAMP:" + updatedAt;
+                lastAccountStateError = state.verificationError;
+                return state;
+            }
+            long ageMs = System.currentTimeMillis() - tsMillis;
+            if (ageMs > maxStateAgeMs) {
+                state.verificationError = "STALE_ACCOUNT_STATE:ageMs=" + ageMs;
+                lastAccountStateError = state.verificationError;
+                return state;
+            }
+            if (ageMs < -300_000L) {
+                state.verificationError = "FUTURE_TIMESTAMP_INVALID:ageMs=" + ageMs;
+                lastAccountStateError = state.verificationError;
+                return state;
+            }
+
+            state.balance = extractJsonDouble(raw, "balance", Double.NaN);
+            state.peakBalance = extractJsonDouble(raw, "peak_balance", Double.NaN);
+            state.trailingFloor = extractJsonDouble(raw, "trailing_floor", Double.NaN);
+            state.trailingCushion = extractJsonDouble(raw, "trailing_cushion", Double.NaN);
+            state.currentDatePnl = extractJsonDouble(raw, "current_date_pnl", Double.NaN);
+            state.recommendedMicros = (int) Math.round(extractJsonDouble(raw, "recommended_micros", 0.0));
+            state.updatedAt = updatedAt;
+
+            if (state.balance <= 0.0 || state.peakBalance < 25000.0 || state.trailingFloor < 24000.0) {
+                state.verificationError = "DOMAIN_INVARIANT_VIOLATION";
+                lastAccountStateError = state.verificationError;
+                return state;
+            }
+            if (state.peakBalance + 1e-6 < state.balance) {
+                state.verificationError = "PEAK_BELOW_BALANCE";
+                lastAccountStateError = state.verificationError;
+                return state;
+            }
+            if (state.recommendedMicros < 0 || state.recommendedMicros > 10) {
+                state.verificationError = "INVALID_RECOMMENDED_MICROS:" + state.recommendedMicros;
+                lastAccountStateError = state.verificationError;
+                return state;
+            }
+
+            boolean rawFloorLocked = extractJsonBoolean(raw, "floor_locked", false);
+            state.floorLocked = rawFloorLocked
+                || state.peakBalance >= 26100.00
+                || state.trailingFloor >= 25100.00
+                || persistedPeakBalance >= 26100.00
+                || persistedTrailingFloor >= 25100.00
+                || persistedFloorLocked;
+
+            persistedPeakBalance = Math.max(persistedPeakBalance, Math.max(state.peakBalance, state.balance));
+            if (state.floorLocked || persistedPeakBalance >= 26100.00) {
+                persistedTrailingFloor = 25100.00;
+                persistedFloorLocked = true;
+                state.trailingFloor = 25100.00;
+                state.floorLocked = true;
+            } else {
+                double calcFloor = Math.max(24000.00, persistedPeakBalance - 1000.00);
+                persistedTrailingFloor = Math.max(persistedTrailingFloor, Math.max(state.trailingFloor, calcFloor));
+                state.trailingFloor = persistedTrailingFloor;
+            }
+            state.peakBalance = persistedPeakBalance;
+            state.trailingCushion = state.balance - state.trailingFloor;
+
+            String statusStr = extractJsonString(raw, "status");
+            state.circuitBreakerHit = extractJsonBoolean(raw, "circuit_breaker_hit", false)
+                || state.currentDatePnl <= -500.0
+                || state.balance <= state.trailingFloor
+                || "DAILY_HALTED".equalsIgnoreCase(statusStr)
+                || "TRAILED_OUT".equalsIgnoreCase(statusStr);
+            state.emergencyDelever = extractJsonBoolean(raw, "emergency_delever", false)
+                || extractJsonBoolean(raw, "defensive_delever", false)
+                || state.trailingCushion < 500.0;
+            state.finishLineShield = extractJsonBoolean(raw, "finish_line_shield", false)
+                || (state.balance - 25000.0 >= 1150.0);
+            state.garchDecileHalving = extractJsonBoolean(raw, "garch_decile_halving", false);
+
+            state.verified = true;
+            state.verificationError = "";
+            lastAccountStateError = "";
+        } catch (Exception e) {
+            state.verified = false;
+            state.verificationError = "EXCEPTION:" + e.getMessage();
+            lastAccountStateError = state.verificationError;
+        }
         return state;
     }
 
-    public static int resolveContracts(OrderContext ctx, int fallbackContracts) {
-        if (ctx == null) return 0;
-        try {
-            double cash = ctx.getCashBalance();
-            double real = ctx.getRealizedPnL();
-            double unreal = ctx.getUnrealizedPnL();
-            double balance = cash + real + unreal;
-            if (!Double.isFinite(balance) || balance <= 10000.0) return 0;
-
-            DaemonRiskState riskState = loadDaemonRiskState();
-            persistedPeakBalance = Math.max(persistedPeakBalance, Math.max(riskState.peakBalance, balance));
-
-            double floor = Math.max(24000.00, persistedPeakBalance - 1000.00);
-            if (persistedPeakBalance >= 26100.00 || riskState.trailingFloor >= 25100.00) {
-                floor = 25100.00;
+    private static boolean isValidJsonStructure(String raw) {
+        if (raw == null || raw.length() < 2) return false;
+        if (!raw.startsWith("{") || !raw.endsWith("}")) return false;
+        int depth = 0;
+        boolean inQuotes = false;
+        boolean escaped = false;
+        for (int i = 0; i < raw.length(); i++) {
+            char ch = raw.charAt(i);
+            if (escaped) {
+                escaped = false;
+                continue;
             }
-            persistedTrailingFloor = Math.max(persistedTrailingFloor, Math.max(riskState.trailingFloor, floor));
-
-            double profit = balance - 25000.00;
-            double cushion = balance - persistedTrailingFloor;
-
-            if (profit >= 1150.00) return 1;
-            if (cushion < 400.00) return 1;
-            if (profit >= 550.00) return 4;
-            if (profit >= 200.00) return 3;
-            return 2;
-        } catch (Exception ignored) {
-            return 0;
+            if (ch == '\\' && inQuotes) {
+                escaped = true;
+                continue;
+            }
+            if (ch == '"') {
+                inQuotes = !inQuotes;
+                continue;
+            }
+            if (!inQuotes) {
+                if (ch == '{') depth++;
+                else if (ch == '}') {
+                    depth--;
+                    if (depth < 0) return false;
+                }
+            }
         }
+        return !inQuotes && depth == 0;
+    }
+
+    private static boolean hasFiniteJsonNumber(String json, String key) {
+        String token = "\"" + key + "\"";
+        int idx = json.indexOf(token);
+        if (idx < 0) return false;
+        int colon = json.indexOf(":", idx + token.length());
+        if (colon < 0) return false;
+        int end = colon + 1;
+        while (end < json.length() && Character.isWhitespace(json.charAt(end))) end++;
+        if (end >= json.length()) return false;
+        char first = json.charAt(end);
+        if (first == '"' || first == 't' || first == 'f' || first == 'n') return false;
+        int start = end;
+        while (end < json.length() && (Character.isDigit(json.charAt(end))
+                || json.charAt(end) == '.'
+                || json.charAt(end) == '-'
+                || json.charAt(end) == '+'
+                || json.charAt(end) == 'e'
+                || json.charAt(end) == 'E')) {
+            end++;
+        }
+        if (end <= start) return false;
+        int nextPos = end;
+        while (nextPos < json.length() && Character.isWhitespace(json.charAt(nextPos))) nextPos++;
+        if (nextPos < json.length() && json.charAt(nextPos) != ',' && json.charAt(nextPos) != '}') {
+            return false;
+        }
+        try {
+            double v = Double.parseDouble(json.substring(start, end));
+            return Double.isFinite(v);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static double extractJsonDouble(String json, String key, double fallback) {
+        if (!hasFiniteJsonNumber(json, key)) return fallback;
+        String token = "\"" + key + "\"";
+        int idx = json.indexOf(token);
+        int colon = json.indexOf(":", idx + token.length());
+        int end = colon + 1;
+        while (end < json.length() && Character.isWhitespace(json.charAt(end))) end++;
+        int start = end;
+        while (end < json.length() && (Character.isDigit(json.charAt(end))
+                || json.charAt(end) == '.'
+                || json.charAt(end) == '-'
+                || json.charAt(end) == '+'
+                || json.charAt(end) == 'e'
+                || json.charAt(end) == 'E')) {
+            end++;
+        }
+        try {
+            double val = Double.parseDouble(json.substring(start, end));
+            return Double.isFinite(val) ? val : fallback;
+        } catch (Exception e) {
+            return fallback;
+        }
+    }
+
+    private static boolean extractJsonBoolean(String json, String key, boolean fallback) {
+        String token = "\"" + key + "\"";
+        int idx = json.indexOf(token);
+        if (idx < 0) return fallback;
+        int colon = json.indexOf(":", idx + token.length());
+        if (colon < 0) return fallback;
+        String sub = json.substring(colon + 1).trim().toLowerCase();
+        if (sub.startsWith("true")) return true;
+        if (sub.startsWith("false")) return false;
+        return fallback;
+    }
+
+    private static String extractJsonString(String json, String key) {
+        String token = "\"" + key + "\"";
+        int idx = json.indexOf(token);
+        if (idx < 0) return null;
+        int colon = json.indexOf(":", idx + token.length());
+        if (colon < 0) return null;
+        int q1 = json.indexOf('"', colon + 1);
+        if (q1 < 0) return null;
+        int q2 = json.indexOf('"', q1 + 1);
+        if (q2 < 0) return null;
+        return json.substring(q1 + 1, q2).trim();
+    }
+
+    private static long parseIsoTimestampMillis(String iso) {
+        if (iso == null || iso.isEmpty()) return -1L;
+        try {
+            return Instant.parse(iso).toEpochMilli();
+        } catch (Exception e1) {
+            try {
+                return OffsetDateTime.parse(iso).toInstant().toEpochMilli();
+            } catch (Exception e2) {
+                return -1L;
+            }
+        }
+    }
+
+    public static boolean resolveAutoTradeSetting(Object rawValue) {
+        if (rawValue instanceof Boolean) {
+            return Boolean.TRUE.equals(rawValue);
+        }
+        return false;
+    }
+
+    protected boolean isCandidateAutoTradeAuthorized() {
+        if (!"CANDIDATE".equals(STRATEGY_TIER)) {
+            return false;
+        }
+        Settings settings = getSettings();
+        if (settings == null) {
+            return false;
+        }
+        Boolean raw = settings.getBoolean(ENABLE_LIVE_AUTOTRADE);
+        if (raw == null || !Boolean.TRUE.equals(raw)) {
+            return false;
+        }
+        if (!settings.getBoolean(ENABLE_LIVE_AUTOTRADE, false)) {
+            return false;
+        }
+        return userExplicitlyAuthorizedAutoTrade;
+    }
+
+    private static class OpeningRangeState {
+        double high = -Double.MAX_VALUE;
+        double low = Double.MAX_VALUE;
+        double open2100 = Double.NaN;
+        int barCount = 0;
+        long lastBarTime = -1L;
+        boolean complete = false;
+    }
+
+    private static class SessionVwapState {
+        double cumPV = 0.0;
+        double cumP2V = 0.0;
+        double cumV = 0.0;
+        double vwap = Double.NaN;
+        double std = 0.0;
+        double upper2SD = Double.NaN;
+        double lower2SD = Double.NaN;
+        double zscore = 0.0;
+        double prevZscore = 0.0;
+        double prevClose = Double.NaN;
+        long lastBarTime = -1L;
+    }
+
+    private static class GlobexDriftState {
+        double open1800 = Double.NaN;
+        double close2114 = Double.NaN;
+        double rthAtr14 = 450.0;
+        double rthRvol20 = 1.0;
+    }
+
+    private static class Adx5mState {
+        double barHigh = -Double.MAX_VALUE;
+        double barLow = Double.MAX_VALUE;
+        double barClose = Double.NaN;
+        double prevHigh = Double.NaN;
+        double prevLow = Double.NaN;
+        double prevClose = Double.NaN;
+        double smTR = 0.0;
+        double smPlusDM = 0.0;
+        double smMinusDM = 0.0;
+        double smDX = 20.0;
+        double completedAdx = 20.0;
+        int barsCount = 0;
+        long lastBarTime = -1L;
+
+        void update1mCompletedBar(long barTime, double h, double l, double c, int min) {
+            if (barTime == lastBarTime) return;
+            lastBarTime = barTime;
+            if (h > barHigh) barHigh = h;
+            if (l < barLow) barLow = l;
+            barClose = c;
+
+            if (min % 5 == 4) {
+                if (!Double.isNaN(prevClose)) {
+                    double tr = Math.max(barHigh - barLow, Math.max(Math.abs(barHigh - prevClose), Math.abs(barLow - prevClose)));
+                    double upMove = barHigh - prevHigh;
+                    double downMove = prevLow - barLow;
+                    double plusDM = (upMove > downMove && upMove > 0) ? upMove : 0.0;
+                    double minusDM = (downMove > upMove && downMove > 0) ? downMove : 0.0;
+
+                    if (barsCount < 14) {
+                        smTR += tr;
+                        smPlusDM += plusDM;
+                        smMinusDM += minusDM;
+                        barsCount++;
+                    } else {
+                        smTR = smTR - (smTR / 14.0) + tr;
+                        smPlusDM = smPlusDM - (smPlusDM / 14.0) + plusDM;
+                        smMinusDM = smMinusDM - (smMinusDM / 14.0) + minusDM;
+                    }
+
+                    if (smTR > 0) {
+                        double plusDI = 100.0 * (smPlusDM / smTR);
+                        double minusDI = 100.0 * (smMinusDM / smTR);
+                        double diSum = plusDI + minusDI;
+                        double dx = (diSum > 0) ? (100.0 * Math.abs(plusDI - minusDI) / diSum) : 0.0;
+                        smDX = ((smDX * 13.0) + dx) / 14.0;
+                        completedAdx = smDX;
+                    }
+                }
+                prevHigh = barHigh;
+                prevLow = barLow;
+                prevClose = barClose;
+                barHigh = -Double.MAX_VALUE;
+                barLow = Double.MAX_VALUE;
+            }
+        }
+    }
+
+    public static class ActiveTrade {
+        public boolean isLong;
+        public double theoreticalEntryPrice;
+        public double entryPrice;
+        public double actualEntryFill = Double.NaN;
+        public double entrySlippagePts = 0.0;
+        public double initialRiskDist;
+        public double initialTargetDist;
+        public double stopPrice;
+        public double pendingStopPrice = Double.NaN;
+        public double targetPrice;
+        public int requestedQty = 0;
+        public int filledQty = 0;
+        public int attachedBracketQty = 0;
+        public long signalTime;
+        public long entryTime;
+        public long maxExitTime;
+        public boolean closed = false;
+        public boolean breakevenTriggered = false;
+        public boolean breakevenModifySubmitted = false;
+        public boolean breakevenApplied = false;
+        public boolean breakevenModificationFailed = false;
+        public boolean bracketsSubmitted = false;
+        public Order entryOrder = null;
+        public Order slOrder = null;
+        public Order tpOrder = null;
+        public String entryOrderId = "";
+        public String slOrderId = "";
+        public String tpOrderId = "";
     }
 
     @Override
     public void initialize(Defaults defaults) {
-        SettingsDescriptor sd = createSD();
-        SettingTab tab = sd.addTab("Parameters");
+        var sd = createSD();
+        SettingTab tab = sd.addTab("Strategy 4 Parameters");
 
-        SettingGroup gTrade = tab.addGroup("Strategy Parameters");
-        gTrade.addRow(new BooleanDescriptor(ENABLE_LIVE_AUTOTRADE, "Enable Live Auto-Trade", true));
-        gTrade.addRow(new DoubleDescriptor(STOP_POINTS, "Stop Points (MNQ)", 35.0, 10.0, 100.0, 1.0));
-        gTrade.addRow(new DoubleDescriptor(TARGET_POINTS, "Target Points (MNQ)", 37.5, 10.0, 150.0, 1.0));
-        gTrade.addRow(new DoubleDescriptor(MIN_OR15_RANGE, "Min OR15 Range Pts", 6.0, 1.0, 20.0, 0.5));
-        gTrade.addRow(new DoubleDescriptor(MAX_OR15_RANGE, "Max OR15 Range Pts", 45.0, 20.0, 100.0, 1.0));
+        var grpMode = tab.addGroup("Asian / Evening Reversion Parameters (MNQ / MES)");
+        grpMode.addRow(new IntegerDescriptor(MIN_OR15_RANGE, "Min 21:00–21:14 OR Range (Pts)", 20, 2, 100, 1));
+        grpMode.addRow(new IntegerDescriptor(MAX_OR15_RANGE, "Max 21:00–21:14 OR Range (Pts)", 120, 5, 300, 1));
+        grpMode.addRow(new DoubleDescriptor(MIN_DRIFT_ATR, "Min Globex 18:00–21:14 Drift (x ATR)", 0.30, 0.05, 1.50, 0.05));
+        grpMode.addRow(new DoubleDescriptor(MAX_DRIFT_ATR, "Max Globex 18:00–21:14 Drift (x ATR)", 1.00, 0.20, 3.00, 0.05));
+        grpMode.addRow(new DoubleDescriptor(STOP_PTS, "Initial Stop Distance (MNQ Pts)", 35.0, 4.0, 100.0, 0.5));
+        grpMode.addRow(new DoubleDescriptor(TARGET_PTS, "Profit Target Distance (MNQ Pts)", 37.5, 4.0, 150.0, 0.5));
+        grpMode.addRow(new DoubleDescriptor(BREAKEVEN_TRIGGER_R, "Breakeven Trigger (+R)", 1.0, 0.5, 2.0, 0.1));
+        grpMode.addRow(new DoubleDescriptor(BREAKEVEN_LOCK_PTS, "Breakeven Lock Offset (Pts)", 0.50, 0.0, 5.0, 0.25));
 
-        SettingGroup gDisplay = tab.addGroup("Display & Alerts");
-        gDisplay.addRow(new BooleanDescriptor(ENABLE_SOUND_ALERT, "Enable Sound Alert", true));
-        gDisplay.addRow(new BooleanDescriptor(SHOW_LEVEL_LINES, "Show Level Lines", true));
-        gDisplay.addRow(new BooleanDescriptor(HIDE_LINES_WHEN_LIVE, "Hide Lines When Live", false));
+        var grpVwap = tab.addGroup("Secondary VWAP Band Gate Parameters");
+        grpVwap.addRow(new DoubleDescriptor(VWAP_ZSCORE_ENTRY, "VWAP Band Sigma Threshold (Z)", 2.0, 1.0, 3.5, 0.1));
+        grpVwap.addRow(new DoubleDescriptor(MAX_ADX_5M, "Max 5m ADX Trend Ceiling", 30.0, 15.0, 50.0, 1.0));
+        grpVwap.addRow(new DoubleDescriptor(MAX_DISPLACEMENT_PTS, "Max Net Displacement Ceiling (Pts)", 40.0, 5.0, 150.0, 1.0));
 
-        setSettingsDescriptor(sd);
+        var grpRisk = tab.addGroup("LucidFlex 25K Candidate Governance & Sizing");
+        grpRisk.addRow(new BooleanDescriptor(ENABLE_RATCHET_SIZING, "Enable Anti-Martingale Ratchet (2->3->4 Micros)", true));
+        grpRisk.addRow(new IntegerDescriptor(BASE_CONTRACTS, "Fallback Base Micros", 2, 1, 10, 1));
+        grpRisk.addRow(new BooleanDescriptor(ENABLE_LIVE_AUTOTRADE, "Enable Live Auto-Trade (Candidate — Explicit User Opt-In Required)", DEFAULT_LIVE_AUTOTRADE));
+        grpRisk.addRow(new StringDescriptor(FORWARD_TEST_DIR_SETTING, "Forward-Test State Directory (Optional Override)", ""));
+        grpRisk.addRow(new BooleanDescriptor(SHOW_LEVEL_LINES, "Draw Entry / Stop / Target Lines", true));
+        grpRisk.addRow(new BooleanDescriptor(SHOW_VWAP_BANDS, "Plot Session VWAP & ±2.0 SD Bands", true));
+        grpRisk.addRow(new BooleanDescriptor(ENABLE_SOUND_ALERT, "Play Audio Beep on Signal", true));
 
-        RuntimeDescriptor rd = createRD();
-        rd.declareSignal(SIGNAL_BUY, "Asian Evening Buy");
-        rd.declareSignal(SIGNAL_SELL, "Asian Evening Sell");
-        setRuntimeDescriptor(rd);
+        SettingTab displayTab = sd.addTab("Display & Markers");
+        var grpMarkers = displayTab.addGroup("Signals & Colors");
+        grpMarkers.addRow(new MarkerDescriptor(BUY_MARKER, "Long Reversion Marker",
+            Enums$MarkerType.TRIANGLE, Enums$Size.LARGE,
+            new Color(148, 103, 189), Color.WHITE, true, true));
+        grpMarkers.addRow(new MarkerDescriptor(SELL_MARKER, "Short Reversion Marker",
+            Enums$MarkerType.TRIANGLE, Enums$Size.LARGE,
+            new Color(220, 38, 38), Color.WHITE, true, true));
+        grpMarkers.addRow(new PathDescriptor(VWAP_PATH, "Session VWAP Line",
+            new Color(245, 158, 11), 1.5f, null, true, false, true));
+        grpMarkers.addRow(new PathDescriptor(UPPER_BAND_PATH, "VWAP Upper +2.0 SD Band",
+            new Color(148, 103, 189), 1.0f, new float[]{4f, 4f}, true, false, true));
+        grpMarkers.addRow(new PathDescriptor(LOWER_BAND_PATH, "VWAP Lower -2.0 SD Band",
+            new Color(148, 103, 189), 1.0f, new float[]{4f, 4f}, true, false, true));
+        grpMarkers.addRow(new ColorDescriptor(ENTRY_COLOR, "Entry Line Color", new Color(148, 103, 189)));
+        grpMarkers.addRow(new ColorDescriptor(TARGET_COLOR, "Target Line Color", new Color(16, 185, 129)));
+        grpMarkers.addRow(new ColorDescriptor(STOP_COLOR, "Stop Line Color", new Color(239, 68, 68)));
+        grpMarkers.addRow(new FontDescriptor(SIGNAL_FONT, "Signal Label Font", new Font("SansSerif", Font.BOLD, 11)));
+
+        var desc = createRD();
+        desc.setLabelSettings(STOP_PTS, TARGET_PTS);
+        desc.exportValue(new com.motivewave.platform.sdk.common.desc.ValueDescriptor(Values.SESSION_VWAP, "Session VWAP"));
+        desc.exportValue(new com.motivewave.platform.sdk.common.desc.ValueDescriptor(Values.UPPER_BAND_2SD, "VWAP +2SD"));
+        desc.exportValue(new com.motivewave.platform.sdk.common.desc.ValueDescriptor(Values.LOWER_BAND_2SD, "VWAP -2SD"));
+        desc.exportValue(new com.motivewave.platform.sdk.common.desc.ValueDescriptor(Values.ENTRY_LEVEL, "Entry Price"));
+        desc.exportValue(new com.motivewave.platform.sdk.common.desc.ValueDescriptor(Values.STOP_LEVEL, "Stop Loss"));
+        desc.exportValue(new com.motivewave.platform.sdk.common.desc.ValueDescriptor(Values.TARGET_LEVEL, "Profit Target"));
+
+        desc.declarePath(Values.SESSION_VWAP, VWAP_PATH);
+        desc.declarePath(Values.UPPER_BAND_2SD, UPPER_BAND_PATH);
+        desc.declarePath(Values.LOWER_BAND_2SD, LOWER_BAND_PATH);
+
+        desc.declareSignal(Signals.BUY_ASIAN_REVERSION, "Asian Evening Reversion Long (21:15 ET)");
+        desc.declareSignal(Signals.SELL_ASIAN_REVERSION, "Asian Evening Reversion Short (21:15 ET)");
+        desc.declareSignal(Signals.EXIT_TIME_2300, "Mandatory Time Flatten (23:00 ET)");
+
+        if (getSettings() != null) {
+            getSettings().setAutoEntry(false);
+            getSettings().setBoolean(ENABLE_LIVE_AUTOTRADE, false);
+        }
+        userExplicitlyAuthorizedAutoTrade = false;
     }
 
     @Override
-    public int getMinBars() {
-        return 60;
+    public void onLoad(Defaults defaults) {
+        super.onLoad(defaults);
+        // Candidate governance: remain disabled across study reloads/upgrades unless explicitly re-enabled by user action
+        userExplicitlyAuthorizedAutoTrade = false;
+        if (getSettings() != null) {
+            getSettings().setAutoEntry(false);
+            getSettings().setBoolean(ENABLE_LIVE_AUTOTRADE, false);
+        }
+    }
+
+    @Override
+    public void onSettingsUpdated(DataContext ctx) {
+        super.onSettingsUpdated(ctx);
+        Settings settings = getSettings();
+        if (settings == null) {
+            userExplicitlyAuthorizedAutoTrade = false;
+            return;
+        }
+        Boolean raw = settings.getBoolean(ENABLE_LIVE_AUTOTRADE);
+        if (raw == null || !Boolean.TRUE.equals(raw)) {
+            settings.setBoolean(ENABLE_LIVE_AUTOTRADE, false);
+            settings.setAutoEntry(false);
+            userExplicitlyAuthorizedAutoTrade = false;
+        } else {
+            userExplicitlyAuthorizedAutoTrade = true;
+        }
+    }
+
+    @Override
+    public void clearState() {
+        super.clearState();
+        or15Map.clear();
+        vwapMap.clear();
+        globexMap.clear();
+        tradeMap.clear();
+        processedDays.clear();
     }
 
     @Override
     protected void calculate(int index, DataContext ctx) {
         DataSeries series = ctx.getDataSeries();
-        if (series == null || index < 1) return;
+        if (series == null || index < 50) return;
+
+        // Requirement 4: Never evaluate or confirm signals on an unfinished bar
+        if (!series.isBarComplete(index)) {
+            return;
+        }
 
         long barTime = series.getStartTime(index);
+        long barEndTime = series.getEndTime(index);
         ZonedDateTime nyBar = Instant.ofEpochMilli(barTime).atZone(NY_ZONE);
         LocalDate today = nyBar.toLocalDate();
         int hour = nyBar.getHour();
@@ -250,186 +793,623 @@ public class LucidAsianEveningReversionStudy extends Study {
         double h = series.getHigh(index);
         double l = series.getLow(index);
         double c = series.getClose(index);
+        double v = Math.max(1.0, series.getVolume(index));
 
-        GlobexDriftStats globex = globexByDate.computeIfAbsent(today, k -> new GlobexDriftStats());
-        TokyoOr15Stats or15 = orByDate.computeIfAbsent(today, k -> new TokyoOr15Stats());
+        adxState.update1mCompletedBar(barTime, h, l, c, min);
 
-        // Track Globex 18:00 ET open
-        if (hour == 18 && min == 0) {
+        GlobexDriftState globex = globexMap.computeIfAbsent(today, k -> new GlobexDriftState());
+        if (hour == 18 && min == 0 && Double.isNaN(globex.open1800)) {
             globex.open1800 = o;
-            globex.openSet = true;
         }
 
-        // Track Tokyo Opening 15m (21:00–21:14 ET)
+        // Accumulate 21:00–21:14 ET Opening Range strictly on completed bars
         if (hour == 21 && min >= 0 && min <= 14) {
-            or15.addBar(min, o, h, l, c);
-            if (min == 14) {
+            OpeningRangeState or15 = or15Map.computeIfAbsent(today, k -> new OpeningRangeState());
+            if (or15.lastBarTime != barTime) {
+                or15.lastBarTime = barTime;
+                if (min == 0 || Double.isNaN(or15.open2100)) {
+                    or15.open2100 = o;
+                }
+                if (h > or15.high) or15.high = h;
+                if (l < or15.low) or15.low = l;
+                or15.barCount++;
+            }
+            if (min == 14 && series.isBarComplete(index)) {
+                or15.complete = true;
                 globex.close2114 = c;
-                globex.closeSet = true;
             }
         }
 
-        // Check active trade management
-        ActiveTrade trade = tradesByDate.get(today);
-        if (trade != null && !trade.closed) {
-            // Breakeven ratchet (+1.0R excursion)
-            if (!trade.breakevenMoved) {
-                if (trade.isLong && h >= trade.entryPrice + 35.0) {
-                    trade.stopPrice = trade.entryPrice + 0.50; // lock +2 ticks
-                    trade.breakevenMoved = true;
-                } else if (!trade.isLong && l <= trade.entryPrice - 35.0) {
-                    trade.stopPrice = trade.entryPrice - 0.50; // lock +2 ticks
-                    trade.breakevenMoved = true;
-                }
+        // Accumulate Expanding Point-in-Time Session VWAP (21:00–23:00 ET) strictly once per completed bar
+        boolean inEveningSession = (hour == 21 || hour == 22 || (hour == 23 && min == 0));
+        if (inEveningSession) {
+            SessionVwapState vwap = vwapMap.computeIfAbsent(today, k -> new SessionVwapState());
+            if (vwap.lastBarTime != barTime) {
+                vwap.lastBarTime = barTime;
+                vwap.prevZscore = vwap.zscore;
+                vwap.prevClose = Double.isNaN(vwap.vwap) ? c : vwap.prevClose;
+
+                double tp = (h + l + c) / 3.0;
+                vwap.cumPV += tp * v;
+                vwap.cumP2V += (tp * tp) * v;
+                vwap.cumV += v;
+
+                vwap.vwap = vwap.cumPV / vwap.cumV;
+                double variance = Math.max(0.0, (vwap.cumP2V / vwap.cumV) - (vwap.vwap * vwap.vwap));
+                vwap.std = Math.sqrt(variance);
+                double zEntry = getSettings().getDouble(VWAP_ZSCORE_ENTRY, 2.0);
+                vwap.upper2SD = vwap.vwap + zEntry * vwap.std;
+                vwap.lower2SD = vwap.vwap - zEntry * vwap.std;
+                vwap.zscore = (vwap.std > 1e-6) ? ((c - vwap.vwap) / vwap.std) : 0.0;
             }
 
-            // Mandatory flatten at 23:00 ET
-            if (hour >= 23) {
-                trade.closed = true;
-                if (ctx instanceof OrderContext) {
-                    OrderContext octx = (OrderContext) ctx;
-                    octx.cancelOrders();
-                    octx.closeAtMarket();
-                }
+            if (getSettings().getBoolean(SHOW_VWAP_BANDS, true)) {
+                series.setDouble(index, Values.SESSION_VWAP, vwap.vwap);
+                series.setDouble(index, Values.UPPER_BAND_2SD, vwap.upper2SD);
+                series.setDouble(index, Values.LOWER_BAND_2SD, vwap.lower2SD);
             }
         }
 
-        // Signal Generation at 21:14:59 bar close / 21:15:00 bar open
-        if (hour == 21 && min == 14 && or15.complete && !processedDays.contains(today) && !DAILY_SUBMITTED_DATES.contains(today)) {
-            processedDays.add(today);
-
+        // Evaluate Primary Signal at Completed 21:14 ET Bar (for 21:15 ET Execution Opportunity)
+        OpeningRangeState or15 = or15Map.get(today);
+        if (hour == 21 && min == 14 && series.isBarComplete(index) && or15 != null && or15.complete && !processedDays.contains(today)) {
             double orRange = or15.high - or15.low;
-            double minOr = getSettings().getDouble(MIN_OR15_RANGE, 6.0);
-            double maxOr = getSettings().getDouble(MAX_OR15_RANGE, 45.0);
+            double minOrRange = getSettings().getInteger(MIN_OR15_RANGE, 20);
+            double maxOrRange = getSettings().getInteger(MAX_OR15_RANGE, 120);
 
-            if (orRange < minOr || orRange > maxOr) return;
+            if (orRange >= minOrRange && orRange <= maxOrRange && !Double.isNaN(globex.open1800)) {
+                double drift = globex.close2114 - globex.open1800;
+                double absDrift = Math.abs(drift);
+                double minDriftPts = getSettings().getDouble(MIN_DRIFT_ATR, 0.30) * globex.rthAtr14;
+                double maxDriftPts = getSettings().getDouble(MAX_DRIFT_ATR, 1.00) * globex.rthAtr14;
 
-            double drift = globex.openSet ? (globex.close2114 - globex.open1800) : (or15.close2114 - or15.open2100);
-            boolean driftUp = drift > 0;
-            boolean driftDown = drift < 0;
+                if (absDrift >= minDriftPts && absDrift <= maxDriftPts) {
+                    double stopPts = getSettings().getDouble(STOP_PTS, 35.0);
+                    double targetPts = getSettings().getDouble(TARGET_PTS, 37.5);
+                    long entryOpportunityTime = (barEndTime > barTime) ? barEndTime : (barTime + 60_000L);
+                    long sessionFlattenTime = nyBar.withHour(23).withMinute(0).withSecond(0).withNano(0).toInstant().toEpochMilli();
 
-            boolean rejectUpDrift = driftUp && (or15.close2114 < or15.open2100);
-            boolean rejectDownDrift = driftDown && (or15.close2114 > or15.open2100);
+                    if (drift > 0 && c < or15.open2100) {
+                        processedDays.add(today);
+                        triggerSignal(index, ctx, series, today, false, c, c + stopPts, c - targetPts, stopPts, targetPts, barTime, entryOpportunityTime, sessionFlattenTime, "GLOBEX_DRIFT_EXHAUSTION_SHORT");
+                    } else if (drift < 0 && c > or15.open2100) {
+                        processedDays.add(today);
+                        triggerSignal(index, ctx, series, today, true, c, c - stopPts, c + targetPts, stopPts, targetPts, barTime, entryOpportunityTime, sessionFlattenTime, "GLOBEX_DRIFT_EXHAUSTION_LONG");
+                    }
+                }
+            }
+        }
 
-            if (rejectUpDrift) {
-                // Short Reversion
-                triggerSignal(index, ctx, SIGNAL_SELL, false, c);
-            } else if (rejectDownDrift) {
-                // Long Reversion
-                triggerSignal(index, ctx, SIGNAL_BUY, true, c);
+        // Update prevClose for Session VWAP
+        if (inEveningSession && vwapMap.containsKey(today)) {
+            vwapMap.get(today).prevClose = c;
+        }
+
+        // Active Trade Lifecycle & Conservative Completed-Bar Conflict / Breakeven Tracking
+        ActiveTrade trade = tradeMap.get(today);
+        if (trade != null && !trade.closed && barTime >= trade.entryTime) {
+            series.setDouble(index, Values.ENTRY_LEVEL, trade.entryPrice);
+            series.setDouble(index, Values.STOP_LEVEL, trade.stopPrice);
+            series.setDouble(index, Values.TARGET_LEVEL, trade.targetPrice);
+
+            // 1. Check stop and target against the stopPrice active at the start of this bar
+            boolean hitStop = trade.isLong ? (l <= trade.stopPrice) : (h >= trade.stopPrice);
+            boolean hitTarget = trade.isLong ? (h >= trade.targetPrice) : (l <= trade.targetPrice);
+
+            if (hitStop || hitTarget || (hour == 23 && min == 0) || barTime >= trade.maxExitTime) {
+                trade.closed = true;
+                if (!hitStop && !hitTarget && ((hour == 23 && min == 0) || barTime >= trade.maxExitTime)) {
+                    ctx.signal(index, Signals.EXIT_TIME_2300, "S4 Mandatory Time Flatten (23:00 ET)", c);
+                }
+            } else if (!trade.breakevenTriggered && !trade.breakevenApplied && !trade.breakevenModificationFailed) {
+                // 2. Breakeven +1.0R trigger activates only after surviving the bar without hitting stop/target
+                double anchorEntry = !Double.isNaN(trade.actualEntryFill) ? trade.actualEntryFill : trade.entryPrice;
+                double initialRisk = trade.initialRiskDist > 0 ? trade.initialRiskDist : getSettings().getDouble(STOP_PTS, 35.0);
+                double beTrigger = getSettings().getDouble(BREAKEVEN_TRIGGER_R, 1.0) * initialRisk;
+                double beLockPts = getSettings().getDouble(BREAKEVEN_LOCK_PTS, 0.50);
+
+                if (trade.isLong && h >= anchorEntry + beTrigger) {
+                    trade.breakevenTriggered = true;
+                    trade.pendingStopPrice = anchorEntry + beLockPts;
+                } else if (!trade.isLong && l <= anchorEntry - beTrigger) {
+                    trade.breakevenTriggered = true;
+                    trade.pendingStopPrice = anchorEntry - beLockPts;
+                }
             }
         }
     }
 
-    private void triggerSignal(int index, DataContext ctx, String signalKey, boolean isLong, double closePrice) {
-        DataSeries series = ctx.getDataSeries();
-        long barTime = series.getStartTime(index);
-        LocalDate today = Instant.ofEpochMilli(barTime).atZone(NY_ZONE).toLocalDate();
-
-        double stopPts = getSettings().getDouble(STOP_POINTS, 35.0);
-        double targetPts = getSettings().getDouble(TARGET_POINTS, 37.5);
-
-        double entryPrice = closePrice;
-        double stopPrice = isLong ? (entryPrice - stopPts) : (entryPrice + stopPts);
-        double targetPrice = isLong ? (entryPrice + targetPts) : (entryPrice - targetPts);
+    private void triggerSignal(
+            int index,
+            DataContext ctx,
+            DataSeries series,
+            LocalDate today,
+            boolean isLong,
+            double theoEntry,
+            double stop,
+            double target,
+            double riskDist,
+            double targetDist,
+            long signalTime,
+            long entryTime,
+            long maxExitTime,
+            String reason) {
 
         ActiveTrade trade = new ActiveTrade();
-        trade.date = today;
         trade.isLong = isLong;
-        trade.entryPrice = entryPrice;
-        trade.stopPrice = stopPrice;
-        trade.targetPrice = targetPrice;
-        trade.entryTime = barTime;
-        trade.contracts = 2; // base ratchet tier 1
-        tradesByDate.put(today, trade);
+        trade.theoreticalEntryPrice = theoEntry;
+        trade.entryPrice = theoEntry;
+        trade.initialRiskDist = riskDist;
+        trade.initialTargetDist = targetDist;
+        trade.stopPrice = stop;
+        trade.targetPrice = target;
+        trade.signalTime = signalTime;
+        trade.entryTime = entryTime;
+        trade.maxExitTime = maxExitTime;
+        tradeMap.put(today, trade);
 
-        Coordinate c = new Coordinate(barTime, entryPrice);
-        Color markColor = isLong ? new Color(0, 204, 102) : new Color(220, 20, 60);
-        MarkerInfo info = new MarkerInfo(Enums$MarkerType.ARROW, Enums$Size.MEDIUM, markColor, markColor, true);
-        Marker marker = new Marker(c, isLong ? Enums$Position.BOTTOM : Enums$Position.TOP, info);
-        marker.setTextValue(isLong ? "Asian Reversion BUY" : "Asian Reversion SELL");
-        addFigure(marker);
+        series.setDouble(index, Values.ENTRY_LEVEL, theoEntry);
+        series.setDouble(index, Values.STOP_LEVEL, stop);
+        series.setDouble(index, Values.TARGET_LEVEL, target);
 
-        if (getSettings().getBoolean(ENABLE_SOUND_ALERT, true)) {
-            Toolkit.getDefaultToolkit().beep();
+        // Requirement 1.3: Always preserve visual markers, level lines, signals, and sound alerts
+        var markerDesc = getSettings().getMarker(isLong ? BUY_MARKER : SELL_MARKER);
+        String label = (isLong ? "LONG S4 REV @ " : "SHORT S4 REV @ ") + String.format("%.2f", theoEntry);
+        if (markerDesc != null && markerDesc.isEnabled()) {
+            Coordinate coord = new Coordinate(signalTime, isLong ? series.getLow(index) : series.getHigh(index));
+            addFigure(Plot.PRICE, new Marker(coord, isLong ? Enums$Position.BOTTOM : Enums$Position.TOP, markerDesc, label));
         }
 
-        if (getSettings().getBoolean(ENABLE_LIVE_AUTOTRADE, true) && ctx instanceof OrderContext) {
-            executeAutoTradeIfArmed((OrderContext) ctx, signalKey, trade);
+        if (getSettings().getBoolean(SHOW_LEVEL_LINES, true)) {
+            Color entryCol = getSettings().getColor(ENTRY_COLOR, new Color(148, 103, 189));
+            Color stopCol = getSettings().getColor(STOP_COLOR, new Color(239, 68, 68));
+            Color targetCol = getSettings().getColor(TARGET_COLOR, new Color(16, 185, 129));
+            Line entryLine = new Line(signalTime, theoEntry, maxExitTime, theoEntry);
+            entryLine.setColor(entryCol);
+            addFigure(Plot.PRICE, entryLine);
+
+            Line slLine = new Line(signalTime, stop, maxExitTime, stop);
+            slLine.setColor(stopCol);
+            slLine.setStroke(new java.awt.BasicStroke(1.5f, java.awt.BasicStroke.CAP_BUTT, java.awt.BasicStroke.JOIN_MITER, 10.0f, new float[]{4f, 4f}, 0.0f));
+            addFigure(Plot.PRICE, slLine);
+
+            Line tpLine = new Line(signalTime, target, maxExitTime, target);
+            tpLine.setColor(targetCol);
+            tpLine.setStroke(new java.awt.BasicStroke(1.5f, java.awt.BasicStroke.CAP_BUTT, java.awt.BasicStroke.JOIN_MITER, 10.0f, new float[]{4f, 4f}, 0.0f));
+            addFigure(Plot.PRICE, tpLine);
+        }
+
+        ctx.signal(index, isLong ? Signals.BUY_ASIAN_REVERSION : Signals.SELL_ASIAN_REVERSION,
+            String.format("Asian Evening Reversion %s (%s) | Entry: %.2f | SL: %.2f | TP: %.2f",
+                isLong ? "LONG" : "SHORT", reason, theoEntry, stop, target),
+            theoEntry);
+
+        if (getSettings().getBoolean(ENABLE_SOUND_ALERT, true)) {
+            try { Toolkit.getDefaultToolkit().beep(); } catch (Exception ignored) {}
+        }
+
+        // Requirement 1: Block automated order submission unless candidate execution is explicitly authorized
+        if (!isCandidateAutoTradeAuthorized()) {
+            logExecutionToCsv("CANDIDATE_AUTOTRADE_DISABLED", isLong ? "BUY" : "SELL", 0, theoEntry, Double.NaN, 0.0, stop, target, "CANDIDATE_TIER_OPT_IN_DISABLED");
+            return;
         }
     }
 
-    private synchronized void executeAutoTradeIfArmed(OrderContext ctx, String signalKey, ActiveTrade trade) {
-        LocalDate today = trade.date;
-        if (DAILY_SUBMITTED_DATES.contains(today)) return;
+    @Override
+    public void onSignal(OrderContext ctx, Object signal) {
+        if (ctx == null) return;
+        if (!isCandidateAutoTradeAuthorized()) return;
+        DataContext dataCtx = ctx.getDataContext();
+        if (dataCtx == null || dataCtx.getDataSeries() == null) return;
+        DataSeries series = dataCtx.getDataSeries();
+        int lastIdx = series.size() - 1;
+        if (lastIdx < 0 || !series.isBarComplete(lastIdx)) return;
 
-        int contracts = resolveContracts(ctx, trade.contracts);
-        if (contracts <= 0) {
-            logExecutionEvent("ORDER_BLOCKED_UNVERIFIED_ACCOUNT", "LucidAsianEveningReversion",
-                ctx.getInstrument() != null ? ctx.getInstrument().getSymbol() : "MNQ",
-                "BLOCKED", 0.0, 0.0, 0.0, 0,
-                "Account context unverified or sizing returned zero; order entry blocked (fail-closed).");
+        long barTime = series.getStartTime(lastIdx);
+        LocalDate today = Instant.ofEpochMilli(barTime).atZone(NY_ZONE).toLocalDate();
+        ActiveTrade trade = tradeMap.get(today);
+        if (trade == null || trade.closed) return;
+
+        if (signal == Signals.BUY_ASIAN_REVERSION || signal == Signals.SELL_ASIAN_REVERSION) {
+            executeAutoTradeIfArmed(ctx, dataCtx, trade);
+        } else if (signal == Signals.EXIT_TIME_2300 && ctx.getPosition() != 0) {
+            ctx.cancelOrders();
+            ctx.closeAtMarket();
+            trade.closed = true;
+            logExecutionToCsv("TIME_EXIT_2300", trade.isLong ? "SELL" : "BUY", Math.abs(ctx.getPosition()), trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, "FLATTENED_AT_2300_ET");
+        }
+    }
+
+    @Override
+    public void onBarClose(OrderContext ctx) {
+        if (ctx == null) return;
+        DataContext dataCtx = ctx.getDataContext();
+        if (dataCtx == null || dataCtx.getDataSeries() == null) return;
+        DataSeries series = dataCtx.getDataSeries();
+        int lastIdx = series.size() - 1;
+        if (lastIdx < 0 || !series.isBarComplete(lastIdx)) return;
+
+        long barTime = series.getStartTime(lastIdx);
+        ZonedDateTime nyBar = Instant.ofEpochMilli(barTime).atZone(NY_ZONE);
+        LocalDate today = nyBar.toLocalDate();
+        ActiveTrade trade = tradeMap.get(today);
+        if (trade == null) return;
+
+        // 1. Keep protective bracket quantities synchronized with actual position
+        if (ctx.getPosition() != 0 && trade.bracketsSubmitted) {
+            verifyAndSyncBracketQuantities(ctx, trade);
+        }
+
+        // 2. Modify actual working broker stop order in-place when +1.0R breakeven is triggered
+        if (ctx.getPosition() != 0
+                && trade.breakevenTriggered
+                && !trade.breakevenApplied
+                && !trade.breakevenModifySubmitted
+                && !trade.breakevenModificationFailed
+                && trade.bracketsSubmitted) {
+            modifyWorkingStopToBreakeven(ctx, trade);
+        }
+
+        // 3. Enforce 23:00 ET time flatten
+        if ((nyBar.getHour() == 23 && nyBar.getMinute() >= 0) || barTime >= trade.maxExitTime) {
+            if (ctx.getPosition() != 0) {
+                int posQty = Math.abs(ctx.getPosition());
+                ctx.cancelOrders();
+                ctx.closeAtMarket();
+                trade.closed = true;
+                logExecutionToCsv("TIME_EXIT_2300", trade.isLong ? "SELL" : "BUY", posQty, trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, "ON_BAR_CLOSE_FLATTEN");
+            }
+        }
+    }
+
+    public synchronized boolean modifyWorkingStopToBreakeven(OrderContext ctx, ActiveTrade trade) {
+        if (ctx == null || trade == null || !trade.bracketsSubmitted) return false;
+        int posQty = Math.abs(ctx.getPosition());
+        if (posQty <= 0) return false;
+
+        Instrument inst = ctx.getInstrument();
+        if (inst == null) return false;
+
+        if (trade.slOrder == null || !trade.slOrder.isActive() || trade.slOrder.isCancelled() || trade.slOrder.isFilled()) {
+            applyProtectiveFailurePolicy(ctx, trade, "STOP_ORDER_INACTIVE_OR_MISSING");
+            return false;
+        }
+
+        double desiredStop = !Double.isNaN(trade.pendingStopPrice)
+            ? trade.pendingStopPrice
+            : (trade.isLong
+                ? ((!Double.isNaN(trade.actualEntryFill) ? trade.actualEntryFill : trade.entryPrice) + getSettings().getDouble(BREAKEVEN_LOCK_PTS, 0.50))
+                : ((!Double.isNaN(trade.actualEntryFill) ? trade.actualEntryFill : trade.entryPrice) - getSettings().getDouble(BREAKEVEN_LOCK_PTS, 0.50)));
+
+        float newStop = inst.round((float) desiredStop);
+        boolean improvesProtection = trade.isLong ? (newStop > trade.stopPrice) : (newStop < trade.stopPrice);
+        if (!improvesProtection) {
+            return false;
+        }
+
+        try {
+            trade.slOrder.setAdjStopPrice(newStop);
+            if (trade.slOrder.getQuantity() != posQty) {
+                trade.slOrder.setAdjQuantity(posQty);
+            }
+            if (trade.tpOrder != null && trade.tpOrder.isActive() && trade.tpOrder.getQuantity() != posQty) {
+                trade.tpOrder.setAdjQuantity(posQty);
+                ctx.submitOrders(trade.slOrder, trade.tpOrder);
+            } else {
+                ctx.submitOrders(trade.slOrder);
+            }
+            trade.breakevenModifySubmitted = true;
+            trade.attachedBracketQty = posQty;
+            logExecutionToCsv("BREAKEVEN_MODIFY_SUBMITTED", trade.isLong ? "SELL_STOP" : "BUY_STOP", posQty, trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, newStop, trade.targetPrice, "IN_PLACE_SET_ADJ_STOP_PRICE");
+            return true;
+        } catch (Exception e) {
+            applyProtectiveFailurePolicy(ctx, trade, "SUBMIT_MODIFICATION_EXCEPTION:" + e.getMessage());
+            return false;
+        }
+    }
+
+    public synchronized void verifyAndSyncBracketQuantities(OrderContext ctx, ActiveTrade trade) {
+        if (ctx == null || trade == null || !trade.bracketsSubmitted) return;
+        int posQty = Math.abs(ctx.getPosition());
+        if (posQty <= 0) return;
+
+        if (trade.slOrder == null || !trade.slOrder.isActive() || trade.slOrder.isCancelled()) {
+            applyProtectiveFailurePolicy(ctx, trade, "PROTECTIVE_STOP_MISSING_DURING_POSITION_SYNC");
             return;
         }
-        trade.contracts = contracts;
 
-        float stopPrice = ctx.getInstrument().round((float) trade.stopPrice);
-        float targetPrice = ctx.getInstrument().round((float) trade.targetPrice);
+        boolean needsUpdate = false;
+        if (trade.slOrder.getQuantity() != posQty && trade.slOrder.getAdjQuantity() != posQty) {
+            trade.slOrder.setAdjQuantity(posQty);
+            needsUpdate = true;
+        }
+        if (trade.tpOrder != null && trade.tpOrder.isActive()
+                && trade.tpOrder.getQuantity() != posQty && trade.tpOrder.getAdjQuantity() != posQty) {
+            trade.tpOrder.setAdjQuantity(posQty);
+            needsUpdate = true;
+        }
+        if (needsUpdate) {
+            if (trade.tpOrder != null && trade.tpOrder.isActive()) {
+                ctx.submitOrders(trade.slOrder, trade.tpOrder);
+            } else {
+                ctx.submitOrders(trade.slOrder);
+            }
+            trade.attachedBracketQty = posQty;
+            logExecutionToCsv("BRACKET_QTY_SYNCED", trade.isLong ? "LONG" : "SHORT", posQty, trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, "PARTIAL_FILL_QTY_RECONCILED");
+        }
+    }
 
-        setStopPrice(stopPrice);
-        setTargetPrice(targetPrice);
+    private void applyProtectiveFailurePolicy(OrderContext ctx, ActiveTrade trade, String reason) {
+        trade.breakevenModifySubmitted = false;
+        trade.breakevenApplied = false;
+        trade.breakevenModificationFailed = true;
 
-        Order entry = ctx.createMarketOrder(trade.isLong ? Enums$OrderAction.BUY : Enums$OrderAction.SELL, contracts);
-        ctx.submitOrders(entry);
+        boolean stopStillActive = (trade.slOrder != null && trade.slOrder.isActive() && !trade.slOrder.isCancelled() && !trade.slOrder.isFilled());
+        if (!stopStillActive && ctx != null && ctx.getPosition() != 0) {
+            int posQty = Math.abs(ctx.getPosition());
+            ctx.cancelOrders();
+            ctx.closeAtMarket();
+            trade.closed = true;
+            logExecutionToCsv("PROTECTIVE_STOP_FAILURE_EMERGENCY_FLATTEN", trade.isLong ? "SELL" : "BUY", posQty, trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, reason);
+        } else {
+            // Original working stop remains active at original stopPrice; do NOT pretend tighter stop is active
+            logExecutionToCsv("BREAKEVEN_MODIFICATION_FAILED_ORIGINAL_STOP_RETAINED", trade.isLong ? "LONG" : "SHORT", Math.abs(ctx != null ? ctx.getPosition() : trade.filledQty), trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, reason);
+        }
+    }
 
-        DAILY_SUBMITTED_DATES.add(today);
-        trade.orderSubmitted = true;
-        trade.entryOrderId = entry != null ? entry.getOrderId() : null;
+    @Override
+    public void onOrderModified(OrderContext ctx, Order order) {
+        if (ctx == null || order == null) return;
+        for (ActiveTrade trade : tradeMap.values()) {
+            if (trade.closed) continue;
+            if (order == trade.slOrder || (trade.slOrderId != null && !trade.slOrderId.isEmpty() && trade.slOrderId.equals(order.getOrderId()))) {
+                Float modStop = order.getStopPrice() != null ? order.getStopPrice() : order.getAdjStopPrice();
+                if (modStop != null && Float.isFinite(modStop)) {
+                    trade.stopPrice = modStop.doubleValue();
+                } else if (!Double.isNaN(trade.pendingStopPrice)) {
+                    trade.stopPrice = trade.pendingStopPrice;
+                }
+                trade.breakevenApplied = true;
+                trade.breakevenModifySubmitted = false;
+                logExecutionToCsv("BREAKEVEN_RATCHET_CONFIRMED", trade.isLong ? "SELL_STOP" : "BUY_STOP", Math.abs(ctx.getPosition()), trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, "BROKER_STOP_MODIFIED");
+                break;
+            }
+        }
+    }
 
-        logExecutionEvent("ORDER_SUBMITTED", "LucidAsianEveningReversion", ctx.getInstrument().getSymbol(),
-            trade.isLong ? "BUY" : "SELL", trade.entryPrice, stopPrice, targetPrice, contracts,
-            "Market entry submitted. Brackets pending fill confirmation. Daily cooldown locked.");
+    @Override
+    public void onOrderRejected(OrderContext ctx, Order order) {
+        if (ctx == null || order == null) return;
+        for (ActiveTrade trade : tradeMap.values()) {
+            if (trade.closed) continue;
+            if (order == trade.slOrder || (trade.slOrderId != null && !trade.slOrderId.isEmpty() && trade.slOrderId.equals(order.getOrderId()))) {
+                applyProtectiveFailurePolicy(ctx, trade, "ON_ORDER_REJECTED:" + order.getOrderId());
+                break;
+            }
+        }
+    }
+
+    @Override
+    public void onOrderCancelled(OrderContext ctx, Order order) {
+        if (ctx == null || order == null) return;
+        for (ActiveTrade trade : tradeMap.values()) {
+            if (trade.closed) continue;
+            if (order == trade.slOrder && ctx.getPosition() != 0) {
+                applyProtectiveFailurePolicy(ctx, trade, "PROTECTIVE_STOP_CANCELLED_UNEXPECTEDLY");
+                break;
+            }
+        }
+    }
+
+    private synchronized void executeAutoTradeIfArmed(OrderContext ctx, DataContext dataCtx, ActiveTrade trade) {
+        if (ctx == null) return;
+        if (!isCandidateAutoTradeAuthorized()) return;
+        if (ctx.getPosition() != 0 || trade.bracketsSubmitted || trade.entryOrder != null) return;
+        Instrument inst = ctx.getInstrument();
+        if (inst == null) return;
+
+        int contracts = resolveContracts(ctx, dataCtx);
+        if (contracts <= 0) {
+            logExecutionToCsv("ORDER_BLOCKED_UNVERIFIED_ACCOUNT", trade.isLong ? "BUY" : "SELL", 0, trade.theoreticalEntryPrice, Double.NaN, 0.0, trade.stopPrice, trade.targetPrice, lastAccountStateError);
+            return;
+        }
+
+        Enums$OrderAction entryAction = trade.isLong ? Enums$OrderAction.BUY : Enums$OrderAction.SELL;
+        String orderRef = "LucidS4_Entry_" + trade.signalTime;
+        Order entryOrder = ctx.createMarketOrder(inst, orderRef, entryAction, contracts);
+        if (entryOrder == null) return;
+
+        trade.entryOrder = entryOrder;
+        trade.requestedQty = contracts;
+        ctx.submitOrders(entryOrder);
+        trade.entryOrderId = entryOrder.getOrderId() != null ? entryOrder.getOrderId() : orderRef;
+
+        logExecutionToCsv("ENTRY_SUBMITTED", entryAction.name(), contracts, trade.theoreticalEntryPrice, Double.NaN, 0.0, trade.stopPrice, trade.targetPrice, orderRef);
     }
 
     @Override
     public void onOrderFilled(OrderContext ctx, Order order) {
         if (ctx == null || order == null) return;
-        long now = ctx.getCurrentTime();
-        LocalDate today = Instant.ofEpochMilli(now).atZone(NY_ZONE).toLocalDate();
-        ActiveTrade trade = tradesByDate.get(today);
+        Instrument inst = ctx.getInstrument();
+        if (inst == null) return;
 
-        if (ctx.getPosition() != 0 && trade != null && !trade.bracketsSubmitted) {
-            trade.entryFilled = true;
-            int contracts = Math.abs(ctx.getPosition());
-            float stopPrice = ctx.getInstrument().round((float) trade.stopPrice);
-            float targetPrice = ctx.getInstrument().round((float) trade.targetPrice);
+        for (ActiveTrade trade : tradeMap.values()) {
+            if (trade.closed) continue;
 
-            Enums$OrderAction exitAction = trade.isLong ? Enums$OrderAction.SELL : Enums$OrderAction.BUY;
-            Order sl = ctx.createStopOrder(exitAction, Enums$TIF.GTC, contracts, stopPrice);
-            Order tp = ctx.createLimitOrder(exitAction, Enums$TIF.GTC, contracts, targetPrice);
-            ctx.submitOrders(sl, tp);
-            trade.bracketsSubmitted = true;
-            trade.slOrderId = sl != null ? sl.getOrderId() : null;
-            trade.tpOrderId = tp != null ? tp.getOrderId() : null;
-        } else if (ctx.getPosition() == 0) {
-            ctx.cancelOrders();
-            if (trade != null) trade.closed = true;
+            // 1. Check if protective stop or target leg filled
+            if (order == trade.slOrder || order == trade.tpOrder) {
+                int remPos = Math.abs(ctx.getPosition());
+                if (remPos == 0) {
+                    if (order == trade.slOrder && trade.tpOrder != null && trade.tpOrder.isActive()) {
+                        ctx.cancelOrders(trade.tpOrder);
+                    } else if (order == trade.tpOrder && trade.slOrder != null && trade.slOrder.isActive()) {
+                        ctx.cancelOrders(trade.slOrder);
+                    }
+                    trade.closed = true;
+                    String exitTag = (order == trade.slOrder)
+                        ? (trade.breakevenApplied ? "EXIT_BREAKEVEN_STOP" : "EXIT_STOP_LOSS")
+                        : "EXIT_PROFIT_TARGET";
+                    logExecutionToCsv(exitTag, trade.isLong ? "SELL" : "BUY", order.getFilled(), trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, "EXIT_FILL=" + order.getAvgFillPrice());
+                } else {
+                    verifyAndSyncBracketQuantities(ctx, trade);
+                }
+                return;
+            }
+
+            // 2. Entry order fill (full or partial): anchor stop and target from actual average fill price
+            int posQty = Math.abs(ctx.getPosition());
+            if (posQty <= 0) continue;
+
+            double actualFill = Double.NaN;
+            if (order.getAvgFillPrice() > 0 && Float.isFinite(order.getAvgFillPrice())) {
+                actualFill = order.getAvgFillPrice();
+            } else if (ctx.getAvgEntryPrice() > 0 && Float.isFinite(ctx.getAvgEntryPrice())) {
+                actualFill = ctx.getAvgEntryPrice();
+            } else {
+                actualFill = trade.theoreticalEntryPrice;
+            }
+
+            double riskDist = trade.initialRiskDist > 0 ? trade.initialRiskDist : getSettings().getDouble(STOP_PTS, 35.0);
+            double targetDist = trade.initialTargetDist > 0 ? trade.initialTargetDist : getSettings().getDouble(TARGET_PTS, 37.5);
+
+            trade.actualEntryFill = actualFill;
+            trade.entryPrice = actualFill;
+            trade.filledQty = posQty;
+            trade.entrySlippagePts = trade.isLong
+                ? (actualFill - trade.theoreticalEntryPrice)
+                : (trade.theoreticalEntryPrice - actualFill);
+
+            float stopF = inst.round((float) (trade.isLong ? (actualFill - riskDist) : (actualFill + riskDist)));
+            float targetF = inst.round((float) (trade.isLong ? (actualFill + targetDist) : (actualFill - targetDist)));
+
+            if (!trade.bracketsSubmitted) {
+                Enums$OrderAction exitAction = trade.isLong ? Enums$OrderAction.SELL : Enums$OrderAction.BUY;
+                String slRef = "LucidS4_SL_" + trade.signalTime;
+                String tpRef = "LucidS4_TP_" + trade.signalTime;
+                Order slOrder = ctx.createStopOrder(inst, slRef, exitAction, Enums$TIF.GTC, posQty, stopF);
+                Order tpOrder = ctx.createLimitOrder(inst, tpRef, exitAction, Enums$TIF.GTC, posQty, targetF);
+                if (slOrder != null && tpOrder != null) {
+                    trade.slOrder = slOrder;
+                    trade.tpOrder = tpOrder;
+                    trade.stopPrice = stopF;
+                    trade.targetPrice = targetF;
+                    trade.attachedBracketQty = posQty;
+                    trade.bracketsSubmitted = true;
+                    ctx.submitOrders(slOrder, tpOrder);
+                    trade.slOrderId = slOrder.getOrderId() != null ? slOrder.getOrderId() : slRef;
+                    trade.tpOrderId = tpOrder.getOrderId() != null ? tpOrder.getOrderId() : tpRef;
+                    logExecutionToCsv("BRACKETS_SUBMITTED", exitAction.name(), posQty, trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, slRef + "|" + tpRef);
+                }
+            } else {
+                // Subsequent partial entry fill: update existing bracket quantities and fill-anchored prices in-place
+                if (trade.slOrder != null && trade.slOrder.isActive()) {
+                    if (!trade.breakevenApplied) {
+                        trade.slOrder.setAdjStopPrice(stopF);
+                        trade.stopPrice = stopF;
+                    }
+                    trade.slOrder.setAdjQuantity(posQty);
+                }
+                if (trade.tpOrder != null && trade.tpOrder.isActive()) {
+                    trade.tpOrder.setAdjLimitPrice(targetF);
+                    trade.tpOrder.setAdjQuantity(posQty);
+                    trade.targetPrice = targetF;
+                }
+                ctx.submitOrders(trade.slOrder, trade.tpOrder);
+                trade.attachedBracketQty = posQty;
+                logExecutionToCsv("PARTIAL_FILL_BRACKETS_ADJUSTED", trade.isLong ? "SELL" : "BUY", posQty, trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, "UPDATED_AVG_FILL");
+            }
+            break;
         }
     }
 
-    private static synchronized void logExecutionEvent(String event, String studyId, String symbol,
-        String action, double price, double sl, double tp, int contracts, String reason) {
+    protected int resolveContracts(OrderContext ctx, DataContext dataCtx) {
+        if (ctx == null) return 0;
         try {
-            String home = System.getProperty("user.home");
-            File dir = new File(home, "trading_strategy/nq-scalper-backtest/results/forward_test");
-            if (!dir.exists()) dir.mkdirs();
-            File alertLog = new File(dir, "motivewave_alerts.log");
-            String isoNow = Instant.now().toString();
-            String alertLine = String.format("%s,%s,%s,%s,%.2f,%.2f,%.2f,%d,%s%n",
-                isoNow, studyId, symbol, action, price, sl, tp, contracts, reason.replace(',', ';'));
-            Files.write(alertLog.toPath(), alertLine.getBytes(StandardCharsets.UTF_8),
-                java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+            // 1. Load & Verify Canonical Account State (Mandatory Fail-Closed Gate)
+            DaemonRiskState riskState = loadDaemonRiskState();
+            if (riskState == null || !riskState.verified) {
+                return 0;
+            }
+            if (riskState.circuitBreakerHit) {
+                return 0;
+            }
+
+            // 2. Query Broker Account Balance (Fail-Closed if unverified)
+            double balance = Double.NaN;
+            try {
+                double cash = ctx.getCashBalance();
+                double real = ctx.getRealizedPnL();
+                double unreal = ctx.getUnrealizedPnL();
+                balance = cash + real + unreal;
+            } catch (Exception ignored) {}
+
+            if (!Double.isFinite(balance) || balance <= 10000.0) {
+                balance = riskState.balance;
+            }
+            if (!Double.isFinite(balance) || balance <= 10000.0) {
+                return 0;
+            }
+
+            // 3. Monotonic High-Water Mark & Permanent $25,100 Floor Lock
+            persistedPeakBalance = Math.max(persistedPeakBalance, Math.max(riskState.peakBalance, balance));
+            double floor = Math.max(24000.00, persistedPeakBalance - 1000.00);
+            if (persistedPeakBalance >= 26100.00 || riskState.trailingFloor >= 25100.00) {
+                floor = 25100.00;
+            }
+            persistedTrailingFloor = Math.max(persistedTrailingFloor, Math.max(riskState.trailingFloor, floor));
+
+            // 4. Cushion Protection
+            double profit = balance - 25000.00;
+            double cushion = balance - persistedTrailingFloor;
+            if (cushion <= 0.0) return 0;
+            if (profit >= 1150.00) return 1;
+            if (cushion < 400.00) return 1;
+            if (riskState.finishLineShield || riskState.emergencyDelever || riskState.garchDecileHalving || cushion < 500.0) {
+                return 1;
+            }
+
+            if (!getSettings().getBoolean(ENABLE_RATCHET_SIZING, true)) {
+                return Math.max(1, Math.min(10, getSettings().getInteger(BASE_CONTRACTS, 2)));
+            }
+
+            int brokerTierMicros;
+            if (profit >= 550.00) brokerTierMicros = 4;
+            else if (profit >= 200.00) brokerTierMicros = 3;
+            else brokerTierMicros = 2;
+
+            return Math.max(1, Math.min(brokerTierMicros, riskState.recommendedMicros));
         } catch (Exception ignored) {
+            return 0;
         }
+    }
+
+    private void logExecutionToCsv(
+            String eventType,
+            String action,
+            int qty,
+            double theoPrice,
+            double actualFill,
+            double slippagePts,
+            double sl,
+            double tp,
+            String ref) {
+        try {
+            File stateFile = resolveCanonicalStateFile();
+            File dir = (stateFile != null && stateFile.getParentFile() != null)
+                ? stateFile.getParentFile()
+                : new File(System.getProperty("user.home", "."), "MotiveWave Extensions");
+            if (!dir.exists()) dir.mkdirs();
+            File logFile = new File(dir, "lucid_execution_log.csv");
+            boolean writeHeader = !logFile.exists();
+            try (PrintWriter pw = new PrintWriter(new FileWriter(logFile, true))) {
+                if (writeHeader) {
+                    pw.println("timestamp_et,strategy,tier,event,action,contracts,theo_entry_price,actual_fill_price,slippage_pts,stop_price,target_price,order_ref");
+                }
+                String nowEt = ZonedDateTime.now(NY_ZONE).format(TS_FMT);
+                String fillStr = Double.isNaN(actualFill) ? "NA" : String.format("%.2f", actualFill);
+                pw.printf("%s,ASIAN_EVENING_REV_S4,%s,%s,%s,%d,%.2f,%s,%.4f,%.2f,%.2f,%s%n",
+                    nowEt, STRATEGY_TIER, eventType, action, qty, theoPrice, fillStr, slippagePts, sl, tp, ref);
+            }
+        } catch (Exception ignored) {}
     }
 }

@@ -564,16 +564,9 @@ def simulate_intrabar_execution(
             if cur_adverse > mae_pts:
                 mae_pts = cur_adverse
 
-            # Breakeven Adjustment at +1.0R
-            if not be_active and initial_risk > 0:
-                if signal == 1 and b_high >= entry_price + params.breakeven_trigger_r * initial_risk:
-                    be_active = True
-                    stop_price = entry_price + params.breakeven_lock_pts
-                elif signal == -1 and b_low <= entry_price - params.breakeven_trigger_r * initial_risk:
-                    be_active = True
-                    stop_price = entry_price - params.breakeven_lock_pts
-
-            # Conflict Resolution
+            # 1. Conflict Resolution against the stop price active at the start of bar k.
+            # OHLC data does not establish intrabar sequencing; a breakeven ratchet triggered
+            # during bar k cannot protect on the same bar k.
             hit_stop = (b_low <= stop_price) if signal == 1 else (b_high >= stop_price)
             hit_target = (b_high >= target_price) if signal == 1 else (b_low <= target_price)
 
@@ -597,6 +590,15 @@ def simulate_intrabar_execution(
                 exit_reason = "time_exit"
                 exit_time = b_time
                 break
+
+            # 2. Breakeven Adjustment at +1.0R (activates for subsequent bars k + 1 onwards)
+            if not be_active and initial_risk > 0:
+                if signal == 1 and b_high >= entry_price + params.breakeven_trigger_r * initial_risk:
+                    be_active = True
+                    stop_price = entry_price + params.breakeven_lock_pts
+                elif signal == -1 and b_low <= entry_price - params.breakeven_trigger_r * initial_risk:
+                    be_active = True
+                    stop_price = entry_price - params.breakeven_lock_pts
 
         if exit_price is not None:
             if has_globex_context:

@@ -1501,7 +1501,7 @@ def main():
     print(f"Recorded canonical sizing run: {rec.run_id} into {store.db_path}")
 
     # Copy updated figures to user Downloads
-    downloads_dir = Path("/Users/novo/Downloads")
+    downloads_dir = Path.home() / "Downloads"
     if downloads_dir.exists():
         for fig_file in out_dir.glob("figure*.png"):
             dest = downloads_dir / fig_file.name

@@ -10,6 +10,25 @@ This is an append-only, chronological journal recording all agent actions, docum
 
 ---
 
+## [2026-11-09 16:45:00 UTC] [gemini] [UPDATE] | Critical Execution Integrity, Risk State Parity & CI Portability Overhaul
+- **Pages Modified**:
+  - `wiki/execution/motivewave-integration.md` (documented Candidate tier governance, unified demo_parity_state.json interface, in-place broker stop modification, signal bar completion, and actual fill price anchoring)
+  - `wiki/execution/demo-parity-engine.md` (documented canonical state store schema, fail-closed blocking, and ISO-8601 staleness detection)
+  - `wiki/strategies/asian-evening-reversion.md` (documented execution integrity invariants, 21:14 completed candle gate, and conservative intrabar breakeven)
+  - `wiki/strategies/crude-rth-expansion.md` (documented execution integrity invariants, 09:30–10:14 box + 10:15–11:15 completed breakout gate, and conservative intrabar breakeven)
+  - `wiki/hot.md` (updated active tasks and execution integrity status)
+  - `wiki/log.md` (journal entry appended)
+- **Summary**: Implemented the complete 8-part execution integrity and CI portability overhaul:
+  1. Candidate Execution Governance: Defaulted automated trading to FALSE for Candidate S4 (`LucidAsianEveningReversionStudy.java`) and S5 (`LucidCrudeRthExpansionStudy.java`) across `@StudyHeader`, constants, settings, and reload lifecycle (`onLoad`). Explicit operator opt-in required; chart markers and audio alerts preserved.
+  2. Unified Account-Risk State Interface: Consolidated state loading across all five Java studies and Python `demo_parity_engine.py` onto canonical `demo_parity_state.json`. Added directory configuration, finite field validation, ISO-8601 UTC timestamp staleness check (< 24h), and mandatory fail-closed blocking (`ORDER_BLOCKED_UNVERIFIED_ACCOUNT`), while preserving monotonic HWM and locked $25,100 floor across restarts.
+  3. Actual Broker Breakeven Stop Management: S4 and S5 modify working broker stops in-place via `setAdjStopPrice` + `submitOrders` without cancelling protective bracket orders. Added `applyProtectiveFailurePolicy` to prevent phantom tighter stops on modification failure and synchronized bracket order sizes on partial fills.
+  4. Signal-Bar Completion Verification: Strictly enforce `series.isBarComplete(index)` on S4 21:14 candle and S5 range box / breakout candles before signal confirmation.
+  5. Fill-Price Anchoring: Anchored initial risk and target distances from actual average fill price in `onOrderFilled`, with execution slippage logged.
+  6. Conservative Intrabar Breakeven in Python Backtests: `asian_evening_reversion_s4.py` and `crude_rth_expansion_s5.py` evaluate stop/target against stop active at bar start; +1R breakeven ratchet activates on subsequent bars $k+1$.
+  7. Portable CI Suite: Categorized tests into portable vs private data; registered custom markers in `pytest.ini`; created `tests/conftest.py` with `RUN_PRIVATE_DATA_TESTS=1` opt-in.
+  8. Dedicated Regression Suite: Authored `tests/test_execution_integrity_and_governance.py` covering all 12 minimum test cases (22/22 passed).
+- **Verification**: Clean JDK 25 compilation (0 warnings, 0 errors, packaged `build/LucidPropEnsemble.jar`); full test suite executed in clean simulated CI environment; wiki integrity verified via `scripts/verify_wiki_integrity.py`.
+
 ## [2026-11-08 04:05:00 UTC] [explorer] [UPDATE] | Surveyed Market Data Catalog and Backtest/Provenance Engine
 - **Pages Modified**:
   - `.agents/teamwork/teamwork_explorer_survey_3/data_and_engine_report.md` (authored comprehensive market data & simulation engine survey report)

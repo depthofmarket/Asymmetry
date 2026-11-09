@@ -317,3 +317,92 @@ class TestCandidateS5ExecutionAndTiming:
         net_pnl = gross_pnl - params.commission_round_trip  # -$47.00 - $3.50 = -$50.50
         assert gross_pnl == pytest.approx(-47.00, rel=1e-5)
         assert net_pnl == pytest.approx(-50.50, rel=1e-5)
+
+    def test_same_bar_breakeven_trigger_and_stop_or_target_conflicts(self):
+        """
+        Verifies conservative intrabar breakeven resolution in simulate_intrabar_execution:
+        1. Same-bar +1R trigger + initial stop -> resolves to 'stop_loss', never 'breakeven'.
+        2. Same-bar +1R trigger + target + initial stop -> resolves to 'stop_loss'.
+        3. Same-bar +1R trigger + target (with low = ep > initial_stop) -> resolves to 'profit_target'.
+        4. Bar k +1R trigger activates breakeven stop starting on bar k + 1.
+        """
+        params = CrudeRthExpansionParams()
+        ep = 70.00
+        sp = ep - params.stop_loss_pts       # 69.55
+        tp = ep + params.profit_target_pts   # 70.90
+
+        def _build_session(bars_after_entry):
+            rows = [
+                {
+                    "time": pd.Timestamp("2025-06-10 10:15:00"),
+                    "date_str": "2025-06-10",
+                    "m": 615,
+                    "open": 69.90,
+                    "high": 70.00,
+                    "low": 69.85,
+                    "close": 69.99,
+                    "volume": 500,
+                }
+            ]
+            for idx_b, b in enumerate(bars_after_entry, start=1):
+                rows.append({
+                    "time": pd.Timestamp("2025-06-10 10:15:00") + pd.Timedelta(minutes=idx_b),
+                    "date_str": "2025-06-10",
+                    "m": 615 + idx_b,
+                    "open": b["open"],
+                    "high": b["high"],
+                    "low": b["low"],
+                    "close": b["close"],
+                    "volume": 500,
+                })
+            rth_df = pd.DataFrame(rows)
+            sig_df = rth_df[["time", "date_str", "close"]].copy()
+            sig_df["signal"] = 0
+            sig_df["signal_type"] = ""
+            sig_df["entry_price"] = np.nan
+            sig_df["stop_price"] = np.nan
+            sig_df["target_price"] = np.nan
+            sig_df.loc[0, "signal"] = 1
+            sig_df.loc[0, "signal_type"] = "crude_rth_expansion_long"
+            sig_df.loc[0, "entry_price"] = ep
+            sig_df.loc[0, "stop_price"] = sp
+            sig_df.loc[0, "target_price"] = tp
+            return rth_df, sig_df
+
+        # 1. Same-bar +1R trigger (70.45) + initial stop (69.55) -> stop_loss
+        rth_1, sig_1 = _build_session([
+            {"open": 70.00, "high": 70.55, "low": 69.50, "close": 69.60},
+        ])
+        trades_1 = simulate_intrabar_execution(rth_1, sig_1, params)
+        assert len(trades_1) == 1
+        assert trades_1.iloc[0]["exit_reason"] == "stop_loss"
+        assert trades_1.iloc[0]["exit_price"] == pytest.approx(sp - params.slippage_stop_pts, rel=1e-6)
+
+        # 2. Same-bar +1R trigger + target (70.90) + initial stop (69.55) -> stop_loss
+        rth_2, sig_2 = _build_session([
+            {"open": 70.00, "high": 71.00, "low": 69.50, "close": 70.20},
+        ])
+        trades_2 = simulate_intrabar_execution(rth_2, sig_2, params)
+        assert len(trades_2) == 1
+        assert trades_2.iloc[0]["exit_reason"] == "stop_loss"
+
+        # 3. Same-bar +1R trigger + target with low = ep (70.00 <= 70.02 BE lock, but > 69.55 stop) -> profit_target
+        rth_3, sig_3 = _build_session([
+            {"open": 70.00, "high": 70.95, "low": 70.00, "close": 70.90},
+        ])
+        trades_3 = simulate_intrabar_execution(rth_3, sig_3, params)
+        assert len(trades_3) == 1
+        assert trades_3.iloc[0]["exit_reason"] == "profit_target"
+        assert trades_3.iloc[0]["exit_price"] == pytest.approx(tp - params.slippage_limit_pts, rel=1e-6)
+
+        # 4. Bar 1 reaches +1R (70.50) with low = 70.00 (stays open); Bar 2 hits both BE stop (70.02) and target (70.95) -> breakeven on Bar 2
+        rth_4, sig_4 = _build_session([
+            {"open": 70.00, "high": 70.50, "low": 70.00, "close": 70.46},
+            {"open": 70.46, "high": 70.95, "low": 70.01, "close": 70.50},
+        ])
+        trades_4 = simulate_intrabar_execution(rth_4, sig_4, params)
+        assert len(trades_4) == 1
+        assert trades_4.iloc[0]["exit_reason"] == "breakeven"
+        assert trades_4.iloc[0]["exit_price"] == pytest.approx(ep + params.breakeven_lock_pts, rel=1e-6)
+        assert trades_4.iloc[0]["hold_bars"] == 2
+

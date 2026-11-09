@@ -54,11 +54,12 @@ def check_daemon(label: str = WATCHER_LABEL) -> tuple[bool, int | None, str]:
 
 def check_csv_feeds() -> list[dict[str, any]]:
     """Checks raw MotiveWave CSV exports."""
+    raw_dir = Path(os.getenv("ASYMMETRY_RAW_DATA_DIR", ROOT / "data/raw"))
     feed_files = [
-        ("NQ / MNQ", ROOT / "data/raw/@NQ.CQG_1.csv"),
-        ("ES / MES", ROOT / "data/raw/@ES.CQG_1.csv"),
-        ("GC / MGC", ROOT / "data/raw/@GC.CQG_1.csv"),
-        ("CL / MCL", ROOT / "data/raw/@CL.CQG_1.csv"),
+        ("NQ / MNQ", raw_dir / "@NQ.CQG_1.csv"),
+        ("ES / MES", raw_dir / "@ES.CQG_1.csv"),
+        ("GC / MGC", raw_dir / "@GC.CQG_1.csv"),
+        ("CL / MCL", raw_dir / "@CL.CQG_1.csv"),
     ]
     results = []
     now = datetime.now()

@@ -39,6 +39,17 @@ The parity pipeline supports two complementary ingestion pathways:
 - **State Store**: `results/forward_test/demo_parity_state.json`
 - **HTML Dashboard**: `results/forward_test/demo_parity_dashboard.html`
 
+### Canonical State Store & Fail-Closed Interface
+The state interface (`results/forward_test/demo_parity_state.json`) is the single canonical source of truth for prop account risk state:
+- **Canonical Filename**: Strictly `demo_parity_state.json`. Any legacy or incorrect filename (`account_state.json`) is rejected with `ORDER_BLOCKED_UNVERIFIED_ACCOUNT`.
+- **Configurable Location**: Resolved via `ASYMMETRY_FORWARD_TEST_DIR` or `LUCIDFLEX_FORWARD_TEST_DIR` environment variables, system properties, or relative repo path.
+- **Fail-Closed Validation**:
+  - Missing file, corrupt JSON, missing required fields, or non-finite numbers (`NaN`, `null`, `Infinity`) immediately cause `verify_and_load_account_state` to return `verified = False` and block order execution.
+  - Timestamp staleness check: `updated_at` must be valid ISO-8601 UTC within the last 24 hours. Stale state blocks automated trading.
+- **Monotonic High-Water Mark & Locked Floor**:
+  - Preserves historical peak balance during drawdowns (does not reset peak down to current balance).
+  - Trailing floor locks permanently at $\$25,100$ once peak balance reaches $\ge \$26,100$.
+
 ### Broker Journal Ingestion & FIFO Lot-Matching
 `scripts/sync_cqg_executions.py` provides automated ingestion with the following architecture:
 - **Filtering**: Filters journal records where `Record Type == 'ORDER'` and `Action == 'ORDER_FILLED'`.

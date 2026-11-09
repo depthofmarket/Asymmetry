@@ -45,6 +45,12 @@ Why `MNQ` instead of `MES`? Empirical microstructure testing demonstrated that u
 - **Cost Model**: 1-tick limit/market entry (`$0.50`/contract), 2-tick adverse stop slippage (`$1.00`/contract), plus `$1.40` round-trip micro commission (`$2.40` total friction on stop-out, `$1.90` on target/time exit).
 - **Bracket Geometry & Pareto Anti-Martingale Ratchet Sizing**:
   - **Base Bracket Distance**: Stop Loss = `35.0` pts (`$70.00`/micro gross, `$72.40`/micro net); Profit Target = `37.5` pts (`1.07R`, `$75.00`/micro gross, `$73.10`/micro net); Breakeven Ratchet at `+1.0R` (`+35.0` pts favorable excursion locks stop at entry `+2` ticks); Mandatory Time Exit at `23:00:00 ET`.
+  - **Execution Integrity & Parity Invariants**:
+    - **Candidate Governance**: Automated trading defaults to `false` in `@StudyHeader` and settings; explicit user opt-in required; survives reloads.
+    - **Bar Completion**: Signal candle (21:14 ET) must be complete (`series.isBarComplete(index)`) before signal confirmation for 21:15 entry.
+    - **Conservative Intrabar Breakeven**: Intrabar conflicts on bar $k$ resolve to stop active at start of bar $k$; +1R breakeven ratchet activates on subsequent bars $k+1$ onwards.
+    - **Broker Stop Management**: Working broker stop is modified in-place via `setAdjStopPrice` without cancelling; stop failure triggers protective policy.
+    - **Fill Price Anchoring**: Bracket stop and target distances are anchored from actual fill price in `onOrderFilled`, with slippage logged.
   - **LucidFlex 25K Pareto Ratchet Scaling (`2 -> 3 -> 4` Micros)**:
 
 | Ratchet Tier | Account Equity Band | Contracts | Net Risk / Trade (Stop) | Net Reward / Trade (Target) |

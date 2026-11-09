@@ -598,6 +598,7 @@ class TestStrategyViabilityUnderExecutionStress(unittest.TestCase):
             f"Profit factor {results['profit_factor']} fell below minimum viable hurdle 1.0",
         )
 
+    @pytest.mark.private_data
     def test_execution_realism_summary_evaluation_on_trade_stream(self) -> None:
         """Evaluates realistic target slippage and trade-through sensitivity on trade streams."""
         from backtest.dashboard_analytics import load_trades

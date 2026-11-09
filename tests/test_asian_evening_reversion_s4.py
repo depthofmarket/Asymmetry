@@ -265,3 +265,114 @@ class TestCandidateS4SignalAndExecution:
             assert last_trade["exit_reason"] == "time_exit"
             assert pd.Timestamp(last_trade["exit_time"]).hour == 23
             assert pd.Timestamp(last_trade["exit_time"]).minute == 0
+
+    def test_same_bar_breakeven_trigger_and_initial_stop_conflict(self, sample_evening_session):
+        """
+        Ambiguous OHLC candle touching both +1R breakeven trigger and initial stop
+        on the same bar must resolve conservatively to 'stop_loss', never 'breakeven'.
+        """
+        params = AsianEveningReversionParams(breakeven_trigger_r=1.0, breakeven_lock_pts=0.50)
+        features = calculate_asian_session_features(sample_evening_session, params)
+        signals = generate_signals(features, params)
+        sig_idx = signals[signals["signal"] != 0].index[0]
+        entry_idx = sig_idx + 1
+        bar_k_idx = entry_idx + 1
+
+        ep = float(features.loc[entry_idx, "open"])
+        sp = float(signals.loc[sig_idx, "stop_price"])
+        tp = float(signals.loc[sig_idx, "target_price"])
+        risk = abs(ep - sp)
+
+        # Ensure entry bar itself is benign
+        features.loc[entry_idx, "high"] = ep + 0.25
+        features.loc[entry_idx, "low"] = ep - 0.25
+        features.loc[entry_idx, "close"] = ep
+
+        # On bar k, touch +1R trigger AND touch initial stop (below sp, below tp)
+        features.loc[bar_k_idx, "high"] = min(tp - 0.25, ep + risk + 0.25)
+        features.loc[bar_k_idx, "low"] = sp - 0.50
+        features.loc[bar_k_idx, "close"] = sp
+
+        trades = simulate_intrabar_execution(features, signals, params)
+        assert len(trades) == 1
+        trade = trades.iloc[0]
+        assert trade["exit_reason"] == "stop_loss"
+        assert trade["exit_price"] == pytest.approx(sp, rel=1e-6)
+        assert trade["net_pnl"] < 0
+
+    def test_same_bar_breakeven_trigger_and_target_without_initial_stop(self, sample_evening_session):
+        """
+        Candle that opens at entry price (low <= ep + lock_pts, but low > initial_stop)
+        and rallies through +1R to target_price on the same bar must resolve to 'profit_target',
+        and if it also touches initial_stop it must resolve to 'stop_loss'.
+        """
+        params = AsianEveningReversionParams(breakeven_trigger_r=1.0, breakeven_lock_pts=0.50)
+        features = calculate_asian_session_features(sample_evening_session, params)
+        signals = generate_signals(features, params)
+        sig_idx = signals[signals["signal"] != 0].index[0]
+        entry_idx = sig_idx + 1
+
+        ep = float(features.loc[entry_idx, "open"])
+        sp = float(signals.loc[sig_idx, "stop_price"])
+        tp = float(signals.loc[sig_idx, "target_price"])
+
+        # Case A: Same-bar trigger + target with low = ep (above initial stop, below ep + lock_pts)
+        feat_target = features.copy()
+        feat_target.loc[entry_idx, "open"] = ep
+        feat_target.loc[entry_idx, "low"] = ep          # <= ep + 0.50, but > sp
+        feat_target.loc[entry_idx, "high"] = tp + 0.50  # hits +1R and target
+        feat_target.loc[entry_idx, "close"] = tp
+
+        trades_target = simulate_intrabar_execution(feat_target, signals, params)
+        assert len(trades_target) == 1
+        assert trades_target.iloc[0]["exit_reason"] == "profit_target"
+        assert trades_target.iloc[0]["exit_price"] == pytest.approx(tp, rel=1e-6)
+
+        # Case B: Same-bar trigger + target + initial stop -> must resolve to stop_loss
+        feat_conflict = features.copy()
+        feat_conflict.loc[entry_idx, "open"] = ep
+        feat_conflict.loc[entry_idx, "low"] = sp - 0.25   # hits initial stop
+        feat_conflict.loc[entry_idx, "high"] = tp + 0.50  # hits +1R and target
+        feat_conflict.loc[entry_idx, "close"] = ep
+
+        trades_conflict = simulate_intrabar_execution(feat_conflict, signals, params)
+        assert len(trades_conflict) == 1
+        assert trades_conflict.iloc[0]["exit_reason"] == "stop_loss"
+
+    def test_next_bar_breakeven_ratchet_activates_after_trigger_bar(self, sample_evening_session):
+        """
+        Reaching +1R on bar k without hitting stop or target ratchets the stop to
+        ep + lock_pts starting on bar k + 1, not on bar k.
+        """
+        params = AsianEveningReversionParams(breakeven_trigger_r=1.0, breakeven_lock_pts=0.50, min_rr_ratio=2.0)
+        features = calculate_asian_session_features(sample_evening_session, params)
+        signals = generate_signals(features, params)
+        sig_idx = signals[signals["signal"] != 0].index[0]
+        entry_idx = sig_idx + 1
+        next_idx = entry_idx + 1
+
+        ep = float(features.loc[entry_idx, "open"])
+        sp = float(signals.loc[sig_idx, "stop_price"])
+        risk = abs(ep - sp)
+        tp = ep + 2.0 * risk
+        signals.loc[sig_idx, "target_price"] = tp
+
+        # Entry bar reaches +1R (ep + risk) and has low = ep (which is < ep + 0.50), but > sp
+        features.loc[entry_idx, "open"] = ep
+        features.loc[entry_idx, "low"] = ep
+        features.loc[entry_idx, "high"] = ep + risk + 0.25
+        features.loc[entry_idx, "close"] = ep + risk
+
+        # Next bar pulls back to ep + 0.25 (<= ep + 0.50 breakeven lock) and also spikes to tp
+        features.loc[next_idx, "open"] = ep + risk
+        features.loc[next_idx, "low"] = ep + 0.25
+        features.loc[next_idx, "high"] = tp + 0.50
+        features.loc[next_idx, "close"] = ep + 0.50
+
+        trades = simulate_intrabar_execution(features, signals, params)
+        assert len(trades) == 1
+        trade = trades.iloc[0]
+        assert trade["exit_reason"] == "breakeven"
+        assert trade["exit_price"] == pytest.approx(ep + 0.50, rel=1e-6)
+        assert pd.Timestamp(trade["exit_time"]) == pd.Timestamp(features.loc[next_idx, "time"])
+

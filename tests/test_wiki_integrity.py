@@ -426,6 +426,7 @@ def test_pre_commit_hook_blocks_invalid_wiki_content(tmp_path: Path):
 
     # 2. Copy baseline wiki files and verification scripts into tmp_path
     shutil.copytree(ROOT / "wiki", tmp_path / "wiki")
+    shutil.copytree(ROOT / "config", tmp_path / "config")
 
     scripts_dir = tmp_path / "scripts"
     scripts_dir.mkdir(parents=True)

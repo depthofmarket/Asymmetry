@@ -42,6 +42,12 @@ Earlier NYMEX energy hypotheses at the 09:00 ET pit open (Failed Idea #25), 09:4
 - **Cost Model**: 1-tick entry slippage (`$1.00`/contract), 2-tick adverse stop slippage (`$2.00`/contract), plus `$3.50` round-trip micro energy commission (`$6.50` total round-trip friction on stop-out, `$5.50` on target/time exit).
 - **Bracket Geometry & Pareto Anti-Martingale Ratchet Sizing**:
   - **Base Bracket Distance**: Stop Loss = `$0.45/bbl` (`45` ticks = `$45.00`/micro gross, `$51.50`/micro net); Profit Target = `$0.90/bbl` (`90` ticks = `2.0R`, `$90.00`/micro gross, `$84.50`/micro net); Breakeven Ratchet at `+1.0R` (`+$0.45/bbl` favorable excursion locks stop at entry `+2` ticks); Mandatory Time Exit at `12:30:00 ET`.
+  - **Execution Integrity & Parity Invariants**:
+    - **Candidate Governance**: Automated trading defaults to `false` in `@StudyHeader` and settings; explicit user opt-in required; survives reloads.
+    - **Bar Completion**: 09:30–10:14 box and 10:15–11:15 breakout candles must be complete (`series.isBarComplete(index)`) before signal confirmation.
+    - **Conservative Intrabar Breakeven**: Intrabar conflicts on bar $k$ resolve to stop active at start of bar $k$; +1R breakeven ratchet activates on subsequent bars $k+1$ onwards.
+    - **Broker Stop Management**: Working broker stop is modified in-place via `setAdjStopPrice` without cancelling; stop failure triggers protective policy.
+    - **Fill Price Anchoring**: Bracket stop and target distances are anchored from actual fill price in `onOrderFilled`, with slippage logged.
   - **LucidFlex 25K Pareto Ratchet Scaling (`2 -> 3 -> 4` Micros)**:
 
 | Ratchet Tier | Account Equity Band | Contracts | Net Risk / Trade (Stop) | Net Reward / Trade (Target) |

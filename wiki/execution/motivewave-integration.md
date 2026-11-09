@@ -33,21 +33,32 @@ To bridge the gap between high-level Python econometric research and real-time e
 ## Technical Specification
 
 ### Custom Java Studies in `src/motivewave/`
-1. **`LucidMorningVABreakoutStudy.java`** (52 KB):
+1. **`LucidMorningVABreakoutStudy.java`** (Production Baseline S1):
    - Computes rolling 70% Value Area (VAH/VAL) from prior RTH session.
    - Overlays GARCH(1,1) Model Volatility Target (MVT 0) and standard deviation envelope bands.
    - Evaluates opening range breakout acceptance at 09:45:00 ET.
    - Dynamic sizing via `resolveContracts(OrderContext ctx, int fallbackContracts)`.
    - Emits non-repainting live entry, stop loss, and profit target markers.
-2. **`LucidMacroMomentumStudy.java`** (56 KB):
+2. **`LucidMacroMomentumStudy.java`** (Production Baseline S2):
    - Monitors 08:30:00 ET economic release displacement.
    - Evaluates 5-minute displacement bar at 08:35:00 ET.
-   - Incorporates Markov regime indicator to signal high-volatility sizing reductions.
    - Dynamic sizing via `resolveContracts(OrderContext ctx, int fallbackContracts)`.
-3. **`LucidGoldFixBreakoutStudy.java`** (33 KB):
+3. **`LucidGoldFixBreakoutStudy.java`** (Production Baseline S3):
    - Calculates 10:00–10:15 ET LBMA PM fixing price range on COMEX `MGC`.
    - Triggers long-only structural breakout signals upon 10:15:00 ET auction resolution.
    - Dynamic sizing via `resolveContracts(OrderContext ctx, int fallbackContracts)`.
+4. **`LucidAsianEveningReversionStudy.java`** (Candidate S4):
+   - Evaluates Tokyo session open liquidity sweep and mean reversion (21:00–23:00 ET) on MES/MNQ.
+   - Candidate execution governance: automated execution defaults to `false` (`autoEntry = false`, `DEFAULT_LIVE_AUTOTRADE = false`).
+   - Requires completed 21:14 opening-range candle (`series.isBarComplete(index)`) before signal confirmation for 21:15 entry.
+   - Modifies working broker stop in-place via `setAdjStopPrice` + `submitOrders` at +1R breakeven trigger.
+   - Re-anchors bracket stop and target distances from actual average fill price in `onOrderFilled`.
+5. **`LucidCrudeRthExpansionStudy.java`** (Candidate S5):
+   - Evaluates post-European-fixing range expansion on Micro WTI Crude Oil (MCL / CME NYMEX).
+   - Candidate execution governance: automated execution defaults to `false` (`autoEntry = false`, `DEFAULT_LIVE_AUTOTRADE = false`).
+   - Verifies 09:30–10:14 range box and 10:15–11:15 breakout strictly on completed candles (`series.isBarComplete(index)`).
+   - In-place working stop modification to breakeven (+2 ticks) at +1R excursion without cancelling working brackets.
+   - Mandatory 12:30 ET session flatten and EIA Wednesday inventory report filter.
 
 ### Safe CPPI & Dynamic Account Sizing Resolution (`resolveContracts`)
 All three Java studies integrate native dynamic contract resolution pulling real-time account equity (`cash + realizedPnL + unrealizedPnL`) directly from the MotiveWave `OrderContext`:
@@ -64,6 +75,31 @@ All three Java studies integrate native dynamic contract resolution pulling real
 - Each Java study formats triggered trades, order lifecycle events, and bracket orders into structured alert lines written to a local export directory (`results/forward_test/motivewave_alerts.log`).
 - Alerts include: `TIMESTAMP`, `STUDY_ID`, `SYMBOL`, `ACTION`, `PRICE`, `STOP_LOSS`, `TAKE_PROFIT`, `CONTRACTS`, `REASON`.
 - Python monitoring daemons parse this log in real time to reconcile MotiveWave study intent against CQG broker order receipts.
+
+### Candidate Tier Execution Governance & Invariants (S4 & S5)
+Candidate strategies are segregated from baseline production trading:
+1. **Disabled Auto-Trade by Default**: `@StudyHeader` declares `autoEntry = false`. Constant `DEFAULT_LIVE_AUTOTRADE = false`. Setting `ENABLE_LIVE_AUTOTRADE` defaults to `Boolean.FALSE`.
+2. **Explicit User Opt-In Required**: `isCandidateAutoTradeAuthorized()` requires `isCandidateTier()` and explicit `settings.getBoolean(ENABLE_LIVE_AUTOTRADE)` set by user action.
+3. **Reload Safety**: `onLoad(defaults)` and `initialize(desc)` explicitly sanitize execution state to disabled (`userExplicitlyAuthorizedAutoTrade = false; settings.setAutoEntry(false); settings.setBoolean(ENABLE_LIVE_AUTOTRADE, false);`). Upgrades or workspace reloads cannot silently flip candidate execution to enabled.
+4. **Visual & Acoustic Signals Preserved**: Chart markers, levels, and sound alerts (`ctx.signal` and `Toolkit.beep()`) remain active even when automated execution is disabled, enabling live operator observation.
+
+### Unified Account-Risk State Interface & Fail-Closed Enforcement
+All five Java studies load canonical risk state from `demo_parity_state.json`:
+- **Configurable Path**: Resolves forward-test directory via MotiveWave study setting (`forwardTestDir`), Java System property (`-Dasymmetry.forwardTestDir=...`), environment variable (`ASYMMETRY_FORWARD_TEST_DIR`), local relative path `results/forward_test`, or user home fallback.
+- **Strict File Name**: Reject any non-canonical filename (e.g. `account_state.json`) with `ORDER_BLOCKED_UNVERIFIED_ACCOUNT`.
+- **Validation**: JSON root must be an object; all required numeric fields (`balance`, `peak_balance`, `trailing_floor`, `trailing_cushion`, `current_date_pnl`, `recommended_micros`) must exist and contain finite numbers (`!Double.isNaN() && !Double.isInfinite()`).
+- **Timestamp Staleness Check**: Validates ISO-8601 UTC `updated_at`. If state age exceeds 24 hours (`DEFAULT_MAX_STATE_AGE_MS = 86_400_000L`), automated orders are blocked.
+- **Persistent HWM & Floor Lock**: Preserves historical peak balance and permanent $25,100 floor lock across restarts without resetting to current balance during drawdowns.
+
+### In-Place Broker Breakeven Stop Management
+- **In-Place Modification**: At +1R excursion, the study adjusts the working stop order in-place:
+  ```java
+  trade.slOrder.setAdjStopPrice(newStop);
+  ctx.submitOrders(trade.slOrder);
+  ```
+  Studies NEVER cancel the working stop order when adjusting to breakeven (`ctx.cancelOrders(trade.slOrder)` is prohibited).
+- **Protective Failure Policy (`applyProtectiveFailurePolicy`)**: If modification fails or is rejected, the study verifies whether the original stop order is still working. If working, it retains the original stop and does NOT pretend a tighter stop is active. If the working stop order was dropped, it executes an emergency position flatten (`ctx.closeAtMarket()`).
+- **Partial Fill Quantity Synchronization**: `trade.slOrder.setAdjQuantity(posQty)` and `trade.tpOrder.setAdjQuantity(posQty)` keep bracket sizes strictly aligned with actual filled position.
 
 ### MotiveWave Java SDK Automated Order Execution Invariants (CQG Routing)
 Deep forensic bytecode analysis of MotiveWave runtime (`MotiveWave.jar`, `mwave_sdk.jar`) identified five critical architectural requirements for live automated trading:

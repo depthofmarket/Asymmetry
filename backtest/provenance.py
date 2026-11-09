@@ -685,19 +685,29 @@ class ProvenanceStore:
         include_candidates: bool = False,
     ) -> Optional[ProvenanceRecord]:
         with self._get_connection() as conn:
+            order_by_clause = """
+                ORDER BY
+                    CASE
+                        WHEN run_id LIKE 'run_canonical_%' OR methodology = 'multi_year_walkforward' THEN 0
+                        WHEN methodology NOT IN ('sensitivity_analysis_plateau', 'crn_block_bootstrap_10k_grid_186') THEN 1
+                        ELSE 2
+                    END ASC,
+                    timestamp DESC
+                LIMIT 1
+            """
             if strategy_id:
                 row = conn.execute(
-                    "SELECT * FROM backtest_runs WHERE strategy_id = ? ORDER BY timestamp DESC LIMIT 1",
+                    f"SELECT * FROM backtest_runs WHERE strategy_id = ? {order_by_clause}",
                     (strategy_id.strip(),),
                 ).fetchone()
             else:
                 if include_candidates:
                     row = conn.execute(
-                        "SELECT * FROM backtest_runs ORDER BY timestamp DESC LIMIT 1"
+                        f"SELECT * FROM backtest_runs {order_by_clause}"
                     ).fetchone()
                 else:
                     row = conn.execute(
-                        "SELECT * FROM backtest_runs WHERE strategy_tier IN ('BASELINE', 'FORWARD_DEMO') ORDER BY timestamp DESC LIMIT 1"
+                        f"SELECT * FROM backtest_runs WHERE strategy_tier IN ('BASELINE', 'FORWARD_DEMO') {order_by_clause}"
                     ).fetchone()
 
             if not row:

@@ -20,19 +20,34 @@ from __future__ import annotations
 import csv
 import json
 import math
+import os
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 import numpy as np
 import pandas as pd
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-FORWARD_TEST_DIR = REPO_ROOT / "results" / "forward_test"
+CANONICAL_STATE_FILENAME = "demo_parity_state.json"
+DEFAULT_MAX_STATE_AGE_SECONDS = 86_400.0  # 24 hours
+
+
+def resolve_forward_test_dir(forward_test_dir: Path | str | None = None) -> Path:
+    """Resolve the forward-test directory from explicit arg, environment variable, or repo default."""
+    if forward_test_dir is not None:
+        return Path(forward_test_dir)
+    env_dir = os.environ.get("ASYMMETRY_FORWARD_TEST_DIR") or os.environ.get("LUCIDFLEX_FORWARD_TEST_DIR")
+    if env_dir and env_dir.strip():
+        return Path(env_dir.strip())
+    return REPO_ROOT / "results" / "forward_test"
+
+
+FORWARD_TEST_DIR = resolve_forward_test_dir()
 TRADES_LEDGER_PATH = FORWARD_TEST_DIR / "demo_trades_ledger.csv"
 SESSIONS_LEDGER_PATH = FORWARD_TEST_DIR / "demo_sessions_ledger.csv"
 WINDOWS_LEDGER_PATH = FORWARD_TEST_DIR / "demo_window_evaluations_ledger.csv"
-STATE_JSON_PATH = FORWARD_TEST_DIR / "demo_parity_state.json"
+STATE_JSON_PATH = FORWARD_TEST_DIR / CANONICAL_STATE_FILENAME
 DASHBOARD_HTML_PATH = FORWARD_TEST_DIR / "demo_parity_dashboard.html"
 
 
@@ -65,9 +80,11 @@ INSTRUMENT_SPECS: dict[str, InstrumentSpec] = {
     "MNQ": InstrumentSpec("MNQ", point_value=2.00, tick_size=0.25, default_commission_rt=1.40, is_micro=True),
     "MES": InstrumentSpec("MES", point_value=5.00, tick_size=0.25, default_commission_rt=1.40, is_micro=True),
     "MGC": InstrumentSpec("MGC", point_value=10.00, tick_size=0.10, default_commission_rt=1.50, is_micro=True),
+    "MCL": InstrumentSpec("MCL", point_value=100.00, tick_size=0.01, default_commission_rt=1.50, is_micro=True),
     "NQ": InstrumentSpec("NQ", point_value=20.00, tick_size=0.25, default_commission_rt=4.50, is_micro=False),
     "ES": InstrumentSpec("ES", point_value=50.00, tick_size=0.25, default_commission_rt=4.50, is_micro=False),
     "GC": InstrumentSpec("GC", point_value=100.00, tick_size=0.10, default_commission_rt=4.80, is_micro=False),
+    "CL": InstrumentSpec("CL", point_value=1000.00, tick_size=0.01, default_commission_rt=4.80, is_micro=False),
 }
 
 
@@ -81,6 +98,8 @@ def resolve_instrument(symbol: str) -> InstrumentSpec:
         return INSTRUMENT_SPECS["MES"] if "M" in sym else INSTRUMENT_SPECS["ES"]
     if "GC" in sym:
         return INSTRUMENT_SPECS["MGC"] if "M" in sym else INSTRUMENT_SPECS["GC"]
+    if "CL" in sym:
+        return INSTRUMENT_SPECS["MCL"] if "M" in sym else INSTRUMENT_SPECS["CL"]
     # Default to MNQ
     return INSTRUMENT_SPECS["MNQ"]
 
@@ -218,6 +237,7 @@ class AccountEvalState:
     balance: float = STARTING_CAPITAL
     peak_balance: float = STARTING_CAPITAL
     trailing_floor: float = STARTING_CAPITAL - MAX_TRAILING_DRAWDOWN  # $24,000.00
+    floor_locked: bool = False
     profit: float = 0.0
     distance_to_target: float = PROFIT_TARGET_DOLLARS  # $1,250.00
     trailing_cushion: float = MAX_TRAILING_DRAWDOWN     # $1,000.00
@@ -225,6 +245,7 @@ class AccountEvalState:
     current_date_pnl: float = 0.0
     daily_soft_stop_limit: float = DAILY_SOFT_STOP_DOLLARS  # -$600.00
     distance_to_daily_stop: float = abs(DAILY_SOFT_STOP_DOLLARS)
+    circuit_breaker_hit: bool = False
     status: Literal["ACTIVE", "PASSED", "DAILY_HALTED", "TRAILED_OUT"] = "ACTIVE"
     status_reason: str = "Evaluation in progress"
     trades_count: int = 0
@@ -242,6 +263,8 @@ class AccountEvalState:
     finish_line_shield: bool = False
     garch_decile_halving: bool = False
     defensive_delever: bool = False
+    emergency_delever: bool = False
+    updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
 
 
 def compute_ratchet_sizing(
@@ -274,17 +297,263 @@ def compute_ratchet_sizing(
         return 2, "Tier 1: Capital Shield (2 Micros)", False, False, False
 
 
+def _parse_iso_utc(ts_str: str) -> datetime | None:
+    """Parse an ISO-8601 UTC timestamp string safely."""
+    if not ts_str or not isinstance(ts_str, str):
+        return None
+    s = ts_str.strip()
+    if not s:
+        return None
+    try:
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def verify_and_load_account_state(
+    state_path: Path | str | None = None,
+    forward_test_dir: Path | str | None = None,
+    max_age_seconds: float = DEFAULT_MAX_STATE_AGE_SECONDS,
+    now_utc: datetime | None = None,
+    persisted_peak: float = 0.0,
+    persisted_floor: float = 0.0,
+) -> dict[str, Any]:
+    """
+    Canonical fail-closed account-state verifier shared across Python and Java studies.
+
+    Validates:
+    1. Canonical filename is strictly 'demo_parity_state.json' (rejects 'account_state.json' or others).
+    2. File exists, is a regular file, and contains valid JSON without NaN/Infinity constants.
+    3. All required risk fields exist and are finite numeric values.
+    4. Timestamp ('updated_at') is present, valid ISO-8601, and not stale (> max_age_seconds).
+    5. Historical peak balance and permanent $25,100 floor lock are preserved across restarts.
+    """
+    result: dict[str, Any] = {
+        "verified": False,
+        "error": "",
+        "diagnostic_event": "",
+        "state_path": "",
+        "balance": math.nan,
+        "peak_balance": math.nan,
+        "trailing_floor": math.nan,
+        "trailing_cushion": math.nan,
+        "current_date_pnl": math.nan,
+        "recommended_micros": 0,
+        "floor_locked": False,
+        "circuit_breaker_hit": False,
+        "emergency_delever": False,
+        "finish_line_shield": False,
+        "garch_decile_halving": False,
+        "updated_at": "",
+    }
+
+    if state_path is not None:
+        target = Path(state_path)
+    else:
+        base_dir = resolve_forward_test_dir(forward_test_dir)
+        target = base_dir / CANONICAL_STATE_FILENAME
+
+    result["state_path"] = str(target)
+
+    if target.name != CANONICAL_STATE_FILENAME:
+        result["error"] = f"WRONG_FILENAME: Expected '{CANONICAL_STATE_FILENAME}', got '{target.name}'"
+        result["diagnostic_event"] = f"ORDER_BLOCKED_UNVERIFIED_ACCOUNT ({result['error']})"
+        return result
+
+    if not target.exists() or not target.is_file():
+        result["error"] = f"MISSING_STATE_FILE: '{target}' does not exist"
+        result["diagnostic_event"] = f"ORDER_BLOCKED_UNVERIFIED_ACCOUNT ({result['error']})"
+        return result
+
+    try:
+        raw_text = target.read_text(encoding="utf-8")
+    except Exception as exc:
+        result["error"] = f"UNREADABLE_STATE_FILE: {exc}"
+        result["diagnostic_event"] = f"ORDER_BLOCKED_UNVERIFIED_ACCOUNT ({result['error']})"
+        return result
+
+    if not raw_text or not raw_text.strip():
+        result["error"] = "EMPTY_STATE_FILE"
+        result["diagnostic_event"] = f"ORDER_BLOCKED_UNVERIFIED_ACCOUNT ({result['error']})"
+        return result
+
+    def _reject_non_finite(const_str: str) -> Any:
+        raise ValueError(f"Non-finite JSON constant '{const_str}' is prohibited")
+
+    try:
+        data = json.loads(raw_text, parse_constant=_reject_non_finite)
+    except Exception as exc:
+        result["error"] = f"INVALID_JSON: {exc}"
+        result["diagnostic_event"] = f"ORDER_BLOCKED_UNVERIFIED_ACCOUNT ({result['error']})"
+        return result
+
+    if not isinstance(data, dict):
+        result["error"] = "INVALID_JSON_ROOT: Expected JSON object"
+        result["diagnostic_event"] = f"ORDER_BLOCKED_UNVERIFIED_ACCOUNT ({result['error']})"
+        return result
+
+    required_numeric = (
+        "balance",
+        "peak_balance",
+        "trailing_floor",
+        "trailing_cushion",
+        "current_date_pnl",
+        "recommended_micros",
+    )
+    parsed_num: dict[str, float] = {}
+    for key in required_numeric:
+        if key not in data:
+            result["error"] = f"MISSING_REQUIRED_FIELD: '{key}'"
+            result["diagnostic_event"] = f"ORDER_BLOCKED_UNVERIFIED_ACCOUNT ({result['error']})"
+            return result
+        val = data[key]
+        if isinstance(val, bool) or not isinstance(val, (int, float)):
+            result["error"] = f"NON_NUMERIC_FIELD: '{key}'"
+            result["diagnostic_event"] = f"ORDER_BLOCKED_UNVERIFIED_ACCOUNT ({result['error']})"
+            return result
+        fval = float(val)
+        if not math.isfinite(fval):
+            result["error"] = f"NON_FINITE_FIELD: '{key}'"
+            result["diagnostic_event"] = f"ORDER_BLOCKED_UNVERIFIED_ACCOUNT ({result['error']})"
+            return result
+        parsed_num[key] = fval
+
+    # Timestamp & Staleness Validation
+    now = now_utc.astimezone(timezone.utc) if now_utc is not None else datetime.now(timezone.utc)
+    updated_at_str = data.get("updated_at")
+    if not updated_at_str or not isinstance(updated_at_str, str):
+        result["error"] = "MISSING_TIMESTAMP: 'updated_at' is required"
+        result["diagnostic_event"] = f"ORDER_BLOCKED_UNVERIFIED_ACCOUNT ({result['error']})"
+        return result
+
+    parsed_ts = _parse_iso_utc(updated_at_str)
+    if parsed_ts is None:
+        result["error"] = f"INVALID_TIMESTAMP: '{updated_at_str}'"
+        result["diagnostic_event"] = f"ORDER_BLOCKED_UNVERIFIED_ACCOUNT ({result['error']})"
+        return result
+
+    age_sec = (now - parsed_ts).total_seconds()
+    if age_sec > max_age_seconds:
+        result["error"] = f"STALE_ACCOUNT_STATE: age={age_sec:.1f}s > max_age={max_age_seconds:.1f}s"
+        result["diagnostic_event"] = f"ORDER_BLOCKED_UNVERIFIED_ACCOUNT ({result['error']})"
+        return result
+    if age_sec < -300.0:
+        result["error"] = f"FUTURE_TIMESTAMP_INVALID: skew={age_sec:.1f}s"
+        result["diagnostic_event"] = f"ORDER_BLOCKED_UNVERIFIED_ACCOUNT ({result['error']})"
+        return result
+
+    balance = parsed_num["balance"]
+    raw_peak = parsed_num["peak_balance"]
+    raw_floor = parsed_num["trailing_floor"]
+    raw_micros = int(round(parsed_num["recommended_micros"]))
+
+    if balance <= 0.0 or raw_peak < STARTING_CAPITAL or raw_floor < (STARTING_CAPITAL - MAX_TRAILING_DRAWDOWN):
+        result["error"] = "DOMAIN_INVARIANT_VIOLATION: Invalid balance/peak/floor bounds"
+        result["diagnostic_event"] = f"ORDER_BLOCKED_UNVERIFIED_ACCOUNT ({result['error']})"
+        return result
+
+    if raw_peak + 1e-6 < balance:
+        result["error"] = f"PEAK_BELOW_BALANCE: peak={raw_peak:.2f} < balance={balance:.2f}"
+        result["diagnostic_event"] = f"ORDER_BLOCKED_UNVERIFIED_ACCOUNT ({result['error']})"
+        return result
+
+    if raw_micros < 0 or raw_micros > MAX_FIRM_MICROS:
+        result["error"] = f"INVALID_RECOMMENDED_MICROS: {raw_micros}"
+        result["diagnostic_event"] = f"ORDER_BLOCKED_UNVERIFIED_ACCOUNT ({result['error']})"
+        return result
+
+    # Preserve true historical HWM and permanent $25,100 floor lock across restarts
+    effective_peak = max(STARTING_CAPITAL, raw_peak, persisted_peak if math.isfinite(persisted_peak) else 0.0, balance)
+    raw_floor_locked = bool(data.get("floor_locked", False))
+    floor_locked = (
+        effective_peak >= PEAK_FOR_FLOOR_LOCK
+        or raw_floor >= TRAILING_FLOOR_LOCK
+        or (math.isfinite(persisted_floor) and persisted_floor >= TRAILING_FLOOR_LOCK)
+        or raw_floor_locked
+    )
+    if floor_locked:
+        effective_floor = TRAILING_FLOOR_LOCK
+    else:
+        effective_floor = max(
+            STARTING_CAPITAL - MAX_TRAILING_DRAWDOWN,
+            raw_floor,
+            persisted_floor if math.isfinite(persisted_floor) else 0.0,
+            min(TRAILING_FLOOR_LOCK, effective_peak - MAX_TRAILING_DRAWDOWN),
+        )
+
+    effective_cushion = round(balance - effective_floor, 2)
+    current_date_pnl = parsed_num["current_date_pnl"]
+
+    circuit_breaker_hit = (
+        bool(data.get("circuit_breaker_hit", False))
+        or current_date_pnl <= -500.0
+        or current_date_pnl <= DAILY_SOFT_STOP_DOLLARS
+        or balance <= effective_floor
+        or str(data.get("status", "ACTIVE")) in ("DAILY_HALTED", "TRAILED_OUT")
+    )
+    emergency_delever = (
+        bool(data.get("emergency_delever", False))
+        or bool(data.get("defensive_delever", False))
+        or effective_cushion < 500.0
+    )
+    finish_line_shield = bool(data.get("finish_line_shield", False)) or (balance - STARTING_CAPITAL >= 1150.0)
+    garch_decile_halving = bool(data.get("garch_decile_halving", False))
+
+    result.update({
+        "verified": True,
+        "error": "",
+        "diagnostic_event": "ACCOUNT_STATE_VERIFIED",
+        "balance": round(balance, 2),
+        "peak_balance": round(effective_peak, 2),
+        "trailing_floor": round(effective_floor, 2),
+        "trailing_cushion": effective_cushion,
+        "current_date_pnl": round(current_date_pnl, 2),
+        "recommended_micros": raw_micros,
+        "floor_locked": floor_locked,
+        "circuit_breaker_hit": circuit_breaker_hit,
+        "emergency_delever": emergency_delever,
+        "finish_line_shield": finish_line_shield,
+        "garch_decile_halving": garch_decile_halving,
+        "updated_at": updated_at_str,
+    })
+    return result
+
+
 class DemoParityJournal:
     """Manages the persistent demo trade and session ledgers."""
 
     def __init__(self, forward_test_dir: Path | None = None) -> None:
-        self.forward_test_dir = forward_test_dir or FORWARD_TEST_DIR
+        self.forward_test_dir = resolve_forward_test_dir(forward_test_dir)
         self.trades_ledger_path = self.forward_test_dir / "demo_trades_ledger.csv"
         self.sessions_ledger_path = self.forward_test_dir / "demo_sessions_ledger.csv"
         self.windows_ledger_path = self.forward_test_dir / "demo_window_evaluations_ledger.csv"
-        self.state_json_path = self.forward_test_dir / "demo_parity_state.json"
+        self.state_json_path = self.forward_test_dir / CANONICAL_STATE_FILENAME
         self.dashboard_html_path = self.forward_test_dir / "demo_parity_dashboard.html"
         self.forward_test_dir.mkdir(parents=True, exist_ok=True)
+
+    def _read_prior_persisted_hwm(self) -> tuple[float, float, bool]:
+        """Read previously persisted peak_balance and floor_locked from demo_parity_state.json if present."""
+        if not self.state_json_path.exists():
+            return STARTING_CAPITAL, STARTING_CAPITAL - MAX_TRAILING_DRAWDOWN, False
+        try:
+            data = json.loads(self.state_json_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return STARTING_CAPITAL, STARTING_CAPITAL - MAX_TRAILING_DRAWDOWN, False
+            p_peak = float(data.get("peak_balance", STARTING_CAPITAL))
+            p_floor = float(data.get("trailing_floor", STARTING_CAPITAL - MAX_TRAILING_DRAWDOWN))
+            p_locked = bool(data.get("floor_locked", False))
+            if not math.isfinite(p_peak):
+                p_peak = STARTING_CAPITAL
+            if not math.isfinite(p_floor):
+                p_floor = STARTING_CAPITAL - MAX_TRAILING_DRAWDOWN
+            return p_peak, p_floor, p_locked
+        except Exception:
+            return STARTING_CAPITAL, STARTING_CAPITAL - MAX_TRAILING_DRAWDOWN, False
 
     def load_trades_df(self) -> pd.DataFrame:
         if not self.trades_ledger_path.exists():
@@ -342,32 +611,56 @@ class DemoParityJournal:
         """Compute the up-to-date LucidFlex 25K account state and execution analytics."""
         df_trades = self.load_trades_df()
         df_sessions = self.load_sessions_df()
-        state = AccountEvalState()
+        prior_peak, prior_floor, prior_locked = self._read_prior_persisted_hwm()
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        state = AccountEvalState(updated_at=now_iso)
 
         if df_trades.empty or "net_pnl" not in df_trades.columns:
+            peak = max(STARTING_CAPITAL, prior_peak)
+            floor = max(STARTING_CAPITAL - MAX_TRAILING_DRAWDOWN, prior_floor)
             if not df_sessions.empty and "date" in df_sessions.columns:
+                for _, srow in df_sessions.iterrows():
+                    if pd.notna(srow.get("end_of_day_balance")):
+                        sb = float(srow["end_of_day_balance"])
+                        if sb > peak:
+                            peak = sb
                 latest_sess = df_sessions.iloc[-1]
                 sess_date = str(latest_sess["date"])
                 sess_bal = float(latest_sess.get("end_of_day_balance", STARTING_CAPITAL)) if pd.notna(latest_sess.get("end_of_day_balance")) else STARTING_CAPITAL
+                sess_pnl = float(latest_sess.get("day_net_pnl", 0.0)) if pd.notna(latest_sess.get("day_net_pnl")) else 0.0
                 state.current_date = sess_date
+                state.current_date_pnl = round(sess_pnl, 2)
                 state.balance = round(sess_bal, 2)
-                state.peak_balance = round(max(state.peak_balance, sess_bal), 2)
-                state.trailing_floor = round(min(TRAILING_FLOOR_LOCK, state.peak_balance - MAX_TRAILING_DRAWDOWN), 2)
-                state.trailing_cushion = round(state.balance - state.trailing_floor, 2)
-                state.profit = round(state.balance - STARTING_CAPITAL, 2)
-                state.distance_to_target = round(max(0.0, TARGET_BALANCE - state.balance), 2)
-                rec_m, rec_t, shield, delever, garch_c = compute_ratchet_sizing(state.profit, state.trailing_cushion)
-                state.recommended_micros = rec_m
-                state.recommended_tier = rec_t
-                state.finish_line_shield = shield
-                state.defensive_delever = delever
-                state.garch_decile_halving = garch_c
+                peak = max(peak, sess_bal)
+            state.peak_balance = round(peak, 2)
+            floor_locked = prior_locked or (state.peak_balance >= PEAK_FOR_FLOOR_LOCK) or (floor >= TRAILING_FLOOR_LOCK)
+            if floor_locked:
+                state.trailing_floor = TRAILING_FLOOR_LOCK
+            else:
+                state.trailing_floor = round(max(floor, min(TRAILING_FLOOR_LOCK, state.peak_balance - MAX_TRAILING_DRAWDOWN)), 2)
+            state.floor_locked = state.trailing_floor >= TRAILING_FLOOR_LOCK
+            state.trailing_cushion = round(state.balance - state.trailing_floor, 2)
+            state.profit = round(state.balance - STARTING_CAPITAL, 2)
+            state.distance_to_target = round(max(0.0, TARGET_BALANCE - state.balance), 2)
+            rec_m, rec_t, shield, delever, garch_c = compute_ratchet_sizing(state.profit, state.trailing_cushion)
+            state.recommended_micros = rec_m
+            state.recommended_tier = rec_t
+            state.finish_line_shield = shield
+            state.defensive_delever = delever
+            state.emergency_delever = delever
+            state.garch_decile_halving = garch_c
+            state.circuit_breaker_hit = (state.current_date_pnl <= DAILY_SOFT_STOP_DOLLARS) or (state.balance <= state.trailing_floor)
             return state
 
-        # Track sequential balance, peak, and trailing floor
+        # Track sequential balance, peak, and trailing floor (preserving any prior HWM across restarts)
         balance = STARTING_CAPITAL
-        peak = STARTING_CAPITAL
-        trailing_floor = STARTING_CAPITAL - MAX_TRAILING_DRAWDOWN
+        peak = max(STARTING_CAPITAL, prior_peak)
+        trailing_floor = max(STARTING_CAPITAL - MAX_TRAILING_DRAWDOWN, prior_floor)
+        if prior_locked or peak >= PEAK_FOR_FLOOR_LOCK or trailing_floor >= TRAILING_FLOOR_LOCK:
+            trailing_floor = TRAILING_FLOOR_LOCK
+        else:
+            trailing_floor = max(trailing_floor, min(TRAILING_FLOOR_LOCK, peak - MAX_TRAILING_DRAWDOWN))
+
         wins = 0
         losses = 0
         gross_wins = 0.0
@@ -386,7 +679,7 @@ class DemoParityJournal:
             sym = str(row.get("symbol", "MNQ")).upper()
 
             # Contract limit check: 1 mini or 10 micros
-            is_mini = "MNQ" not in sym and "MES" not in sym and "MGC" not in sym
+            is_mini = "MNQ" not in sym and "MES" not in sym and "MGC" not in sym and "MCL" not in sym
             if (is_mini and qty > MAX_FIRM_MINIS) or (not is_mini and qty > MAX_FIRM_MICROS):
                 contract_limit_breached = True
 
@@ -395,7 +688,10 @@ class DemoParityJournal:
 
             if balance > peak:
                 peak = balance
-                trailing_floor = min(TRAILING_FLOOR_LOCK, peak - MAX_TRAILING_DRAWDOWN)
+            if peak >= PEAK_FOR_FLOOR_LOCK or trailing_floor >= TRAILING_FLOOR_LOCK:
+                trailing_floor = TRAILING_FLOOR_LOCK
+            else:
+                trailing_floor = max(trailing_floor, min(TRAILING_FLOOR_LOCK, peak - MAX_TRAILING_DRAWDOWN))
 
             if net > 0:
                 wins += 1
@@ -410,6 +706,21 @@ class DemoParityJournal:
                 exit_slips_ticks.append(float(row["exit_slippage_ticks"]))
             if "execution_drag_dollars" in row and pd.notna(row["execution_drag_dollars"]):
                 total_drag += float(row["execution_drag_dollars"])
+
+        if not df_sessions.empty and "end_of_day_balance" in df_sessions.columns:
+            for _, srow in df_sessions.iterrows():
+                if pd.notna(srow.get("end_of_day_balance")):
+                    sb = float(srow["end_of_day_balance"])
+                    if sb > peak:
+                        peak = sb
+            if peak >= PEAK_FOR_FLOOR_LOCK or trailing_floor >= TRAILING_FLOOR_LOCK:
+                trailing_floor = TRAILING_FLOOR_LOCK
+            else:
+                trailing_floor = max(trailing_floor, min(TRAILING_FLOOR_LOCK, peak - MAX_TRAILING_DRAWDOWN))
+
+        floor_locked = (peak >= PEAK_FOR_FLOOR_LOCK) or (trailing_floor >= TRAILING_FLOOR_LOCK) or prior_locked
+        if floor_locked:
+            trailing_floor = TRAILING_FLOOR_LOCK
 
         profit = balance - STARTING_CAPITAL
         dist_target = max(0.0, TARGET_BALANCE - balance)
@@ -450,12 +761,14 @@ class DemoParityJournal:
 
         # Anti-Martingale Ratchet sizing with Protective Shields
         rec_micros, rec_tier, shield, delever, garch_cut = compute_ratchet_sizing(profit, trailing_cushion)
+        circuit_breaker_hit = (latest_day_pnl <= DAILY_SOFT_STOP_DOLLARS) or (balance <= trailing_floor) or (status in ("DAILY_HALTED", "TRAILED_OUT"))
 
         state = AccountEvalState(
             starting_capital=STARTING_CAPITAL,
             balance=round(balance, 2),
             peak_balance=round(peak, 2),
             trailing_floor=round(trailing_floor, 2),
+            floor_locked=floor_locked,
             profit=round(profit, 2),
             distance_to_target=round(dist_target, 2),
             trailing_cushion=round(trailing_cushion, 2),
@@ -463,6 +776,7 @@ class DemoParityJournal:
             current_date_pnl=round(latest_day_pnl, 2),
             daily_soft_stop_limit=DAILY_SOFT_STOP_DOLLARS,
             distance_to_daily_stop=round(dist_daily_stop, 2),
+            circuit_breaker_hit=circuit_breaker_hit,
             status=status,
             status_reason=status_reason,
             trades_count=total_trades,
@@ -480,6 +794,8 @@ class DemoParityJournal:
             finish_line_shield=shield,
             garch_decile_halving=garch_cut,
             defensive_delever=delever,
+            emergency_delever=delever,
+            updated_at=now_iso,
         )
         return state
 
@@ -618,6 +934,8 @@ class DemoParityJournal:
 
     def save_state_json(self, state: AccountEvalState) -> None:
         """Write current evaluation state to JSON for external tools/dashboards."""
+        if not state.updated_at:
+            state.updated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         with open(self.state_json_path, "w", encoding="utf-8") as f:
             json.dump(asdict(state), f, indent=2)
 
