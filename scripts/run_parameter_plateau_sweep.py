@@ -367,7 +367,8 @@ def sweep_s3_min_fix_return(s3_base: pd.DataFrame, calendar: List[str]) -> List[
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Dark-Mode Charting Engine
+# ─────────────────────────────────────────────────────────────────────────────
+# Institutional White-Palette Charting Engine
 # ─────────────────────────────────────────────────────────────────────────────
 
 def plot_strategy_plateau_chart(
@@ -376,17 +377,21 @@ def plot_strategy_plateau_chart(
     sweeps: Dict[str, List[Dict[str, Any]]],
     output_path: Path,
 ) -> None:
-    """Generates a high-resolution 3x4 dark-mode grid for a single strategy's 3 parameters."""
-    plt.style.use("dark_background")
+    """Generates an institutional hedge-fund standard 3x4 grid for a single strategy's 3 parameters."""
+    plt.rcParams["font.sans-serif"] = ["Helvetica Neue", "Helvetica", "Arial", "DejaVu Sans"]
+    plt.rcParams["axes.edgecolor"] = "#CBD5E1"
+    plt.rcParams["axes.linewidth"] = 0.8
+    plt.rcParams["text.parse_math"] = False
+
     fig, axes = plt.subplots(3, 4, figsize=(18, 11), dpi=300)
-    fig.patch.set_facecolor("#0B0E14")
+    fig.patch.set_facecolor("#FFFFFF")
 
     param_names = list(sweeps.keys())
     metric_cols = [
-        ("sharpe_ratio", "Sharpe Ratio (Ann.)", "#38BDF8"),
-        ("net_pnl", "Net PnL ($)", "#10B981"),
-        ("profit_factor", "Profit Factor", "#F59E0B"),
-        ("win_rate", "Win Rate (%)", "#A78BFA"),
+        ("sharpe_ratio", "Sharpe Ratio (Ann.)", "#2563EB"),
+        ("net_pnl", "Net PnL ($)", "#059669"),
+        ("profit_factor", "Profit Factor", "#D97706"),
+        ("win_rate", "Win Rate (%)", "#7C3AED"),
     ]
 
     for row_idx, param_key in enumerate(param_names):
@@ -401,57 +406,80 @@ def plot_strategy_plateau_chart(
 
         for col_idx, (m_key, m_name, color) in enumerate(metric_cols):
             ax = axes[row_idx, col_idx]
-            ax.set_facecolor("#111620")
+            ax.set_facecolor("#FFFFFF")
             y_vals = [d[m_key] for d in data]
 
             # Shaded core plateau corridor [-12.5%, +12.5%]
-            ax.axvspan(-12.5, 12.5, color="#10B981", alpha=0.08, label="Plateau Zone" if row_idx == 0 and col_idx == 0 else "")
+            ax.axvspan(-12.5, 12.5, color="#ECFDF5", alpha=0.7, zorder=1)
+            ax.axvline(-12.5, color="#10B981", linestyle="--", linewidth=0.8, alpha=0.5, zorder=1)
+            ax.axvline(12.5, color="#10B981", linestyle="--", linewidth=0.8, alpha=0.5, zorder=1)
 
             # Baseline reference horizontal line
-            ax.axhline(y_vals[2], color="#64748B", linestyle=":", linewidth=1.1, alpha=0.8)
+            ax.axhline(y_vals[2], color="#94A3B8", linestyle=":", linewidth=1.1, alpha=0.9, zorder=2)
 
             # Curve
-            ax.plot(x_deltas, y_vals, color=color, marker="o", linewidth=2.2, markersize=6, alpha=0.95)
+            ax.plot(x_deltas, y_vals, color=color, marker="o", linewidth=2.0, markersize=5.5, zorder=3)
 
             # Star on baseline point
-            ax.scatter(0.0, y_vals[2], color="#FBBF24", s=90, marker="*", zorder=5, label="Base (0%)" if row_idx == 0 and col_idx == 0 else "")
+            ax.scatter(0.0, y_vals[2], color="#D97706", s=80, marker="*", zorder=4, edgecolor="#78350F", linewidth=0.8)
 
             # Formatting
+            ax.set_xlim(-29, 29)
             ax.set_xticks(x_deltas)
-            ax.set_xticklabels([f"{d:+.1f}%" for d in x_deltas], fontsize=8, color="#94A3B8")
-            ax.grid(True, linestyle="--", alpha=0.2, color="#334155")
-            ax.tick_params(colors="#94A3B8", labelsize=8)
+            ax.set_xticklabels([f"{d:+.1f}%" for d in x_deltas], fontsize=8, color="#475569")
+            ax.grid(True, linestyle="--", alpha=0.5, color="#E2E8F0")
+            ax.tick_params(colors="#475569", labelsize=8)
+
+            # Y-axis limits with 25% top padding to ensure data labels NEVER collide with top spine
+            min_y = min(y_vals)
+            max_y = max(y_vals)
+            span_y = max_y - min_y
+            if span_y <= 0:
+                span_y = max(abs(max_y) * 0.1, 1.0)
+            ax.set_ylim(min_y - 0.12 * span_y, max_y + 0.28 * span_y)
 
             # Title on each plot
             if col_idx == 0:
-                ax.set_ylabel(f"{param_key}\n(Base: {base_val})\n\n{m_name}", fontsize=9, fontweight="bold", color="#E2E8F0")
+                ax.set_ylabel(f"{param_key}\n(Base: {base_val})\n\n{m_name}", fontsize=8.5, fontweight="bold", color="#0F172A")
             else:
-                ax.set_ylabel(m_name, fontsize=8, color="#94A3B8")
+                ax.set_ylabel(m_name, fontsize=8, color="#475569")
 
-            # Value annotations on points
+            # Value annotations on points with boundary-aware horizontal offsets
             for x, y, p_v in zip(x_deltas, y_vals, param_vals):
                 val_txt = f"${y:,.0f}" if "PnL" in m_name else f"{y:.2f}"
                 if "%" in m_name:
                     val_txt = f"{y:.1f}%"
-                ax.annotate(val_txt, xy=(x, y), xytext=(0, 6), textcoords="offset points", ha="center", fontsize=7, color="#E2E8F0", alpha=0.9)
+                if x == min(x_deltas):
+                    ha_pos = "left"
+                    x_off = 4
+                elif x == max(x_deltas):
+                    ha_pos = "right"
+                    x_off = -4
+                else:
+                    ha_pos = "center"
+                    x_off = 0
+                ax.annotate(val_txt, xy=(x, y), xytext=(x_off, 6), textcoords="offset points",
+                            ha=ha_pos, fontsize=7.2, fontweight="medium", color="#0F172A", zorder=5)
 
         # Row header text
+        badge_color = "#059669" if verdict == "ROBUST_PLATEAU" else "#DC2626"
         axes[row_idx, 1].set_title(
             f"Param: {param_key} | Base: {base_val} | Plateau Stability: {stab_ratio:.2f}x | {verdict}",
-            fontsize=10,
+            fontsize=9.5,
             fontweight="bold",
-            color="#38BDF8" if verdict == "ROBUST_PLATEAU" else "#EF4444",
+            color=badge_color,
             pad=10,
         )
 
     fig.suptitle(
-        f"Step 07 Sensitivity Analysis (The Plateau Principle) — {strat_title}\nStrategy ID: {strat_id} | Data SHA-256: {EXPECTED_SHA256[:16]}... | Verified Net Execution",
-        fontsize=13,
+        f"Step 07 Sensitivity Analysis (The Plateau Principle) — {strat_title}\n"
+        f"Strategy ID: {strat_id} | Data SHA-256: {EXPECTED_SHA256[:16]}... | Verified Net Execution",
+        fontsize=12.5,
         fontweight="bold",
-        color="#F8FAFC",
-        y=0.98,
+        color="#0F172A",
+        y=0.985,
     )
-    plt.tight_layout(rect=[0, 0.02, 1, 0.95])
+    plt.tight_layout(rect=[0.01, 0.02, 0.99, 0.94])
     fig.savefig(output_path, facecolor=fig.get_facecolor(), edgecolor="none", dpi=300)
     plt.close(fig)
     print(f"  [Saved Chart] {output_path.name}")
@@ -462,24 +490,28 @@ def plot_composite_overview(
     output_path: Path,
 ) -> None:
     """Generates the master composite overview dashboard comparing all 9 parameters across the 3 strategies."""
-    plt.style.use("dark_background")
+    plt.rcParams["font.sans-serif"] = ["Helvetica Neue", "Helvetica", "Arial", "DejaVu Sans"]
+    plt.rcParams["axes.edgecolor"] = "#CBD5E1"
+    plt.rcParams["axes.linewidth"] = 0.8
+    plt.rcParams["text.parse_math"] = False
+
     fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(18, 12), dpi=300)
-    fig.patch.set_facecolor("#0B0E14")
+    fig.patch.set_facecolor("#FFFFFF")
 
     for ax in (ax1, ax2, ax3, ax4):
-        ax.set_facecolor("#111620")
-        ax.grid(True, linestyle="--", alpha=0.2, color="#334155")
-        ax.tick_params(colors="#94A3B8")
+        ax.set_facecolor("#FFFFFF")
+        ax.grid(True, linestyle="--", alpha=0.5, color="#E2E8F0")
+        ax.tick_params(colors="#475569")
 
     palette = {
-        ("morning_va_breakout_s1", "target_rr"): ("#38BDF8", "-"),
-        ("morning_va_breakout_s1", "stop_loss_mult"): ("#0284C7", "--"),
-        ("morning_va_breakout_s1", "garch_mvt_exhaustion_sd"): ("#0369A1", "-."),
-        ("macro_momentum_s2", "target_rr"): ("#10B981", "-"),
-        ("macro_momentum_s2", "stop_points"): ("#059669", "--"),
+        ("morning_va_breakout_s1", "target_rr"): ("#2563EB", "-"),
+        ("morning_va_breakout_s1", "stop_loss_mult"): ("#3B82F6", "--"),
+        ("morning_va_breakout_s1", "garch_mvt_exhaustion_sd"): ("#1D4ED8", "-."),
+        ("macro_momentum_s2", "target_rr"): ("#059669", "-"),
+        ("macro_momentum_s2", "stop_points"): ("#10B981", "--"),
         ("macro_momentum_s2", "min_volume_mult"): ("#047857", "-."),
-        ("gold_london_fix_s3", "target_rr"): ("#F59E0B", "-"),
-        ("gold_london_fix_s3", "stop_ticks"): ("#D97706", "--"),
+        ("gold_london_fix_s3", "target_rr"): ("#D97706", "-"),
+        ("gold_london_fix_s3", "stop_ticks"): ("#F59E0B", "--"),
         ("gold_london_fix_s3", "min_fix_return"): ("#B45309", "-."),
     }
 
@@ -491,19 +523,19 @@ def plot_composite_overview(
             sharpe_vals = [d["sharpe_ratio"] for d in data]
             pnl_vals = [d["net_pnl"] for d in data]
             pf_vals = [d["profit_factor"] for d in data]
-            color, ls = palette.get((strat_id, p_name), ("#94A3B8", "-"))
+            color, ls = palette.get((strat_id, p_name), ("#64748B", "-"))
             label = f"{strat_id[:8]}.. | {p_name}"
 
             # Panel 1: Sharpe Ratio Curves
-            ax1.plot(deltas_pct, sharpe_vals, color=color, linestyle=ls, marker="o", markersize=4, label=label, alpha=0.9)
+            ax1.plot(deltas_pct, sharpe_vals, color=color, linestyle=ls, marker="o", markersize=4, label=label, alpha=0.95, zorder=3)
 
             # Panel 2: Normalized Net PnL (Base = 100)
             base_pnl = pnl_vals[2]
             norm_pnl = [(p / base_pnl) * 100.0 for p in pnl_vals]
-            ax2.plot(deltas_pct, norm_pnl, color=color, linestyle=ls, marker="s", markersize=4, label=label, alpha=0.9)
+            ax2.plot(deltas_pct, norm_pnl, color=color, linestyle=ls, marker="s", markersize=4, label=label, alpha=0.95, zorder=3)
 
             # Panel 3: Profit Factor Curves
-            ax3.plot(deltas_pct, pf_vals, color=color, linestyle=ls, marker="^", markersize=4, label=label, alpha=0.9)
+            ax3.plot(deltas_pct, pf_vals, color=color, linestyle=ls, marker="^", markersize=4, label=label, alpha=0.95, zorder=3)
 
             # Compute Stability
             stab_pnl, v_pnl = compute_stability_ratio(pnl_vals, base_pnl)
@@ -518,50 +550,53 @@ def plot_composite_overview(
 
     # Shaded plateau corridors
     for ax in (ax1, ax2, ax3):
-        ax.axvspan(-12.5, 12.5, color="#10B981", alpha=0.08)
+        ax.axvspan(-12.5, 12.5, color="#ECFDF5", alpha=0.7, zorder=1)
+        ax.axvline(-12.5, color="#10B981", linestyle="--", linewidth=0.8, alpha=0.5, zorder=1)
+        ax.axvline(12.5, color="#10B981", linestyle="--", linewidth=0.8, alpha=0.5, zorder=1)
         ax.set_xticks([-25, -12.5, 0, 12.5, 25])
         ax.set_xticklabels(["-25%", "-12.5%", "0% (Base)", "+12.5%", "+25%"])
-        ax.set_xlabel("Parameter Shift (%)", fontsize=9, color="#94A3B8")
+        ax.set_xlabel("Parameter Shift (%)", fontsize=9, fontweight="bold", color="#0F172A")
 
-    ax1.set_title("Panel A: Sharpe Ratio Sensitivity Across All 9 Core Parameters", fontsize=11, fontweight="bold", color="#F8FAFC")
-    ax1.set_ylabel("Annualized Sharpe Ratio", fontsize=9, color="#94A3B8")
-    ax1.legend(loc="upper left", fontsize=7, facecolor="#0E131C", edgecolor="#334155", ncol=2)
+    ax1.set_title("Panel A: Sharpe Ratio Sensitivity Across All 9 Core Parameters", fontsize=11, fontweight="bold", color="#0F172A", pad=8)
+    ax1.set_ylabel("Annualized Sharpe Ratio", fontsize=9, fontweight="bold", color="#0F172A")
+    ax1.legend(loc="upper left", fontsize=7.5, facecolor="#FFFFFF", edgecolor="#CBD5E1", ncol=2)
 
-    ax2.set_title("Panel B: Normalized Net PnL Response (Base = 100%)", fontsize=11, fontweight="bold", color="#F8FAFC")
-    ax2.set_ylabel("Normalized Net PnL (%)", fontsize=9, color="#94A3B8")
-    ax2.axhline(100.0, color="#64748B", linestyle=":", linewidth=1.2)
+    ax2.set_title("Panel B: Normalized Net PnL Response (Base = 100%)", fontsize=11, fontweight="bold", color="#0F172A", pad=8)
+    ax2.set_ylabel("Normalized Net PnL (%)", fontsize=9, fontweight="bold", color="#0F172A")
+    ax2.axhline(100.0, color="#64748B", linestyle=":", linewidth=1.2, zorder=2)
 
-    ax3.set_title("Panel C: Profit Factor Across +/-25% Parameter Shifts", fontsize=11, fontweight="bold", color="#F8FAFC")
-    ax3.set_ylabel("Profit Factor", fontsize=9, color="#94A3B8")
-    ax3.axhline(1.0, color="#EF4444", linestyle="--", linewidth=1.0, alpha=0.8, label="Breakeven (PF = 1.0)")
+    ax3.set_title("Panel C: Profit Factor Across +/-25% Parameter Shifts", fontsize=11, fontweight="bold", color="#0F172A", pad=8)
+    ax3.set_ylabel("Profit Factor", fontsize=9, fontweight="bold", color="#0F172A")
+    ax3.axhline(1.0, color="#DC2626", linestyle="--", linewidth=1.0, alpha=0.9, label="Breakeven (PF = 1.0)", zorder=2)
 
     # Panel 4: Bar chart of Stability Ratios vs 0.70 threshold
     df_stab = pd.DataFrame(stability_records)
     y_pos = np.arange(len(df_stab))
     names = [f"{r['strategy'].replace('_s1','').replace('_s2','').replace('_s3','')}\n{r['param']}" for _, r in df_stab.iterrows()]
-    bar_colors = ["#10B981" if r["stab_pnl"] >= 0.70 else "#EF4444" for _, r in df_stab.iterrows()]
+    bar_colors = ["#059669" if r["stab_pnl"] >= 0.70 else "#DC2626" for _, r in df_stab.iterrows()]
 
-    bars = ax4.barh(y_pos, df_stab["stab_pnl"], color=bar_colors, alpha=0.85, height=0.65)
-    ax4.axvline(0.70, color="#EF4444", linestyle="--", linewidth=1.5, label="Belfort Threshold (0.70x)")
-    ax4.axvline(1.00, color="#38BDF8", linestyle=":", linewidth=1.2, label="Perfect Plateau (1.00x)")
+    bars = ax4.barh(y_pos, df_stab["stab_pnl"], color=bar_colors, alpha=0.85, height=0.65, zorder=3)
+    ax4.axvline(0.70, color="#DC2626", linestyle="--", linewidth=1.5, label="Belfort Threshold (0.70x)", zorder=2)
+    ax4.axvline(1.00, color="#2563EB", linestyle=":", linewidth=1.2, label="Perfect Plateau (1.00x)", zorder=2)
     ax4.set_yticks(y_pos)
-    ax4.set_yticklabels(names, fontsize=7.5, color="#E2E8F0")
-    ax4.set_xlabel("Plateau Stability Ratio (Mean PnL at +/-25% / Base PnL)", fontsize=9, color="#94A3B8")
-    ax4.set_title("Panel D: Plateau Stability Ratio Scorecard (Target >= 0.70)", fontsize=11, fontweight="bold", color="#F8FAFC")
-    ax4.legend(loc="lower right", fontsize=8, facecolor="#0E131C", edgecolor="#334155")
+    ax4.set_yticklabels(names, fontsize=7.5, color="#0F172A")
+    ax4.set_xlabel("Plateau Stability Ratio (Mean PnL at +/-25% / Base PnL)", fontsize=9, fontweight="bold", color="#0F172A")
+    ax4.set_title("Panel D: Plateau Stability Ratio Scorecard (Target >= 0.70)", fontsize=11, fontweight="bold", color="#0F172A", pad=8)
+    ax4.legend(loc="lower right", fontsize=8, facecolor="#FFFFFF", edgecolor="#CBD5E1")
+    ax4.set_xlim(0, 1.15)
 
     for bar, val in zip(bars, df_stab["stab_pnl"]):
-        ax4.text(val + 0.02, bar.get_y() + bar.get_height() / 2, f"{val:.2f}x (ROBUST)", va="center", ha="left", fontsize=7.5, color="#E2E8F0", fontweight="bold")
+        ax4.text(val + 0.02, bar.get_y() + bar.get_height() / 2, f"{val:.2f}x (ROBUST)", va="center", ha="left", fontsize=7.5, color="#0F172A", fontweight="bold")
 
     fig.suptitle(
         "Belfort Systematic Trading Framework (2026) — Step 07: The Plateau Principle Composite Overview\n"
         "Multi-Asset Tri-Window Ensemble | 543 Verified Trades (2021-2026) | All 9 Parameters Confirmed Robust Plateaus",
-        fontsize=13,
+        fontsize=12.5,
         fontweight="bold",
-        color="#F8FAFC",
-        y=0.98,
+        color="#0F172A",
+        y=0.985,
     )
-    plt.tight_layout(rect=[0, 0.02, 1, 0.95])
+    plt.tight_layout(rect=[0.01, 0.02, 0.99, 0.94])
     fig.savefig(output_path, facecolor=fig.get_facecolor(), edgecolor="none", dpi=300)
     plt.close(fig)
     print(f"  [Saved Composite Chart] {output_path.name}")

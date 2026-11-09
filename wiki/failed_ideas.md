@@ -54,6 +54,9 @@ This ledger is an append-only record of all research hypotheses, sizing policies
 42. [H42: 80% Value Area Re-Acceptance Rotation (MNQ/MES)](#42-h42-80-value-area-re-acceptance-rotation-mnqmes-2026-11-07)
 43. [H43: Multi-Session Inside-Day Coiled Spring Breakout (MNQ)](#43-h43-multi-session-inside-day-coiled-spring-breakout-mnq-2026-11-07)
 44. [H44: Shanghai Gold Exchange AM Benchmark Fix Arbitrage Drive (21:15 ET on MGC)](#44-h44-shanghai-gold-exchange-am-benchmark-fix-arbitrage-drive-2115-et-on-mgc-2026-11-07)
+45. [H45: 10:00 AM ET Tier-2 Macro Surprise Momentum Drive (MNQ/MES)](#45-h45-1000-am-et-tier-2-macro-surprise-momentum-drive-mnqmes-2026-11-07)
+46. [H46: 09:45 ET Unanimous Breadth Clones on MYM/M2K with Static 1-Micro Sizing](#46-h46-0945-et-unanimous-breadth-clones-on-mymm2k-with-static-1-micro-sizing-2026-11-08)
+47. [H47: Unconditioned Evening Session VWAP Band Mean Reversion (21:00–23:00 ET on MES)](#47-h47-unconditioned-evening-session-vwap-band-mean-reversion-21002300-et-on-mes-2026-11-08)
 
 ---
 
@@ -517,13 +520,35 @@ This ledger is an append-only record of all research hypotheses, sizing policies
 - **Structural Root Cause**: The isolated profitability in 2024–2025 was an ephemeral macro artifact of Chinese domestic capital flight and PBOC sovereign gold reserve accumulation. Due to strict PBOC import quotas, domestic Chinese demand drove the Shanghai Gold Premium to historic extremes ($50–$120/oz over international spot), sparking transient overnight speculative drives. However, once the PBOC paused official purchases and Chinese regulators tightened domestic speculative trading, the Shanghai premium normalized to historical parity. In 2026, the disappearance of the artificial premium caused the strategy to collapse (19.4% win rate, PF 0.59). Across normal market regimes (2020–2023), Globex Asian hours (21:15–22:15 ET) suffer from low liquidity, wider spreads, and zero systematic directional drift, bleeding capital to execution friction.
 - **Standing Rule**: Standalone Asian session / Shanghai fix momentum strategies on COMEX gold without verified real-time Shanghai-London physical premium divergence data are permanently rejected.
 
+### 45. H45: 10:00 AM ET Tier-2 Macro Surprise Momentum Drive (MNQ/MES) (2026-11-07)
+- **Evaluation Date**: 2026-11-07
+- **Author / Agent**: Red-Team Quantitative Adversary (`adversarial_auditor`)
+- **Core Premise**: Replicating Strategy 2 pre-market macro momentum mechanics at 10:00 AM ET on MNQ and MES, entering directional breakouts following Tier-2 macroeconomic data releases (ISM Manufacturing, ISM Services, CB Consumer Confidence, New Home Sales) under the hypothesis that macro news shocks create persistent trend extensions during cash trading.
+- **Sample/Artifact**: 753 trades across 2020–2026 (368 MNQ, 385 MES) (`nq_1m_2017_2026_cqg_et.parquet` SHA-256: `c9d78a716f5afe040c590fc974e980edfee029081ba47875f041b034c38b737a` & `es_1m_2020_2026_cqg_et.parquet` SHA-256: `36f0a1042b9981b8166c32d2aad5b5452f7027fb210da65547d928dd791290f3`). Evaluation script: `scripts/research_macro_momentum_1000_s13.py`. Provenance Run ID: `candidate_macro_momentum_1000_s13_2020_2026`.
+- **Empirical Failure Evidence**: 753 combined trades produced Profit Factor 0.79, Net -$3,803.08, Win Rate 24.97%, Max Drawdown -$4,304.53, Sharpe -1.58:
+  - MNQ 2.0R Baseline: 368 trades, Win Rate 24.18%, Profit Factor 0.77, Net -$2,624.70, MaxDD -$2,798.30, Sharpe -1.67.
+    - In-Sample (2020–2024): 238 trades, PF 0.77, Net -$1,643.45, MaxDD -$2,328.80 (completely failing Belfort Step 04 hurdle $PF \ge 1.25$).
+    - Out-of-Sample (2025–2026): 130 trades, PF 0.78, Net -$981.25, MaxDD -$1,268.65 (failing Belfort Step 05).
+    - 7-Year Consistency Failure: Net negative in 6 of 7 years (2020: -$176.20; 2021: -$726.85; 2022: -$562.75; 2023: -$213.40; 2024: +$35.75; 2025: -$368.60; 2026: -$612.65).
+  - MES 2.0R Baseline: 385 trades, Win Rate 25.71%, Profit Factor 0.81, Net -$1,178.38, MaxDD -$1,639.45.
+  - Severe Microstructural Skew: Stop losses were triggered 363 times against only 146 profit target fills across the basket (a 2.49:1 stop realization penalty). On MNQ, stops were hit 179 times (-$11,143.10) vs 70 targets (+$7,997.00).
+- **Structural Root Cause**: While pre-market 08:30 ET releases (CPI/NFP in Strategy 2) trade on thin Globex books with cash equities closed, enabling persistent discount rate repricing (PF 1.44), 10:00 AM releases occur during active Regular Trading Hours (RTH) where order book depth is 50x thicker. Furthermore, 10:00 AM releases (ISM, Consumer Sentiment) are secondary survey data that do not alter the Fed discount path. At 10:00 AM, the market has just concluded its opening drive, and 0DTE options dealers actively delta-hedge against price excursions. Algorithmic headline orders generate an immediate 1-minute spike, but institutional index arbitrageurs and options market makers instantly fade the move, snapping price back into the morning range. Entering at 10:01 ET consistently buys/sells at peak headline exhaustion right into dealer fade liquidity.
+- **Standing Rule**: Directional momentum breakout strategies trading 10:00 AM ET Tier-2 macroeconomic releases on US equity index futures are permanently rejected. Macro momentum is strictly restricted to pre-market 08:30 ET Tier-1 catalysts (Strategy 2).
 
+### 46. H46: 09:45 ET Unanimous Breadth Clones on MYM/M2K with Static 1-Micro Sizing (2026-11-08)
+- **Evaluation Date**: 2026-11-08
+- **Author / Agent**: Quantitative Research Architect & User Audit
+- **Core Premise**: Adding `unanimous_breadth_s4_mym` (Micro Dow at 09:45 ET, $25 risk / $50 target) and `unanimous_breadth_s5_m2k` (Micro Russell at 09:45 ET, $20 risk / $40 target) as Strategies 4 and 5 alongside Strategy 1 (`morning_va_breakout_s1` at 09:45 ET on MNQ/MES).
+- **Empirical Failure Evidence**:
+  - **Temporal & Factor Redundancy**: Firing three correlated US equity index breakout strategies simultaneously at the exact 09:45 ET bar open duplicates exposure to the same single opening-drive factor rather than adding orthogonal temporal or asset-class diversification.
+  - **Capital Velocity Degradation under Static 1-Micro Sizing**: Risking $20–$25 per trade with $40–$50 targets requires 25–30 net winning trades to reach the $1,250 LucidFlex 25K evaluation target, violating Standing Rules #1 and #2 (Pareto Anti-Martingale Ratchet `2 -> 3 -> 4` micros).
+- **Standing Rule**: Cloning the 09:45 ET equity open impulse across correlated equity indices (`MYM`, `M2K`) or presenting static 1-micro ($20–$25 risk) sizing tables is permanently prohibited.
 
-
-
-
-
-
-
-
-
+### 47. H47: Unconditioned Evening Session VWAP Band Mean Reversion (21:00–23:00 ET on MES) (2026-11-08)
+- **Evaluation Date**: 2026-11-08
+- **Author / Agent**: Quantitative Research Team (`teamwork` M1 Audit)
+- **Core Premise**: Fading 1.5-to-2.0 standard deviation session VWAP band touches on Micro S&P 500 (`MES`) during the 21:00–23:00 ET Tokyo opening window without conditioning on prior 18:00–21:14 ET Globex drift or completed US RTH relative volume.
+- **Sample/Artifact**: 814 trades across 2021–2026 (`es_1m_2020_2026_cqg_et.parquet` SHA-256: `36f0a1042b9981b8166c32d2aad5b5452f7027fb210da65547d928dd791290f3`).
+- **Empirical Failure Evidence**: 814 trades generated Win Rate 45.7%, Profit Factor 0.62, and Net PnL -$3,032.71.
+- **Structural Root Cause**: During the 21:00–23:00 ET Globex session, the median 2-hour range on `MES` is only ~9.0 points, while 1 tick on `MES` costs $1.25 ($2.50 on a 2-tick adverse stop plus $1.40 round-trip commissions = $3.90 friction per micro). Unconditioned VWAP band touches over-trade dead low-volume sessions where tick-slippage consumes >10% of the entire evening range. Upgrading the evening reversion thesis to `MNQ` ($0.50/tick) and conditioning on pre-Tokyo 18:00–21:14 ET Globex drift (`0.15–0.85 * RTH_ATR14`) rejected by the 21:00–21:14 ET Tokyo opening 15m candle resolves this failure (`asian_evening_reversion_s4`: PF 1.46, 52.43% WR, 103 trades, +$783.30 net).
+- **Standing Rule**: Unconditioned evening VWAP band touch strategies on `MES` are permanently rejected; evening Globex mean-reversion must execute on `MNQ` conditioned on pre-Tokyo Globex drift and Tokyo opening 15m candle rejection.

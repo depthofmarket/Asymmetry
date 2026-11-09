@@ -91,7 +91,8 @@ class TestAlphaFactoryRecordNonMutation:
 
         after_wiki = failed_ideas.read_text(encoding="utf-8") if failed_ideas.exists() else ""
 
-        assert before_count == after_count == 9, f"Row count changed: before={before_count}, after={after_count}"
+        assert before_count == after_count, f"Row count changed: before={before_count}, after={after_count}"
+        assert before_count >= 9, f"Expected at least 9 baseline runs, got {before_count}"
         assert before_max_rowid == after_max_rowid, f"Max rowid changed!"
         assert before_run_ids == after_run_ids, "Run IDs set modified!"
         assert before_wiki == after_wiki, "wiki/failed_ideas.md was mutated by S1 dry run!"
@@ -124,7 +125,8 @@ class TestAlphaFactoryRecordNonMutation:
 
         after_wiki = failed_ideas.read_text(encoding="utf-8") if failed_ideas.exists() else ""
 
-        assert before_count == after_count == 9, f"Row count changed: before={before_count}, after={after_count}"
+        assert before_count == after_count, f"Row count changed: before={before_count}, after={after_count}"
+        assert before_count >= 9, f"Expected at least 9 baseline runs, got {before_count}"
         assert before_max_rowid == after_max_rowid, f"Max rowid changed!"
         assert before_run_ids == after_run_ids, "Run IDs set modified!"
         assert before_wiki == after_wiki, "wiki/failed_ideas.md was mutated by ensemble dry run!"

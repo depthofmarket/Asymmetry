@@ -32,18 +32,21 @@ from backtest.demo_parity_engine import (
     STARTING_CAPITAL,
     TRAILING_FLOOR_LOCK,
 )
+from config.prop_firm_registry import LUCID_FLEX_25K
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_TRADES_PATH = REPO_ROOT / "data/processed/unified_three_strategy_markov_portfolio_trades_2021_2026.parquet"
+DEFAULT_TRADES_PATH = REPO_ROOT / "data/processed/unified_five_strategy_portfolio_trades_2021_2026.parquet"
 DEFAULT_CALENDAR_SOURCE = REPO_ROOT / "data/raw/nq_1m_2017_2026_cqg_et.parquet"
 
 STRATEGY_META = {
-    "S3": dict(name="S3 Macro Momentum", window="08:35-09:25 ET", instruments="MNQ", order=0, color="#d62728"),
+    "S2": dict(name="S2 Macro Momentum", window="08:35-09:25 ET", instruments="MNQ", order=0, color="#d62728"),
     "S1": dict(name="S1 VA Breakout", window="09:45-10:15 ET", instruments="MNQ + MES", order=1, color="#ff7f0e"),
-    "S2": dict(name="S2 Gold Fix", window="10:15-11:00 ET", instruments="MGC", order=2, color="#2ca02c"),
+    "S3": dict(name="S3 Gold Fix", window="10:15-11:00 ET", instruments="MGC", order=2, color="#2ca02c"),
+    "S5": dict(name="S5 Crude RTH Expansion", window="10:15-12:30 ET", instruments="MCL", order=3, color="#0D9488"),
+    "S4": dict(name="S4 Asian Evening Reversion", window="21:00-23:00 ET", instruments="MNQ", order=4, color="#9467bd"),
 }
-STRATEGY_ORDER = ("S1", "S2", "S3")
-TICK_VALUE = {"MNQ": 0.50, "MES": 1.25, "MGC": 1.00}
+STRATEGY_ORDER = ("S1", "S2", "S3", "S4", "S5")
+TICK_VALUE = {"MNQ": 0.50, "MES": 1.25, "MGC": 1.00, "MCL": 1.00, "NQ": 0.50, "ES": 1.25, "GC": 1.00, "CL": 1.00}
 DEV_END = "2024-12-31"  # 2021-2024 development, 2025-2026 holdout
 
 
@@ -51,7 +54,18 @@ DEV_END = "2024-12-31"  # 2021-2024 development, 2025-2026 holdout
 # Loading
 # ───────────────────────────────────────────────────────────────────────────────
 def _strategy_code(name: str) -> str:
-    for code in ("S1", "S2", "S3"):
+    s = str(name).lower()
+    if "morning" in s or "va breakout" in s or "va_breakout" in s:
+        return "S1"
+    if "macro" in s:
+        return "S2"
+    if "gold" in s:
+        return "S3"
+    if "asian" in s or "evening" in s:
+        return "S4"
+    if "crude" in s or "rth_expansion" in s:
+        return "S5"
+    for code in ("S1", "S2", "S3", "S4", "S5"):
         if f"Strategy {code[1]}" in str(name):
             return code
     raise ValueError(f"Unknown strategy label: {name}")
@@ -75,6 +89,11 @@ def load_trades(path: Path = DEFAULT_TRADES_PATH) -> pd.DataFrame:
     # Research P&L: risk-based sizing x Markov multiplier (what the old dashboards used)
     df["research_pnl"] = df["pnl"].astype(float)
     df["per_contract_pnl"] = df["base_pnl"] / df["contracts"]
+    if "markov_state_label" not in df.columns:
+        mult = df["pnl"] / df["net_dollars_micro"].replace(0, np.nan)
+        df["markov_state_label"] = np.where(mult > 1.1, "low_vol", np.where(mult < 0.9, "high_vol", "mid_vol"))
+    if "markov_sizing_mult" not in df.columns:
+        df["markov_sizing_mult"] = (df["pnl"] / df["net_dollars_micro"].replace(0, np.nan)).fillna(1.0)
     s1_counts = df[df["strat"] == "S1"].groupby("date")["sym"].transform("nunique")
     df["s1_pair"] = False
     df.loc[s1_counts.index, "s1_pair"] = s1_counts.to_numpy() > 1
@@ -434,16 +453,28 @@ class PropRules:
 
 @dataclass(frozen=True)
 class FundedRules:
-    """ASSUMED funded-phase payout mechanics carried over from the previous dashboard."""
+    """Authoritative LucidFlex 25K funded-phase payout mechanics governed by config.prop_firm_registry."""
     cycle_sessions: int = 5
-    min_profit_days: int = 3
-    profit_day_threshold: float = 50.0
-    max_payout: float = 1_000.0
-    payout_fraction: float = 0.50
-    min_payout: float = 300.0
-    split: float = 0.90
-    max_payouts: int = 5
-    post_payout_floor: float = 25_100.0
+    min_profit_days: int = LUCID_FLEX_25K.PAYOUT_MIN_PROFIT_DAYS            # 5 qualifying days
+    profit_day_threshold: float = LUCID_FLEX_25K.PAYOUT_MIN_DAILY_PROFIT    # $100.00
+    min_cycle_net_profit: float = LUCID_FLEX_25K.PAYOUT_MIN_CYCLE_NET_PROFIT # $1.00
+    max_payout: float = LUCID_FLEX_25K.PAYOUT_MAX_REQUEST                   # $1,000.00
+    payout_fraction: float = LUCID_FLEX_25K.PAYOUT_PCT_OF_PROFIT           # 0.50 (50% of profit above base)
+    min_payout: float = LUCID_FLEX_25K.PAYOUT_MIN_REQUEST                   # $500.00
+    split: float = LUCID_FLEX_25K.PROFIT_SPLIT_TRADER_PCT / 100.0          # 0.90
+    max_payouts: int = LUCID_FLEX_25K.MAX_PAYOUTS_BEFORE_LIVE              # 5
+    post_payout_floor: float = LUCID_FLEX_25K.FUNDED_LOCKED_FLOOR           # $25,100.00
+    start_balance: float = LUCID_FLEX_25K.FUNDED_STARTING_BALANCE           # $25,000.00
+    max_trailing_dd: float = LUCID_FLEX_25K.FUNDED_TRAILING_ALLOWANCE       # $1,000.00
+    floor_lock_peak: float = LUCID_FLEX_25K.FUNDED_FLOOR_LOCK_PEAK         # $26,100.00
+    soft_stop: float = -LUCID_FLEX_25K.FUNDED_DAILY_SOFT_STOP               # -$600.00
+
+    def required_post_payout_cushion(self, gross_payout: float) -> float:
+        """
+        Dynamic post-payout cushion requirement:
+        Linear interpolation: 400 + (gross_payout - 500), bounded between 400 and 900.
+        """
+        return LUCID_FLEX_25K.get_required_post_payout_cushion(gross_payout)
 
 
 @dataclass(frozen=True)
@@ -573,20 +604,46 @@ def run_evaluation(sessions: Sequence[list[list[Leg]]], policy: SizingPolicy, ru
     return EvalResult("open", len(sessions), peak, path)
 
 
-def run_funded(sessions: Sequence[list[list[Leg]]], policy: SizingPolicy, rules: PropRules = PropRules(),
-               funded: FundedRules = FundedRules(), extra_ticks: float = 0.0,
-               keep_path: bool = False) -> dict:
-    bal = peak = rules.start
-    floor = rules.start - rules.max_dd
+def run_funded(
+    sessions: Sequence[list[list[Leg]]],
+    policy: SizingPolicy,
+    rules: PropRules = PropRules(),
+    funded: FundedRules = FundedRules(),
+    extra_ticks: float = 0.0,
+    keep_path: bool = False,
+    withdrawal_policy: str = "immediate",  # "immediate" (Policy A) | "patient" (Policy B) | "adaptive" (Policy C)
+    adaptive_threshold: float = 750.0,
+    adaptive_mode: str = "two_stage",  # "two_stage" | "cushion_aware" | "fixed_target"
+) -> dict:
+    """
+    Simulates a funded trading account under the authoritative LucidFlex 25K rulebook.
+    Enforces:
+      - 5 separate qualifying profit days (each >= $100 daily net profit).
+      - Cycle net profit >= $1.00 compared to previous payout / cycle start.
+      - Payout size = 50% of profit above $25,000 base, capped at $1,000 gross.
+      - Minimum gross payout request: $500.00 (requires balance >= $26,000.00).
+      - 90/10 profit split (90% to trader, 10% to firm). Full gross deducted from balance.
+      - Post-payout dynamic cushion decay: remaining cushion >= 400 + (gross_payout - 500).
+      - Maximum 5 approved payouts before live promotion (status='promoted_to_live').
+      - End-of-day trailing floor: trails $1,000 behind peak balance until peak >= $26,100, then locks at $25,100.
+    """
+    bal = peak = funded.start_balance
+    floor = funded.start_balance - funded.max_trailing_dd
     payouts: list[tuple[int, float]] = []
-    cyc = pdays = 0
+    payout_records: list[dict] = []
+    cyc = 0
+    pdays = 0
+    cycle_start_balance = bal
+    qualifying_days_to_p1 = 0
+    sessions_to_p1: int | None = None
     path = [bal] if keep_path else []
     floor_path = [floor] if keep_path else []
+
     for i, groups in enumerate(sessions):
         day = 0.0
         breached = False
         for legs in groups:
-            profit_now = bal - rules.start
+            profit_now = bal - funded.start_balance
             cushion_now = bal - floor
             gpnl = sum(leg_pnl(l, policy, profit_now, extra_ticks, cushion=cushion_now) for l in legs)
             bal += gpnl
@@ -600,34 +657,149 @@ def run_funded(sessions: Sequence[list[list[Leg]]], policy: SizingPolicy, rules:
             path.append(bal)
             floor_path.append(floor)
         if breached:
-            res = dict(status="breach", sessions=i + 1, payouts=payouts)
+            res = dict(
+                status="breach",
+                sessions=i + 1,
+                payouts=payouts,
+                payout_records=payout_records,
+                infant_mortality=(len(payouts) == 0),
+                qualifying_days_to_p1=qualifying_days_to_p1,
+                sessions_to_p1=sessions_to_p1,
+                completed_payouts=len(payouts),
+            )
             if keep_path:
                 res["path"] = path
                 res["floor_path"] = floor_path
             return res
+
         cyc += 1
-        pdays += int(day >= funded.profit_day_threshold)
+        is_qualifying = (day >= funded.profit_day_threshold)
+        if is_qualifying:
+            pdays += 1
+            if len(payouts) == 0:
+                qualifying_days_to_p1 += 1
+
+        # End of day: trail the floor on the EOD balance
         if bal > peak:
             peak = bal
-            floor = max(floor, rules.floor_lock) if peak >= rules.peak_for_lock else max(floor, peak - rules.max_dd)
-        if cyc >= funded.cycle_sessions and pdays >= funded.min_profit_days:
-            prof = bal - rules.start
-            wd = min(funded.max_payout, prof * funded.payout_fraction) if prof > 0 else 0.0
-            if wd >= funded.min_payout and bal - wd > floor:
-                payouts.append((i + 1, wd * funded.split))
-                bal -= wd
-                floor = max(floor, funded.post_payout_floor)
-                cyc = pdays = 0
-                if keep_path:
-                    path[-1] = bal
-                    floor_path[-1] = floor
-                if len(payouts) >= funded.max_payouts:
-                    res = dict(status="max_payouts", sessions=i + 1, payouts=payouts)
-                    if keep_path:
-                        res["path"] = path
-                        res["floor_path"] = floor_path
-                    return res
-    res = dict(status="open", sessions=len(sessions), payouts=payouts)
+            floor = max(floor, funded.post_payout_floor) if peak >= funded.floor_lock_peak else max(floor, peak - funded.max_trailing_dd)
+
+        # Check payout eligibility
+        cycle_net_profit = bal - cycle_start_balance
+        if (
+            len(payouts) < funded.max_payouts
+            and pdays >= funded.min_profit_days
+            and cycle_net_profit >= funded.min_cycle_net_profit
+        ):
+            profit_above_base = max(0.0, bal - funded.start_balance)
+            available_payout = min(funded.max_payout, profit_above_base * funded.payout_fraction)
+
+            if available_payout >= funded.min_payout:
+                pol = withdrawal_policy.lower()
+                gross_wd = 0.0
+
+                if pol in ("immediate", "immediate_minimum"):
+                    # Policy A — Immediate Harvest: Request minimum $500 gross as soon as eligible
+                    gross_wd = funded.min_payout
+                elif pol in ("patient", "patient_maximum"):
+                    # Policy B — Patient Harvest: Wait until full $1,000 cap is reachable ($27,000 balance / $1,900 pre-cushion)
+                    current_cushion = bal - floor
+                    if available_payout >= funded.max_payout and current_cushion >= 1900.0:
+                        gross_wd = funded.max_payout
+                elif pol in ("adaptive", "adaptive_cushion"):
+                    # Adaptive Cushion Harvest family
+                    current_cushion = bal - floor
+                    if adaptive_mode == "two_stage":
+                        # Two-Stage: Payout 1 de-risks at $500; Payouts 2-5 wait for adaptive_threshold
+                        if len(payouts) == 0:
+                            gross_wd = funded.min_payout
+                        else:
+                            req_pre_cushion = 900.0 + (adaptive_threshold - 500.0) * 2.0
+                            if available_payout >= adaptive_threshold and current_cushion >= req_pre_cushion:
+                                gross_wd = adaptive_threshold
+                    elif adaptive_mode == "cushion_aware":
+                        # Policy C2 — Adaptive Cushion-Aware Dynamic:
+                        # Payout 1: De-risk immediately at $500 minimum to suppress Infant Mortality.
+                        # Payouts 2-5: Require pre-payout cushion >= $1,400 (balance >= $26,500, available >= $750).
+                        # When cushion >= $1,400, harvest available 50% profit (up to $1,000 cap).
+                        # This ensures post-payout cushion is always >= $650 (and up to $900+ at $27,000).
+                        if len(payouts) == 0:
+                            gross_wd = funded.min_payout
+                        else:
+                            if current_cushion >= 1400.0 and available_payout >= 750.0:
+                                gross_wd = available_payout
+                            else:
+                                gross_wd = 0.0  # Withhold to build cushion
+                    elif adaptive_mode in ("fixed_target", "fixed_threshold"):
+                        # Fixed threshold benchmark (e.g. Policy D at $750)
+                        req_pre_cushion = 900.0 + (adaptive_threshold - 500.0) * 2.0
+                        if available_payout >= adaptive_threshold and current_cushion >= req_pre_cushion:
+                            gross_wd = adaptive_threshold
+                    else:
+                        if available_payout >= adaptive_threshold:
+                            gross_wd = adaptive_threshold
+                else:
+                    gross_wd = available_payout
+
+                if gross_wd >= funded.min_payout:
+                    req_cushion = funded.required_post_payout_cushion(gross_wd)
+                    post_bal = bal - gross_wd
+                    post_floor = max(floor, funded.post_payout_floor)
+                    if (post_bal - post_floor >= req_cushion) and (post_bal > post_floor):
+                        # Payout approved and executed
+                        trader_net = round(gross_wd * funded.split, 2)
+                        firm_share = round(gross_wd - trader_net, 2)
+                        bal = post_bal
+                        floor = post_floor
+                        payout_idx = len(payouts) + 1
+                        payouts.append((i + 1, trader_net))
+                        payout_records.append({
+                            "payout_number": payout_idx,
+                            "session": i + 1,
+                            "gross_payout": gross_wd,
+                            "trader_net": trader_net,
+                            "firm_share": firm_share,
+                            "pre_balance": bal + gross_wd,
+                            "post_balance": bal,
+                            "floor": floor,
+                            "post_cushion": bal - floor,
+                            "qualifying_days": pdays,
+                        })
+                        # Reset cycle counters
+                        cyc = 0
+                        pdays = 0
+                        cycle_start_balance = bal
+                        if len(payouts) == 1:
+                            sessions_to_p1 = i + 1
+                        if keep_path:
+                            path[-1] = bal
+                            floor_path[-1] = floor
+                        if len(payouts) >= funded.max_payouts:
+                            res = dict(
+                                status="promoted_to_live",
+                                sessions=i + 1,
+                                payouts=payouts,
+                                payout_records=payout_records,
+                                infant_mortality=False,
+                                qualifying_days_to_p1=qualifying_days_to_p1,
+                                sessions_to_p1=sessions_to_p1,
+                                completed_payouts=len(payouts),
+                            )
+                            if keep_path:
+                                res["path"] = path
+                                res["floor_path"] = floor_path
+                            return res
+
+    res = dict(
+        status="open",
+        sessions=len(sessions),
+        payouts=payouts,
+        payout_records=payout_records,
+        infant_mortality=False,
+        qualifying_days_to_p1=qualifying_days_to_p1,
+        sessions_to_p1=sessions_to_p1,
+        completed_payouts=len(payouts),
+    )
     if keep_path:
         res["path"] = path
         res["floor_path"] = floor_path
@@ -733,6 +905,65 @@ def compute_pareto_frontier(df: pd.DataFrame) -> pd.DataFrame:
         is_pareto.append(not dominated)
     df["is_pareto"] = is_pareto
     return df
+
+
+def compute_pareto_frontier_3d(
+    df: pd.DataFrame,
+    ev_col: str = "net_lifetime_ev",
+    im_col: str = "infant_mortality_pct",
+    promo_col: str = "live_promotion_pct",
+    key_col: str = "policy_key",
+    tol: float = 1e-9,
+) -> pd.DataFrame:
+    """
+    Computes the mathematical 3D Pareto frontier across:
+      1. Funded-Account Lifecycle Payout EV (`ev_col` — MAXIMIZE)
+      2. Infant Mortality % (`im_col` — MINIMIZE)
+      3. Live Promotion % (`promo_col` — MAXIMIZE)
+
+    A candidate policy i is dominated by candidate policy j iff:
+      - ev[j] >= ev[i] - tol
+      - im[j] <= im[i] + tol
+      - promo[j] >= promo[i] - tol
+    AND at least one inequality is strict beyond `tol`.
+    """
+    out = df.copy()
+    n = len(out)
+    if n == 0:
+        out["is_pareto_3d"] = []
+        out["dominated_by"] = []
+        return out
+
+    evs = out[ev_col].to_numpy(dtype=float)
+    ims = out[im_col].to_numpy(dtype=float)
+    promos = out[promo_col].to_numpy(dtype=float)
+    keys = out[key_col].astype(str).tolist() if key_col in out.columns else [str(k) for k in range(n)]
+
+    is_pareto_3d = []
+    dominated_by = []
+    for i in range(n):
+        dominators = []
+        for j in range(n):
+            if i == j:
+                continue
+            weak_dom = (
+                (evs[j] >= evs[i] - tol)
+                and (ims[j] <= ims[i] + tol)
+                and (promos[j] >= promos[i] - tol)
+            )
+            strict_dom = (
+                (evs[j] > evs[i] + tol)
+                or (ims[j] < ims[i] - tol)
+                or (promos[j] > promos[i] + tol)
+            )
+            if weak_dom and strict_dom:
+                dominators.append(keys[j])
+        is_pareto_3d.append(len(dominators) == 0)
+        dominated_by.append(", ".join(dominators) if dominators else "None")
+
+    out["is_pareto_3d"] = is_pareto_3d
+    out["dominated_by"] = dominated_by
+    return out
 
 
 def _eval_ratchet_grid_point(t2: float, t3: float, legs: list[list[Leg]], precomputed_paths: list[np.ndarray],
@@ -917,3 +1148,201 @@ def run_funded_transition_experiments(
         ))
 
     return pd.DataFrame(results)
+
+
+def run_withdrawal_policy_comparison(
+    legs: list[list[Leg]],
+    eval_policy: SizingPolicy,
+    funded_policy: SizingPolicy,
+    withdrawal_policies: dict[str, dict],
+    n_sims: int = 10_000,
+    seed: int = 42,
+    funded_horizon: int = 252,
+    eval_horizon: int = 750,
+    block_size: int = 10,
+    extra_ticks: float = 0.0,
+    rules: PropRules = PropRules(),
+    funded_rules: FundedRules = FundedRules(),
+    path_gen_horizon: int | None = None,
+) -> tuple[pd.DataFrame, dict[str, list[dict]]]:
+    """
+    Evaluates withdrawal policies (Policy A, Policy B, Policy C) under CRN block-bootstrap.
+    Computes all Section 4 metrics across identical evaluation and funded simulation paths:
+      - Probability of surviving to first payout
+      - Infant mortality probability (account failure before first payout)
+      - Average qualifying trading days before first payout
+      - Average time to first payout
+      - Average gross payout
+      - Average trader net payout
+      - Average cumulative trader net earnings
+      - Average number of completed payouts
+      - Probability of completing all five payouts / reaching live promotion
+      - Account failure probability
+      - Average terminal sessions
+      - Average remaining cushion following each payout
+      - Total Net Lifetime EV
+    """
+    rng_eval = np.random.default_rng(seed)
+    rng_funded = np.random.default_rng(seed + 1000)
+    n_sessions = len(legs)
+    gen_h = max(funded_horizon, path_gen_horizon) if path_gen_horizon is not None else funded_horizon
+
+    eval_paths = [
+        block_bootstrap_sessions(n_sessions, eval_horizon, block_size, rng_eval)
+        for _ in range(n_sims)
+    ]
+    funded_paths = [
+        block_bootstrap_sessions(n_sessions, gen_h, block_size, rng_funded)[:funded_horizon]
+        for _ in range(n_sims)
+    ]
+
+    # Pre-screen evaluation passes
+    passed_sim_indices = []
+    for i in range(n_sims):
+        res = run_evaluation([legs[j] for j in eval_paths[i]], eval_policy, rules, extra_ticks)
+        if res.status == "pass":
+            passed_sim_indices.append(i)
+
+    pass_rate_pct = len(passed_sim_indices) / n_sims * 100.0
+
+    summary_records = []
+    all_sim_runs: dict[str, list[dict]] = {}
+
+    for pol_key, pol_cfg in withdrawal_policies.items():
+        w_policy = pol_cfg.get("withdrawal_policy", "immediate")
+        adapt_thresh = pol_cfg.get("adaptive_threshold", 750.0)
+        adapt_mode = pol_cfg.get("adaptive_mode", "two_stage")
+        pol_label = pol_cfg.get("label", pol_key)
+
+        runs = []
+        payout_counts = []
+        cumulative_nets = []
+        sessions_to_p1_list = []
+        qualifying_days_to_p1_list = []
+        terminal_sessions = []
+        all_gross_payouts = []
+        all_trader_nets = []
+        post_cushions = []
+        breach_count = 0
+        infant_mortality_count = 0
+        promoted_count = 0
+
+        for sim_idx in passed_sim_indices:
+            f_sess = [legs[j] for j in funded_paths[sim_idx]]
+            res_f = run_funded(
+                f_sess,
+                policy=funded_policy,
+                rules=rules,
+                funded=funded_rules,
+                extra_ticks=extra_ticks,
+                withdrawal_policy=w_policy,
+                adaptive_threshold=adapt_thresh,
+                adaptive_mode=adapt_mode,
+            )
+            runs.append(res_f)
+
+            cnt = res_f["completed_payouts"]
+            payout_counts.append(cnt)
+            tot_net = sum(p[1] for p in res_f["payouts"])
+            cumulative_nets.append(tot_net)
+            terminal_sessions.append(res_f["sessions"])
+
+            if res_f["status"] == "breach":
+                breach_count += 1
+                if cnt == 0:
+                    infant_mortality_count += 1
+            elif res_f["status"] in ("promoted_to_live", "max_payouts") or cnt >= funded_rules.max_payouts:
+                promoted_count += 1
+
+            if cnt >= 1:
+                if res_f["sessions_to_p1"] is not None:
+                    sessions_to_p1_list.append(res_f["sessions_to_p1"])
+                qualifying_days_to_p1_list.append(res_f["qualifying_days_to_p1"])
+
+            for prec in res_f.get("payout_records", []):
+                all_gross_payouts.append(prec["gross_payout"])
+                all_trader_nets.append(prec["trader_net"])
+                post_cushions.append(prec["post_cushion"])
+
+        all_sim_runs[pol_key] = runs
+
+        n_passed = len(passed_sim_indices)
+        pc = np.array(payout_counts) if len(payout_counts) else np.array([0])
+        cn = np.array(cumulative_nets) if len(cumulative_nets) else np.array([0.0])
+        s_p1 = np.array(sessions_to_p1_list) if len(sessions_to_p1_list) else np.array([])
+        q_p1 = np.array(qualifying_days_to_p1_list) if len(qualifying_days_to_p1_list) else np.array([])
+        t_sess = np.array(terminal_sessions) if len(terminal_sessions) else np.array([])
+        ag = np.array(all_gross_payouts) if len(all_gross_payouts) else np.array([])
+        an = np.array(all_trader_nets) if len(all_trader_nets) else np.array([])
+        cush = np.array(post_cushions) if len(post_cushions) else np.array([])
+
+        survive_p1_pct = float((pc >= 1).mean() * 100.0) if n_passed else 0.0
+        infant_mortality_pct = float(infant_mortality_count / n_passed * 100.0) if n_passed else 0.0
+        account_failure_pct = float(breach_count / n_passed * 100.0) if n_passed else 0.0
+        live_promotion_pct = float(promoted_count / n_passed * 100.0) if n_passed else 0.0
+        p5_pct = float((pc >= 5).mean() * 100.0) if n_passed else 0.0
+
+        # Additional failure & censoring metrics per Section 2 & 4
+        post_p1_fail_count = breach_count - infant_mortality_count
+        post_p1_fail_pct_funded = float(post_p1_fail_count / n_passed * 100.0) if n_passed else 0.0
+        p1_survivor_count = int((pc >= 1).sum())
+        post_p1_fail_rate_given_p1 = float(post_p1_fail_count / p1_survivor_count * 100.0) if p1_survivor_count else 0.0
+        censored_alive_count = n_passed - breach_count - promoted_count
+        censored_alive_pct = float(censored_alive_count / n_passed * 100.0) if n_passed else 0.0
+
+        # Unconditional rates (per evaluation ticket started, denominator = n_sims)
+        survive_p1_pct_uncond = float((pc >= 1).sum() / n_sims * 100.0)
+        infant_mortality_pct_uncond = float(infant_mortality_count / n_sims * 100.0)
+        overall_failure_pct_uncond = float(breach_count / n_sims * 100.0)
+        live_promotion_pct_uncond = float(promoted_count / n_sims * 100.0)
+
+        mean_cum_net = float(cn.mean()) if cn.size else 0.0
+        median_cum_net = float(np.median(cn)) if cn.size else 0.0
+        p90_cum_net = float(np.percentile(cn, 90)) if cn.size else 0.0
+
+        mean_payout_count = float(pc.mean()) if pc.size else 0.0
+        mean_gross_payout = float(ag.mean()) if ag.size else 0.0
+        mean_trader_net = float(an.mean()) if an.size else 0.0
+        mean_post_cushion = float(cush.mean()) if cush.size else 0.0
+
+        mean_sessions_p1 = float(s_p1.mean()) if s_p1.size else np.nan
+        median_sessions_p1 = float(np.median(s_p1)) if s_p1.size else np.nan
+        mean_q_days_p1 = float(q_p1.mean()) if q_p1.size else np.nan
+        mean_term_sess = float(t_sess.mean()) if t_sess.size else np.nan
+
+        funded_lifecycle_payout_ev = float((pass_rate_pct / 100.0) * mean_cum_net - rules.eval_fee)
+
+        summary_records.append({
+            "policy_key": pol_key,
+            "policy_label": pol_label,
+            "pass_rate_pct": pass_rate_pct,
+            "survive_first_payout_pct": survive_p1_pct,
+            "survive_first_payout_pct_uncond": survive_p1_pct_uncond,
+            "infant_mortality_pct": infant_mortality_pct,
+            "infant_mortality_pct_uncond": infant_mortality_pct_uncond,
+            "account_failure_pct": account_failure_pct,
+            "account_failure_pct_uncond": overall_failure_pct_uncond,
+            "post_first_payout_failure_pct": post_p1_fail_pct_funded,
+            "post_p1_fail_rate_given_p1": post_p1_fail_rate_given_p1,
+            "censored_alive_pct": censored_alive_pct,
+            "live_promotion_pct": live_promotion_pct,
+            "live_promotion_pct_uncond": live_promotion_pct_uncond,
+            "five_payouts_pct": p5_pct,
+            "mean_completed_payouts": mean_payout_count,
+            "mean_gross_payout": mean_gross_payout,
+            "mean_trader_net_payout": mean_trader_net,
+            "mean_cumulative_net_earnings": mean_cum_net,
+            "median_cumulative_net_earnings": median_cum_net,
+            "p90_cumulative_net_earnings": p90_cum_net,
+            "mean_qualifying_days_to_p1": mean_q_days_p1,
+            "mean_sessions_to_p1": mean_sessions_p1,
+            "median_sessions_to_p1": median_sessions_p1,
+            "mean_terminal_sessions": mean_term_sess,
+            "mean_post_payout_cushion": mean_post_cushion,
+            "funded_lifecycle_payout_ev": funded_lifecycle_payout_ev,
+            "net_lifetime_ev": funded_lifecycle_payout_ev,
+        })
+
+    out_df = pd.DataFrame(summary_records)
+    out_df = compute_pareto_frontier_3d(out_df)
+    return out_df, all_sim_runs

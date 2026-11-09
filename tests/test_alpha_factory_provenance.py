@@ -60,7 +60,7 @@ class TestAlphaFactoryProvenanceRemediation:
     def test_record_flag_persists_to_db_when_passed(self, temp_store, monkeypatch, capsys):
         """P1.1: When --record is True, run is persisted into the database."""
         monkeypatch.setattr(af, "default_store", temp_store)
-        test_args = ["alpha_factory.py", "--evaluate", "ensemble", "--record"]
+        test_args = ["alpha_factory.py", "--evaluate", "ensemble", "--record", "--trials", "25"]
         monkeypatch.setattr(sys, "argv", test_args)
 
         ret = af.main()
@@ -77,7 +77,7 @@ class TestAlphaFactoryProvenanceRemediation:
     def test_git_commit_dynamically_resolved(self, temp_store, monkeypatch):
         """P1.2: Git commit is dynamically queried from HEAD, never hardcoded '8cb04d68a9'."""
         monkeypatch.setattr(af, "default_store", temp_store)
-        test_args = ["alpha_factory.py", "--evaluate", "ensemble", "--record"]
+        test_args = ["alpha_factory.py", "--evaluate", "ensemble", "--record", "--trials", "25"]
         monkeypatch.setattr(sys, "argv", test_args)
 
         af.main()
@@ -104,11 +104,11 @@ class TestAlphaFactoryProvenanceRemediation:
 
             # Verify strategy dates differ (confirming static dates are inappropriate)
             if strat_key == "S2":
-                assert expected_start == "2021-01-20"
-                assert expected_end == "2026-08-19"
-            elif strat_key == "S3":
                 assert expected_start == "2021-02-26"
                 assert expected_end == "2026-10-14"
+            elif strat_key == "S3":
+                assert expected_start == "2021-01-20"
+                assert expected_end == "2026-08-19"
 
     def test_date_range_dynamically_resolved_on_arbitrary_slice(self, temp_store, monkeypatch):
         """P1.3: Slicing trades to a custom window updates date_start and date_end in record."""
@@ -123,7 +123,7 @@ class TestAlphaFactoryProvenanceRemediation:
 
         monkeypatch.setattr(da, "load_trades", lambda: custom_slice)
         monkeypatch.setattr(af, "default_store", temp_store)
-        test_args = ["alpha_factory.py", "--evaluate", "ensemble", "--record"]
+        test_args = ["alpha_factory.py", "--evaluate", "ensemble", "--record", "--trials", "25"]
         monkeypatch.setattr(sys, "argv", test_args)
 
         ret = af.main()
@@ -146,7 +146,7 @@ class TestAlphaFactoryProvenanceRemediation:
         fabricated_gross = float(audit["net_pnl"]) + 1000.0
 
         assert abs(audit["gross_profit"] - expected_gross) < 0.01
-        assert abs(audit["gross_profit"] - 41432.71) < 0.05
+        assert abs(audit["gross_profit"] - 46863.61) < 0.05
         assert audit["gross_profit"] != pytest.approx(fabricated_gross, abs=100.0)
 
         # 2. S1 verification

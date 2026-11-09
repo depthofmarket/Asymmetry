@@ -49,6 +49,7 @@ class StrategyMetadata:
     strategy_id: str
     name: str
     tier: StrategyTier
+    asset_class: str = "EQUITY_INDEX"
     instrument: str = ""
     timeframe: str = "1m"
     schedule: str = ""
@@ -60,6 +61,7 @@ class StrategyMetadata:
             "strategy_id": self.strategy_id,
             "name": self.name,
             "tier": self.tier.value,
+            "asset_class": self.asset_class,
             "instrument": self.instrument,
             "timeframe": self.timeframe,
             "schedule": self.schedule,
@@ -104,7 +106,7 @@ AUTHORIZED_BASELINE_STRATEGIES: Dict[str, StrategyMetadata] = {
         instrument="MNQ/MES/MGC",
         timeframe="1m",
         schedule="Multi-Session",
-        description="Composite tri-asset multi-strategy portfolio coordinating S1, S2, and S3 under LucidFlex 25K risk limits.",
+        description="Composite multi-strategy portfolio coordinating S1, S2, and S3 under LucidFlex 25K risk limits.",
     ),
     "lucid_flex_forward_demo": StrategyMetadata(
         strategy_id="lucid_flex_forward_demo",
@@ -117,8 +119,45 @@ AUTHORIZED_BASELINE_STRATEGIES: Dict[str, StrategyMetadata] = {
     ),
 }
 
+# Canonical Quarantined Research Candidates (StrategyTier.CANDIDATE)
+AUTHORIZED_CANDIDATE_STRATEGIES: Dict[str, StrategyMetadata] = {
+    "vix_term_structure_crush_s4": StrategyMetadata(
+        strategy_id="vix_term_structure_crush_s4",
+        name="VIX Term Structure Crush Squeeze (09:45 ET)",
+        tier=StrategyTier.CANDIDATE,
+        asset_class="EQUITY_INDEX",
+        instrument="MES",
+        timeframe="1m",
+        schedule="09:45–10:45 ET",
+        description="Morning volatility crush on S&P 500 options market makers during overnight VIX term structure backwardation. (Quarantined pending 2026 data and live CFE feed).",
+    ),
+    "asian_evening_reversion_s4": StrategyMetadata(
+        strategy_id="asian_evening_reversion_s4",
+        name="Asian Evening Reversion (21:00 ET)",
+        tier=StrategyTier.CANDIDATE,
+        asset_class="EQUITY_INDEX",
+        instrument="MNQ",
+        timeframe="1m",
+        schedule="21:00–23:00 ET",
+        description="Tokyo cash open institutional liquidity rebalancing on MNQ fading overextended 18:00–21:14 ET Globex drift upon 21:00–21:14 ET opening range rejection, with mandatory 23:00 ET flatten.",
+    ),
+    "crude_rth_expansion_s5": StrategyMetadata(
+        strategy_id="crude_rth_expansion_s5",
+        name="Crude Oil Post-Fix Range Expansion (10:15 ET)",
+        tier=StrategyTier.CANDIDATE,
+        asset_class="COMMODITY_ENERGY",
+        instrument="MCL",
+        timeframe="1m",
+        schedule="10:15–12:30 ET",
+        description="Post-Fix institutional range expansion on Micro WTI Crude Oil (MCL) following London PM Gold Fix / US macro release clearance into European close arbitrage.",
+    ),
+}
+
 # Dynamic registry containing baseline strategies and registered candidates
-_REGISTRY: Dict[str, StrategyMetadata] = dict(AUTHORIZED_BASELINE_STRATEGIES)
+_REGISTRY: Dict[str, StrategyMetadata] = {
+    **AUTHORIZED_BASELINE_STRATEGIES,
+    **AUTHORIZED_CANDIDATE_STRATEGIES,
+}
 
 # Slug validation pattern: alphanumeric, underscores, hyphens, 2 to 64 chars
 STRATEGY_ID_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_\-]{0,62}[a-zA-Z0-9]$|^[a-zA-Z0-9]$")
@@ -182,10 +221,16 @@ def get_authorized_baseline_ids() -> List[str]:
     return list(AUTHORIZED_BASELINE_STRATEGIES.keys())
 
 
+def get_authorized_candidate_ids() -> List[str]:
+    """Returns the immutable list of authorized candidate strategy IDs."""
+    return list(AUTHORIZED_CANDIDATE_STRATEGIES.keys())
+
+
 def register_strategy(
     strategy_id: str,
     tier: StrategyTier | str,
     name: str = "",
+    asset_class: str = "EQUITY_INDEX",
     instrument: str = "",
     timeframe: str = "1m",
     schedule: str = "",
@@ -225,6 +270,7 @@ def register_strategy(
         strategy_id=s_id,
         name=name or s_id.replace("_", " ").title(),
         tier=tier_enum,
+        asset_class=asset_class,
         instrument=instrument,
         timeframe=timeframe,
         schedule=schedule,
@@ -238,6 +284,7 @@ def register_strategy(
 def register_candidate(
     strategy_id: str,
     name: str = "",
+    asset_class: str = "EQUITY_INDEX",
     instrument: str = "NQ",
     timeframe: str = "1m",
     schedule: str = "",
@@ -249,6 +296,7 @@ def register_candidate(
         strategy_id=strategy_id,
         tier=StrategyTier.CANDIDATE,
         name=name or strategy_id.replace("_", " ").title(),
+        asset_class=asset_class,
         instrument=instrument,
         timeframe=timeframe,
         schedule=schedule,
@@ -258,6 +306,9 @@ def register_candidate(
 
 
 def reset_registry() -> None:
-    """Resets the dynamic registry back to the default authorized production baseline."""
+    """Resets the dynamic registry back to default baselines and authorized candidates."""
     global _REGISTRY
-    _REGISTRY = dict(AUTHORIZED_BASELINE_STRATEGIES)
+    _REGISTRY = {
+        **AUTHORIZED_BASELINE_STRATEGIES,
+        **AUTHORIZED_CANDIDATE_STRATEGIES,
+    }

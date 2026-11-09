@@ -66,6 +66,41 @@ The engine writes to the store on every run, fail-safe. If saving results depend
 
 ---
 
+## LucidFlex 25K Invariant Rulebook & Compliance Specification
+
+All models, agents, scripts, and backtests are strictly bound by the official **LucidFlex 25K Profile** (`config/prop_firm_registry.py`). Never invent, assume, or ask the user for these specifications again unless Lucid Trading officially changes them:
+
+### 1. Evaluation Phase
+- **Starting Capital**: $25,000.00
+- **Profit Target**: $1,250.00 (Account Balance: $26,250.00)
+- **Evaluation Ticket Fee**: $39.00 One-Time Payment (OTP) — STRICTLY ZERO monthly rebill, NO time expiration
+- **Maximum Trailing Drawdown**: $1,000.00 (Calculated on End-of-Day [EOD] closing balance)
+- **Trailing Floor Dynamic**: Starts at $24,000.00; trails $1,000 behind peak EOD balance up to $26,100.00
+- **Permanent Floor Lock**: Once peak reaches >= $26,100.00, the floor permanently locks at $25,100.00 (Base + $100)
+- **Intraday Soft Stop**: -$600.00 session halt (stops order flow for remaining windows in the day; not account breach)
+- **Max Sizing**: 10 Micros or 1 Mini contract maximum
+- **Consistency Rule**: Maximum 40% of target profit may come from a single trading day
+
+### 2. Funded Phase (Master / LiveSim Account)
+- **Account Transition**: Balance resets to $25,000.00 on Day 1; Drawdown floor resets to $24,000.00
+- **Floor Trailing Mechanics**: Trails $1,000 behind peak EOD balance up to $26,100.00, then locks permanently at $25,100.00
+- **Intraday Soft Stop**: -$600.00 session halt (same as evaluation)
+- **Buffer Requirement**: LucidFlex does NOT mandate maintaining an arbitrary static buffer; payouts directly deduct from the cushion above the $25,100 locked floor
+
+### 3. Payout Eligibility & Calculation Rules
+- **Minimum Profitable Days**: Minimum 5 separate trading days (not consecutive) with >= $100.00 net profit each during the payout cycle
+- **Cycle Net Profit Requirement**: At least +$1.00 net profit compared to previous payout
+- **Counter Reset**: The 5-day profit counter resets to 0 after every approved payout and must be re-earned
+- **Payout Limit**: Maximum 5 payouts per account before transition to a live brokerage account
+- **Payout Formula**: Request 50% of accumulated profit above the $25,000.00 base, up to a $1,000.00 cap
+- **Minimum Payout Request**: $500.00 gross ($450.00 net after 90/10 split) -> Requires Balance >= $26,000.00
+  - Post-payout balance at $500 min withdrawal: $25,500.00 (leaves $400.00 drawdown cushion above the $25,100 locked floor)
+- **Maximum Payout Request**: $1,000.00 gross ($900.00 net after 90/10 split) -> Requires Balance >= $27,000.00
+  - Post-payout balance at $1,000 max withdrawal: $26,000.00 (leaves $900.00 drawdown cushion above the $25,100 locked floor)
+- **Profit Split**: 90/10 (Trader receives 90%, Prop Firm retains 10%)
+
+---
+
 ## LLM Wiki Persistent Knowledge Base Protocol (Karpathy Pattern)
 
 Every Gemini and Antigravity agent operating in this repository is strictly bound to maintain and compound knowledge through the `wiki/` knowledge base:

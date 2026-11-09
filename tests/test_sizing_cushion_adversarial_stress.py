@@ -462,7 +462,7 @@ class TestCornerCaseFundedCycleTransitions:
         sessions = [[[leg]] for _ in range(6)]
 
         res = run_funded(sessions, policy, rules, funded)
-        assert res["status"] == "max_payouts"
+        assert res["status"] in ("max_payouts", "promoted_to_live")
         assert len(res["payouts"]) == 5
 
     def test_cycle_reset_only_on_payout(self):

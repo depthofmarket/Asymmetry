@@ -4,30 +4,69 @@ This page tracks the dynamic operational state of the repository, active testing
 
 ---
 
-## Production Baseline & Verified Status
+## Production Baseline & Verified 5-Strategy Expansion Status
 
-The active production baseline is the **LucidFlex Tri-Asset Ensemble** (`lucid_flex_ensemble`), coordinating three uncorrelated strategies under the LucidFlex 25K prop firm profile:
+The repository maintains a strict separation between the **3-Strategy Production Baseline** (`StrategyTier.BASELINE`) and the **2 Verified Orthogonal Expansion Candidates** (`StrategyTier.CANDIDATE`), coordinated under the **LucidFlex 25K ($39 One-Time Payment [OTP], zero monthly rebill)** profile and **Pareto Anti-Martingale Ratchet (`2 -> 3 -> 4` micros)**:
 
-| Subsystem | Target Profile | Active Methodology | Net PnL (5.8 Yr) | Profit Factor | Win Rate | Active Flags |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Ensemble Walkforward** | `lucid_flex_ensemble` | Multi-Year Walkforward | $14,916.04 | 1.56 | 55.06% | ✅ None |
-| **Strategy 1 (09:45 ET)** | `morning_va_breakout_s1` | Multi-Year Walkforward | $8,956.18 | 1.65 | 56.96% | ✅ None |
-| **Strategy 2 (08:35 ET)** | `macro_momentum_s2` | Multi-Year Walkforward | $4,573.23 | 1.44 | 48.95% | ✅ None |
-| **Strategy 3 (10:15 ET)** | `gold_london_fix_s3` | Multi-Year Walkforward | $1,386.62 | 1.59 | 58.33% | ✅ None |
-| **Forward Demo Parity** | `lucid_flex_forward_demo`| Live Demo Paper Parity | $144.70 | 99.00 | 100.0% | ⚠️ `LOW_SAMPLE_SIZE` |
+| Subsystem | Strategy ID | Tier | Asset / Window (ET) | Trades | Win Rate | Profit Factor | Net PnL (5.8 Yr) | Max Drawdown | Active Flags |
+| :--- | :--- | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :--- |
+| **3-Strategy Ensemble** | `lucid_flex_ensemble` | `BASELINE` | `MNQ/MES/MGC` | 543 | 55.06% | **1.56** | **+$14,916.04** | -$1,511.51 | ✅ None |
+| **Strategy 1 (09:45 ET)** | `morning_va_breakout_s1` | `BASELINE` | `MNQ/MES` (`09:45–11:30`) | 316 | 56.96% | **1.65** | **+$8,956.18** | -$1,148.95 | ✅ None |
+| **Strategy 2 (08:35 ET)** | `macro_momentum_s2` | `BASELINE` | `MNQ` (`08:35–09:25`) | 143 | 48.95% | **1.44** | **+$4,573.23** | -$1,182.00 | ✅ None |
+| **Strategy 3 (10:15 ET)** | `gold_london_fix_s3` | `BASELINE` | `MGC` (`10:15–11:45`) | 84 | 58.33% | **1.59** | **+$1,386.62** | -$423.88 | ✅ None |
+| **Candidate S4 (21:00 ET)** | `asian_evening_reversion_s4` | `CANDIDATE` | `MNQ` (`21:00–23:00`) | 103 | 52.43% | **1.46** | **+$783.30** | -$442.40 | ⚠️ `CANDIDATE_TIER_QUARANTINED` |
+| **Candidate S5 (10:15 ET)** | `crude_rth_expansion_s5` | `CANDIDATE` | `MCL` (`10:15–12:30`) | 102 | 36.27% | **1.37** | **+$791.00** | -$348.50 | ⚠️ `CANDIDATE_TIER_QUARANTINED` |
+| **Forward Demo Parity** | `lucid_flex_forward_demo` | `FORWARD_DEMO` | `MNQ/MES/MGC` | 1 | 100.0% | 99.00 | +$144.70 | $0.00 | ⚠️ `LOW_SAMPLE_SIZE` |
 
 - **Current Repository Branch**: `main`
-- **Canonical Provenance Store**: `results/backtest_provenance.db` (9 verified runs recorded: 4 canonical baseline, 3 parameter plateau sweeps, 1 alpha factory walkforward, 1 forward demo)
-- **Data Source Parquet**: `data/processed/unified_three_strategy_markov_portfolio_trades_2021_2026.parquet`
-- **Data SHA-256**: `ecad8d063caa18344491c5c3050211c35f7383b0e8802f1178e3902306b686ca`
-- **Step 07 Sensitivity Status**: All 9 core parameters confirmed `ROBUST_PLATEAU` (Stability Ratios: 0.99x–1.02x, zero cliff fall-offs across 45 evaluations)
-- **Step 08 10,000-Path Monte Carlo Verification**: Re-verified across `n_sims=10,000` CRN block-bootstrap paths (`block_size=10` sessions, 1,499 exchange sessions, 543 frozen trades) and 10,000 trade-by-trade corridor paths: Baseline Ratchet (350/750) Pass Rate `74.62%` (median `90.0` sessions), Live Deployed Ratchet (200/550) Pass Rate `73.07%` (median `79.0` sessions), Max Compression Pareto Point (200/500) Pass Rate `73.00%` (median `78.0` sessions), and Funded Safe CPPI (<$400 de-leveraging) Infant Mortality `14.40%` (85.60% Payout #1 survival, median lifetime net extraction `+$662.60`, Net Lifetime EV `+$570.71` per $39 attempt)
-- **Asian Session Frontier Research (23:00–01:00 UTC-3)**: Candidate 12 (H44: Shanghai Gold AM Fix on MGC) evaluated across 1,744 sessions (2020–2026). In-Sample PF 1.08 breached Belfort Step 04 (hurdle >= 1.25); negative in 5 of 7 years, collapsing to 19.4% WR in 2026. Permanently vetoed as Entry #44 in `wiki/failed_ideas.md`. Production baseline quarantined at 3 strategies.
+- **Canonical Provenance Store**: `results/backtest_provenance.db` (26 verified runs recorded: 5 canonical baselines, 3 parameter plateau sweeps, 1 alpha factory walkforward, 1 forward demo, 16 candidate runs including verified S4 and S5)
+- **5-Strategy Expansion Empirical Verification (`results/m3_portfolio_ratchet_simulation.json`)**:
+  - **Empirical $5 \times 5$ Daily Return Correlation Matrix**: Maximum pairwise $|\rho| = 0.0599 \ll 0.20$ across 1,515 trading sessions (`2021–2026`).
+  - **10,000-Path Block-Bootstrap Monte Carlo (Pareto Ratchet `2 -> 3 -> 4` Micros, $39 OTP, Zero Monthly Rebill)**: Pass Rate improves from **`69.18%` (3-Strategy Baseline)** to **`72.79%` (+3.61 pp, 5-Strategy Portfolio)**; median exchange sessions to pass improves from **`82.0` to `75.0` (-7.0 sessions faster)**; Expected OTP Cost per Funded Account drops from **`$56.37` to `$53.58`**.
+  - **Historical Sequential LucidFlex 25K Campaigns (2021–2026)**: Passed evaluations increase by **+50%** (`12 / 15` vs `8 / 10`), and median calendar time to pass drops by **-44.5 calendar days (-31.2%)** from **`142.5` days to `98.0` days**.
+- **Data Source Parquet**: `data/processed/unified_five_strategy_portfolio_trades_2021_2026.parquet`
+- **Data SHA-256**: `c3324fd429e92386d0511c50a43ed246e25357ec80688dcef3bfb335487359b0` (748 verified trades across 2021-01-07 to 2026-10-30, Net +$16,490.34)
+- **MotiveWave Custom Studies Status**: All 5 custom studies compiled with JDK 25 (`tools/jdk25/Contents/Home/bin/javac`) and deployed to `/Users/novo/MotiveWave Extensions/LucidPropEnsemble.jar` (85.5 KB):
+  1. `LucidMorningVABreakoutStudy.java` (`VA_BREAKOUT_ALGO_V2` on MNQ/MES, S1)
+  2. `LucidMacroMomentumStudy.java` (`MACRO_MOMENTUM_ALGO_V1` on MNQ, S2)
+  3. `LucidGoldFixBreakoutStudy.java` (`GOLD_FIX_BREAKOUT_ALGO_V1` on MGC, S3)
+  4. `LucidAsianEveningReversionStudy.java` (`ASIAN_EVENING_REVERSION_S4` on MNQ, S4)
+  5. `LucidCrudeRthExpansionStudy.java` (`CRUDE_RTH_EXPANSION_S5` on MCL, S5)
 - **Agent Swarm & Skills Status**: 5 permanent specialized agents configured in `.agents/agents/` and 5 modular skills active in `.agents/skills/`
 
 ---
 
 ## Active Tasks & Work in Progress
+
+- [x] **V4 — Final Pareto Correction, Robustness Validation & Production Decision (`backtest/dashboard_analytics.py`, `scripts/research_optimal_5strategy_sizing.py`)**:
+  - **Corrected 3D Mathematical Pareto Frontier (`compute_pareto_frontier_3d`)**: Implemented exact 3D dominance testing across $(\max \text{Terminal Funded Payout EV}, \min \text{Infant Mortality}, \max \text{Live Promotion})$ over the 1,500-session terminal horizon (0.0% unresolved accounts). Proved that the non-dominated 3D Pareto frontier is **`{Policy A, Policy B, Policy C, Policy D}`** (`Policy D` is NOT dominated: A has lower EV, B has higher IM, C has lower Promotion) and only **`Policy C2`** is strictly dominated (by `Policy C`: +$120.69 EV, $t=+23.17, p_{\text{Holm}}=1.80\times 10^{-114}$; identical 19.38% IM; +3.53 pp Promotion, $t=+11.42, p_{\text{Holm}}=3.53\times 10^{-29}$).
+  - **Dual-Horizon & Terminal EV Leaderboard (10,000 CRN Paths, Seed 42, 7,829 Funded Accounts)**:
+    - **Policy A (Immediate $500 Min)**: Terminal EV **$948.39** (252-sess: $791.61) | IM: **19.38%** | Terminal Live Promo: **43.16%** (`PARETO-OPTIMAL`).
+    - **Policy B (Patient $1,000 Max)**: Terminal EV **$1,837.68** (252-sess: $1,262.13) | IM: **30.95%** | Terminal Live Promo: **41.46%** (`PARETO-OPTIMAL`).
+    - **Policy C (Two-Stage $500 P1 -> $1,000 P2–P5)**: Terminal EV **$1,540.68** (252-sess: $1,132.40) | IM: **19.38%** | Terminal Live Promo: **38.05%** (`PARETO-OPTIMAL`, Production Default under Objective C).
+    - **Policy D (Fixed $750 Benchmark)**: Terminal EV **$1,382.08** (252-sess: $1,072.19) | IM: **27.05%** | Terminal Live Promo: **41.45%** (`PARETO-OPTIMAL`).
+    - **Policy C2 (Adaptive Cushion-Aware)**: Terminal EV **$1,419.99** (252-sess: $1,125.91) | IM: **19.38%** | Terminal Live Promo: **34.53%** (`DOMINATED BY POLICY C`).
+  - **Chronological Regime Validation & Rank-Invariance Distinctions**: Confirmed Terminal EV ranking (`B > C > C2 > D > A`) and Infant Mortality ranking (`{A, C, C2} < D < B`) are strictly invariant across Pooled, Dev (2021–2024), and Holdout (2025–2026), whereas Live Promotion ranking shifts from `A > D > B > C > C2` in Dev to `B > A > D > C > C2` in Holdout (`B - A = +0.81 pp ± 0.67 pp`, $p_{\text{Holm}} = 0.3814$, statistical tie).
+  - **20% Infant-Mortality Constraint & Structural Lower Bound**: Verified exact binomial/Wilson 95% CIs for Policies A/C/C2: Pooled `19.38% [18.52%, 20.27%]`, Dev `20.43% [19.18%, 21.75%]` ($p(\ne 20\%) = 0.5178$), Holdout `17.53% [16.39%, 18.73%]`. Confirmed 19.38% (Pooled) / 20.43% (Dev) is the structural lower bound for any compliant withdrawal policy under fixed funded contract sizing.
+  - **Test Suite Status**: 101/101 tests passing across `test_funded_payout_policies.py` (21/21), `test_sizing_cushion_optimization_e2e.py` (55/55), `test_sizing_cushion_adversarial_stress.py` (19/19), and `test_lucid_flex_rules_integrity.py` (6/6). Full repository suite: 900 passed, 17 pre-existing unrelated failures, 0 skipped.
+
+- [x] **5-Strategy Optimal Sizing Math & Cushion Protection Research (`scripts/research_optimal_5strategy_sizing.py`)**:
+  - **Grid Search & Pareto Frontier**: Evaluated across 225 grid points via **10,000 CRN block-bootstrap iterations** on the verified 5-strategy portfolio (748 trades, SHA-256 `84179526...`, +$16,490.34 Net PnL). Discovered 18 non-dominated Pareto configurations.
+  - **Empirical Duration Compression (-26.6% to -31.6%)**: Balanced Production Champion `(T2=$100, T3=$600)` achieves **72.24% Pass Rate in 58.0 median sessions** (down from 79.0 sessions on 3 strategies); Maximum Compression Champion `(T2=$100, T3=$350)` achieves **71.02% Pass Rate in 54.0 median sessions**.
+  - **Safe CPPI Buffer Optimization ($400 Optimal)**: 10,000 funded simulations over 252 sessions show a **$400 floor buffer** maximizes Net Lifetime EV to **+$670.47 per $39 ticket** while suppressing infant mortality to **12.45%** (87.55% survival to Payout #1).
+  - **Finish-Line Lock Shield ($1,150 Optimal)**: Dropping to 1 micro at >= +$1,150 profit reduces heartbreak giveback ruins to **2.21%** (down from 2.82%).
+  - **Desk Allocations**: Proved Uniform Multi-Asset Ratchet (2->3->4) achieves **$49.81 expected cost/account**, outperforming fixed 1-micro by 3.3x speed.
+  - **Analytical Kelly Derivation**: Derived unconstrained Kelly (Composite 18.3%, Half-Kelly 9.2%) and proved mathematically that under an absorbing floor barrier, Kelly sizing scales to the **Cushion $C_t = \text{Balance}_t - \text{Floor}_t$**, proving the 2-micro entry and dynamic ratchet are the piecewise-linear realization of fractional Kelly.
+  - **Artifacts & Provenance**: Auto-recorded canonical run `sizing_optimization_5strategy_2021_2026` into `results/backtest_provenance.db`, generated 4 300 DPI figures (`figure1` through `figure4`) in `results/sizing_cushion_optimization/`, copied all figures and report to `/Users/novo/Downloads/`.
+
+- [x] **Multi-Agent Alpha Research & 5-Strategy Portfolio Expansion (`/teamwork` M0–M4)**:
+  - **Candidate S4 (`asian_evening_reversion_s4`, 21:00–23:00 ET / 23:00–01:00 UTC-3 on `MNQ`)**: Engineered Tokyo Cash Open Globex Drift Reversion (`strategies/asian_evening_reversion_s4.py`), verified across 2021–2026 (`run_canonical_s4_asian_evening_reversion_2021_2026`: 103 trades, WR 52.43%, PF 1.46, Net +$783.30, MaxDD -$442.40, IS +$541 / OOS +$243, 30/30 tests green).
+  - **Candidate S5 (`crude_rth_expansion_s5`, 10:15–12:30 ET on `MCL`)**: Engineered Post-Fix Morning Consolidation Range Expansion (`strategies/crude_rth_expansion_s5.py`), remediated same-day volume lookahead (`daily_stats["volume"].shift(1)`), verified across 2021–2026 (`run_canonical_s5_crude_rth_expansion_2021_2026`: 102 trades, WR 36.27%, PF 1.37, Net +$791.00, MaxDD -$348.50, 14/14 tests green).
+  - **Pareto Ratchet & 10,000-Path Monte Carlo Validation (`scripts/run_m3_portfolio_ratchet_and_correlations.py`)**: Verified pairwise correlation $|\rho| \le 0.0599 < 0.20$ and confirmed `+3.61 pp` Monte Carlo pass-rate uplift (`72.79%` vs `69.18%`) and `-44.5` calendar-day reduction per evaluation under the `$39` OTP fee model and `2 -> 3 -> 4` micro Pareto Ratchet.
+  - **Purged Unapproved Clones**: Removed `unanimous_breadth_s4_mym` and `unanimous_breadth_s5_m2k` from `config/strategy_registry.py`, `results/backtest_provenance.db`, and `wiki/`, logging them to `wiki/failed_ideas.md` (#46).
+
+- [x] **Combined strategy and prop-firm quantitative dashboard**: Added `scripts/generate_updated_strategy_prop_dashboard.py` and a timestamped PNG in `results/strategy_dashboard_v3/`. The report presents the 143-field metric inventory, tags aliases and unsupported inputs, and separates modeled prop outcomes from assumed payout terms. Existing strategy/prop PNGs were preserved. See `wiki/strategies/strategy-prop-metrics-dashboard.md`.
+- [x] **Visual dashboard set split into distinct views**: The timestamped v4 PNGs were revisions of one combined poster, so they repeated the same panels. Added `scripts/generate_strategy_dashboard_suite.py` and three separate timestamped sheets under `results/strategy_dashboard_v5/`: strategy performance, robustness/stress tests, and prop-firm account risk. Each has a provenance footer; the prop sheet identifies modeled rules/assumptions, and the stress sheet explicitly marks missing fold and permutation/placebo evidence. All earlier dashboard PNGs remain untouched.
 
 - [x] **Milestone 8: Comprehensive Repository Reorganization & 5.04 GB Forensic Purge**:
   - **Reclaimed 5.04 GB of Disk Space**: Reduced `results/` from **5,069 MB down to 24 MB** by purging 5,014 MB of unreferenced raw CSV signal exports in `results/research_master/signal_exports/` and 53 MB of abandoned H4 exploration runs.

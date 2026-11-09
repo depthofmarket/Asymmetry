@@ -28,6 +28,8 @@ STUDY_FILES = {
     "LucidMorningVABreakoutStudy": MOTIVEWAVE_DIR / "LucidMorningVABreakoutStudy.java",
     "LucidMacroMomentumStudy": MOTIVEWAVE_DIR / "LucidMacroMomentumStudy.java",
     "LucidGoldFixBreakoutStudy": MOTIVEWAVE_DIR / "LucidGoldFixBreakoutStudy.java",
+    "LucidAsianEveningReversionStudy": MOTIVEWAVE_DIR / "LucidAsianEveningReversionStudy.java",
+    "LucidCrudeRthExpansionStudy": MOTIVEWAVE_DIR / "LucidCrudeRthExpansionStudy.java",
 }
 
 

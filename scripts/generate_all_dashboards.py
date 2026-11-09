@@ -29,9 +29,9 @@ def main():
     print("=" * 80)
     print("  ALL DASHBOARDS SUCCESSFULLY GENERATED & PARITY-VERIFIED")
     print("=" * 80)
-    print(f"  1. Normal Quant Dashboard: file://{REPO_ROOT}/results/strategy_dashboard/dashboard.html")
-    print(f"  2. Prop Firm Dashboard:    file://{REPO_ROOT}/results/prop_firm_dashboard/dashboard.html")
-    print(f"  3. Demo Parity Journal:    file://{REPO_ROOT}/results/forward_test/demo_parity_dashboard.html")
+    print(f"  1. Strategy Performance Dashboard: file://{REPO_ROOT}/results/strategy_dashboard/dashboard.html")
+    print(f"  2. Prop Firm Mode Dashboard:       file://{REPO_ROOT}/results/prop_firm_dashboard/dashboard.html")
+    print(f"  3. Demo Parity Journal:            file://{REPO_ROOT}/results/forward_test/demo_parity_dashboard.html")
     print("=" * 80)
 
 if __name__ == "__main__":

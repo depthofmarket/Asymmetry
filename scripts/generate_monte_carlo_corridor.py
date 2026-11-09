@@ -25,7 +25,9 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-CANONICAL_TRADES_PATH = REPO_ROOT / "data/processed/unified_three_strategy_markov_portfolio_trades_2021_2026.parquet"
+FIVE_STRAT_PATH = REPO_ROOT / "data/processed/unified_five_strategy_portfolio_trades_2021_2026.parquet"
+THREE_STRAT_PATH = REPO_ROOT / "data/processed/unified_three_strategy_markov_portfolio_trades_2021_2026.parquet"
+CANONICAL_TRADES_PATH = FIVE_STRAT_PATH if FIVE_STRAT_PATH.exists() else THREE_STRAT_PATH
 FORWARD_TRADES_PATH = REPO_ROOT / "results/forward_test/demo_trades_ledger.csv"
 OUTPUT_DIR = REPO_ROOT / "results/forward_test"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -44,8 +46,8 @@ def run_monte_carlo_bootstrap(
         raise FileNotFoundError(f"Canonical trades parquet not found at {CANONICAL_TRADES_PATH}")
 
     df_hist = pd.read_parquet(CANONICAL_TRADES_PATH)
-    # Per-micro PnL = net_dollars_micro / contracts
-    per_contract_pnl = (df_hist["net_dollars_micro"] / df_hist["contracts"].clip(lower=1)).to_numpy(float)
+    pnl_col = "net_pnl" if "net_pnl" in df_hist.columns else "net_dollars_micro"
+    per_contract_pnl = (df_hist[pnl_col] / df_hist["contracts"].clip(lower=1)).to_numpy(float)
     n_hist = len(per_contract_pnl)
 
     rng = np.random.default_rng(seed)
@@ -195,60 +197,65 @@ def plot_corridor(mc_data: dict, output_path: Path | None = None) -> Path:
 
     # Institutional Clean White Theme
     plt.style.use("default")
-    fig, (ax1, ax2) = plt.subplots(
-        2, 1, figsize=(13, 8.5), dpi=300, gridspec_kw={"height_ratios": [3.2, 1.0]}, sharex=True
-    )
+    fig = plt.figure(figsize=(13, 9.0), dpi=300)
     fig.patch.set_facecolor("#FFFFFF")
+    # Generous top margin (top=0.82) so horizontal legend never collides with subtitle
+    gs = fig.add_gridspec(2, 1, height_ratios=[3.0, 1.0], hspace=0.25, top=0.82, bottom=0.08, left=0.08, right=0.95)
+
+    ax1 = fig.add_subplot(gs[0])
+    ax2 = fig.add_subplot(gs[1], sharex=ax1)
+
     ax1.set_facecolor("#FFFFFF")
     ax2.set_facecolor("#FFFFFF")
 
+    # Dedicated Header (No Overlap with Subplot or Legend)
+    fig.text(0.08, 0.960, "Belfort Step 08: 10,000-Path Monte Carlo Corridor & Live Forward Overlay",
+             fontsize=13.5, fontweight="bold", color="#0F172A")
+    fig.text(0.08, 0.932, f"Regime: {mc_data['regime_status']}  •  Bootstrap Pass Rate: {mc_data['overall_pass_rate']:.1f}%  •  Fail Rate: {mc_data['overall_fail_rate']:.1f}%",
+             fontsize=9.0, color="#475569")
+
     # Multi-layer Corridor fills (Institutional Ribbons)
-    ax1.fill_between(x, p05, p95, color="#BAE6FD", alpha=0.45, label="5th – 95th Percentile Corridor (90% Conf)")
-    ax1.fill_between(x, p25, p75, color="#38BDF8", alpha=0.45, label="25th – 75th Percentile (Interquartile Core)")
+    ax1.fill_between(x, p05, p95, color="#BAE6FD", alpha=0.40, label="P05–P95 Corridor (90% Conf)")
+    ax1.fill_between(x, p25, p75, color="#38BDF8", alpha=0.40, label="P25–P75 Interquartile Core")
     ax1.plot(x, p50, color="#0F172A", linestyle="--", linewidth=1.8, label="50th Percentile (Median Path)")
 
-    # Prop Firm Targets & Floors
-    ax1.axhline(26250.0, color="#059669", linestyle="--", linewidth=1.6, alpha=0.9, label="Profit Target (+$1,250 / $26,250)")
-    ax1.axhline(25000.0, color="#64748B", linestyle=":", linewidth=1.0, alpha=0.7, label="Starting Capital ($25,000)")
-    ax1.axhline(24000.0, color="#DC2626", linestyle="--", linewidth=1.6, alpha=0.9, label="Initial Trailing Floor ($24,000)")
-    ax1.axhline(25100.0, color="#7C3AED", linestyle=":", linewidth=1.2, alpha=0.9, label="Trailing Floor Lock ($25,100)")
+    # Prop Firm Targets & Floors (Escaped \$ prevents KaTeX bug)
+    ax1.axhline(26250.0, color="#059669", linestyle="--", linewidth=1.6, alpha=0.9, label=r"Profit Target (\$26,250)")
+    ax1.axhline(25000.0, color="#64748B", linestyle=":", linewidth=1.0, alpha=0.7, label=r"Starting Capital (\$25,000)")
+    ax1.axhline(24000.0, color="#DC2626", linestyle="--", linewidth=1.6, alpha=0.9, label=r"Initial Trailing Floor (\$24,000)")
+    ax1.axhline(25100.0, color="#7C3AED", linestyle=":", linewidth=1.2, alpha=0.9, label=r"Trailing Floor Lock (\$25,100)")
 
     # Live Equity Trajectory Overlay
     if len(live_eq) > 1:
         ax1.plot(live_x, live_eq, color="#0F172A", linewidth=2.6, zorder=5)
-        ax1.scatter(live_x, live_eq, color="#2563EB", edgecolors="#0F172A", s=65, linewidth=1.5, zorder=6, label=f"Live Forward Test (Trade {len(live_eq)-1}: ${live_eq[-1]:,.2f} | Rank {mc_data['current_rank']:.1f}%)")
-        # Annotate latest trade
+        ax1.scatter(live_x, live_eq, color="#2563EB", edgecolors="#0F172A", s=65, linewidth=1.5, zorder=6,
+                    label=f"Live Forward Test (Trade {len(live_eq)-1})")
+        # Annotate latest trade with boundary protection
         last_x, last_y = live_x[-1], live_eq[-1]
+        x_offset = -4.5 if last_x > n_trades * 0.75 else 1.2
         ax1.annotate(
-            f"LIVE: ${last_y:,.2f}\nRank: {mc_data['current_rank']:.1f}%\nStatus: {mc_data['regime_status'].replace('_', ' ')}",
+            f"LIVE: \\${last_y:,.2f}\nRank: {mc_data['current_rank']:.1f}%\nStatus: {mc_data['regime_status'].replace('_', ' ')}",
             xy=(last_x, last_y),
-            xytext=(last_x + 1.2, last_y + 80),
+            xytext=(last_x + x_offset, last_y + 80),
             arrowprops=dict(facecolor="#2563EB", edgecolor="#2563EB", arrowstyle="->", lw=1.5),
-            bbox=dict(boxstyle="round,pad=0.4", facecolor="#F8FAFC", edgecolor="#2563EB", alpha=0.95),
-            fontsize=8.5,
+            bbox=dict(boxstyle="round,pad=0.35", facecolor="#F8FAFC", edgecolor="#2563EB", alpha=0.95),
+            fontsize=8.0,
             fontfamily="monospace",
             color="#0F172A",
             fontweight="bold",
         )
     else:
-        ax1.scatter([0], [25000.0], color="#0F172A", s=50, zorder=6, label="Live Starting Equity ($25,000)")
+        ax1.scatter([0], [25000.0], color="#0F172A", s=50, zorder=6, label=r"Live Starting Equity (\$25,000)")
 
-    ax1.set_ylabel("Account Balance ($)", fontsize=10.5, fontweight="bold", color="#0F172A")
+    ax1.set_ylabel("Account Balance ($)", fontsize=10, fontweight="bold", color="#0F172A")
     ax1.yaxis.set_major_formatter(ticker.StrMethodFormatter("${x:,.0f}"))
-    ax1.set_ylim(23700, 26600)
-    ax1.grid(True, linestyle="--", alpha=0.4, color="#E2E8F0")
-    leg1 = ax1.legend(loc="upper left", frameon=True, facecolor="#FFFFFF", edgecolor="#CBD5E1", fontsize=8.5)
-    leg1.get_frame().set_linewidth(0.8)
+    ax1.set_ylim(23700, 26800)
+    ax1.grid(True, linestyle="--", alpha=0.5, color="#F1F5F9")
 
-    # Title & Subtitle
-    ax1.set_title(
-        "BELFORT STEP 08: 10,000-PATH MONTE CARLO CORRIDOR & LIVE FORWARD TEST OVERLAY\n"
-        f"Status: {mc_data['regime_status']} • Overall Bootstrap Pass Rate: {mc_data['overall_pass_rate']:.1f}% • Fail Rate: {mc_data['overall_fail_rate']:.1f}%",
-        fontsize=11.5,
-        fontweight="bold",
-        color="#0F172A",
-        pad=12,
-    )
+    # Legend above ax1 in horizontal band (Zero Occlusion, 4 balanced columns < 28 chars)
+    leg1 = ax1.legend(loc="lower left", bbox_to_anchor=(0.0, 1.03, 1.0, 0.05), mode="expand", ncol=4,
+                      frameon=True, facecolor="#F8FAFC", edgecolor="#CBD5E1", fontsize=8.0)
+    leg1.get_frame().set_linewidth(0.8)
 
     # Bottom subplot: Cumulative Pass / Fail Probability Curve
     pass_prob = np.array(mc_data["pass_prob"]) * 100.0
@@ -262,10 +269,10 @@ def plot_corridor(mc_data: dict, output_path: Path | None = None) -> Path:
     ax2.set_xlabel("Completed Trade Number (t)", fontsize=9.5, fontweight="bold", color="#0F172A")
     ax2.set_ylabel("Probability (%)", fontsize=9.5, fontweight="bold", color="#0F172A")
     ax2.yaxis.set_major_formatter(ticker.StrMethodFormatter("{x:.0f}%"))
-    ax2.set_ylim(0, 100)
+    ax2.set_ylim(0, 105)
     ax2.set_xlim(-0.5, n_trades + 0.5)
-    ax2.grid(True, linestyle="--", alpha=0.4, color="#E2E8F0")
-    leg2 = ax2.legend(loc="upper left", frameon=True, facecolor="#FFFFFF", edgecolor="#CBD5E1", fontsize=8.5)
+    ax2.grid(True, linestyle="--", alpha=0.5, color="#F1F5F9")
+    leg2 = ax2.legend(loc="upper left", frameon=True, facecolor="#FFFFFF", edgecolor="#CBD5E1", fontsize=8.2)
     leg2.get_frame().set_linewidth(0.8)
 
     for ax in (ax1, ax2):
@@ -274,8 +281,7 @@ def plot_corridor(mc_data: dict, output_path: Path | None = None) -> Path:
             spine.set_linewidth(0.8)
         ax.tick_params(colors="#475569", labelsize=8.5)
 
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=300, facecolor=fig.get_facecolor(), edgecolor="none")
+    plt.savefig(output_path, dpi=300, facecolor=fig.get_facecolor(), bbox_inches="tight")
     plt.close()
 
     # Also save JSON metadata

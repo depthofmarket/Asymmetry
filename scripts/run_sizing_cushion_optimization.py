@@ -434,11 +434,15 @@ def _plot_figure1_heatmaps(grid_df: pd.DataFrame, save_path: Path):
     """Figure 1: Dual 2D Heatmaps showing Pass Rate (%) and Median Duration (sessions)."""
     fig, axes = plt.subplots(1, 2, figsize=(16, 7))
 
+    gdf = grid_df.copy()
+    gdf["t2"] = gdf["t2"].astype(int)
+    gdf["t3"] = gdf["t3"].astype(int)
+
     # Pivot tables: index=T2 (y-axis), columns=T3 (x-axis)
-    pivot_pass = grid_df.pivot_table(
+    pivot_pass = gdf.pivot_table(
         index="t2", columns="t3", values="pass_rate"
     )
-    pivot_dur = grid_df.pivot_table(
+    pivot_dur = gdf.pivot_table(
         index="t2", columns="t3", values="pass_med_sessions"
     )
 
@@ -454,16 +458,16 @@ def _plot_figure1_heatmaps(grid_df: pd.DataFrame, save_path: Path):
         linewidths=0.5,
         linecolor="#E5E7EB",
     )
-    ax1.set_title("Panel A: Bootstrap Pass Rate (%)\n(Target: ≥ 72.0% – 75.0%)", pad=12)
-    ax1.set_xlabel("Tier 3 Threshold (T3, $)", labelpad=8)
-    ax1.set_ylabel("Tier 2 Threshold (T2, $)", labelpad=8)
+    ax1.set_title("Panel A: Bootstrap Pass Rate (%)\n(Target: ≥ 72.0% – 75.0%)", pad=12, fontweight="bold", color="#0F172A")
+    ax1.set_xlabel("Tier 3 Threshold (T3, $)", labelpad=8, fontweight="bold", color="#0F172A")
+    ax1.set_ylabel("Tier 2 Threshold (T2, $)", labelpad=8, fontweight="bold", color="#0F172A")
     # Invert y-axis so smaller T2 is at bottom
     ax1.invert_yaxis()
 
     # Highlight baseline (T2=350, T3=750)
     try:
-        t2_idx = list(pivot_pass.index).index(350.0)
-        t3_idx = list(pivot_pass.columns).index(750.0)
+        t2_idx = list(pivot_pass.index).index(350)
+        t3_idx = list(pivot_pass.columns).index(750)
         ax1.add_patch(
             plt.Rectangle(
                 (t3_idx, t2_idx), 1, 1, fill=False, edgecolor="#EF4444", lw=2.5, ls="--"
@@ -484,15 +488,15 @@ def _plot_figure1_heatmaps(grid_df: pd.DataFrame, save_path: Path):
         linewidths=0.5,
         linecolor="#E5E7EB",
     )
-    ax2.set_title("Panel B: Median Pass Duration (Sessions)\n(Lower = Faster Duration Compression)", pad=12)
-    ax2.set_xlabel("Tier 3 Threshold (T3, $)", labelpad=8)
-    ax2.set_ylabel("Tier 2 Threshold (T2, $)", labelpad=8)
+    ax2.set_title("Panel B: Median Pass Duration (Sessions)\n(Lower = Faster Duration Compression)", pad=12, fontweight="bold", color="#0F172A")
+    ax2.set_xlabel("Tier 3 Threshold (T3, $)", labelpad=8, fontweight="bold", color="#0F172A")
+    ax2.set_ylabel("Tier 2 Threshold (T2, $)", labelpad=8, fontweight="bold", color="#0F172A")
     ax2.invert_yaxis()
 
     # Highlight baseline
     try:
-        t2_idx = list(pivot_dur.index).index(350.0)
-        t3_idx = list(pivot_dur.columns).index(750.0)
+        t2_idx = list(pivot_dur.index).index(350)
+        t3_idx = list(pivot_dur.columns).index(750)
         ax2.add_patch(
             plt.Rectangle(
                 (t3_idx, t2_idx), 1, 1, fill=False, edgecolor="#EF4444", lw=2.5, ls="--"
@@ -504,11 +508,12 @@ def _plot_figure1_heatmaps(grid_df: pd.DataFrame, save_path: Path):
     fig.suptitle(
         "Evaluation Ratchet Threshold Grid Search (135 Parameter Points, 5,000 CRN Simulations/Point)\n"
         "Baseline (T2=$350, T3=$750) Outlined in Red Dashed Box",
-        fontsize=14,
+        fontsize=13.5,
         fontweight="bold",
-        y=1.02,
+        color="#0F172A",
+        y=0.985,
     )
-    plt.tight_layout()
+    plt.tight_layout(rect=[0.01, 0.02, 0.99, 0.94])
     fig.savefig(save_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
 
@@ -608,42 +613,42 @@ def _plot_figure2_pareto(
             f"Balanced Champion ({int(balanced['t2'])}/{int(balanced['t3'])})\n"
             f"Pass: {balanced['pass_rate']:.1f}% | Med: {balanced['pass_med_sessions']:.0f}s (-{baseline['pass_med_sessions'] - balanced['pass_med_sessions']:.0f}s)",
             xy=(balanced["pass_med_sessions"], balanced["pass_rate"]),
-            xytext=(balanced["pass_med_sessions"] + 1.5, balanced["pass_rate"] - 0.45),
+            xytext=(balanced["pass_med_sessions"] + 1.2, balanced["pass_rate"] - 0.45),
             arrowprops=dict(arrowstyle="->", color="#B45309", lw=1.2),
             fontweight="bold",
-            fontsize=9.5,
-            bbox=dict(boxstyle="round,pad=0.4", fc="#FEF3C7", ec="#F59E0B", lw=1.0),
+            fontsize=9.0,
+            bbox=dict(boxstyle="round,pad=0.35", fc="#FEF3C7", ec="#F59E0B", lw=1.0),
         )
 
-    # Annotate Baseline
+    # Annotate Baseline (placed below point into clear lower-right space to avoid covering top Pareto dots)
     ax.annotate(
         f"Baseline (350/750)\n"
         f"Pass: {baseline['pass_rate']:.1f}% | Med: {baseline['pass_med_sessions']:.0f}s (~4.3 mos)",
         xy=(baseline["pass_med_sessions"], baseline["pass_rate"]),
-        xytext=(baseline["pass_med_sessions"] + 1.2, baseline["pass_rate"] + 0.35),
+        xytext=(baseline["pass_med_sessions"] + 0.8, baseline["pass_rate"] - 0.80),
         arrowprops=dict(arrowstyle="->", color="#B91C1C", lw=1.2),
         fontweight="bold",
-        fontsize=9.5,
-        bbox=dict(boxstyle="round,pad=0.4", fc="#FEE2E2", ec="#EF4444", lw=1.0),
+        fontsize=9.0,
+        bbox=dict(boxstyle="round,pad=0.35", fc="#FEE2E2", ec="#EF4444", lw=1.0),
     )
 
-    # Annotate Max Compression
+    # Annotate Max Compression (placed inside plot boundary above diamond to eliminate legend collision)
     ax.annotate(
         f"Max Compression ({int(max_comp['t2'])}/{int(max_comp['t3'])})\n"
         f"Pass: {max_comp['pass_rate']:.1f}% | Med: {max_comp['pass_med_sessions']:.0f}s (-{baseline['pass_med_sessions'] - max_comp['pass_med_sessions']:.0f}s / ~2.5 wks)",
         xy=(max_comp["pass_med_sessions"], max_comp["pass_rate"]),
-        xytext=(max_comp["pass_med_sessions"] - 4.5, max_comp["pass_rate"] - 0.95),
+        xytext=(max_comp["pass_med_sessions"] - 1.2, max_comp["pass_rate"] + 0.85),
         arrowprops=dict(arrowstyle="->", color="#047857", lw=1.2),
         fontweight="bold",
-        fontsize=9.5,
-        bbox=dict(boxstyle="round,pad=0.4", fc="#D1FAE5", ec="#10B981", lw=1.0),
+        fontsize=9.0,
+        bbox=dict(boxstyle="round,pad=0.35", fc="#D1FAE5", ec="#10B981", lw=1.0),
     )
 
     # Shaded Target Zone (Pass Rate >= 72.0%)
     ax.axhspan(72.0, 76.5, color="#ECFDF5", alpha=0.3, zorder=1)
     ax.axhline(72.0, color="#10B981", linestyle=":", lw=1.2)
     ax.text(
-        ax.get_xlim()[0] + 0.5 if ax.get_xlim()[0] > 0 else 76,
+        76.5,
         72.1,
         "Mandatory Pass Gate (≥ 72.0%)",
         color="#047857",
@@ -655,11 +660,16 @@ def _plot_figure2_pareto(
         "Evaluation Ratchet Pareto Frontier: Median Pass Duration vs. Pass Rate\n"
         "(5,000 CRN Block-Bootstrap Iterations across 1,499 Continuous Calendar Sessions)",
         pad=14,
+        fontweight="bold",
+        fontsize=12.5,
+        color="#0F172A",
     )
-    ax.set_xlabel("Median Pass Duration (Exchange Sessions, Lower = Faster Pass)", labelpad=10)
-    ax.set_ylabel("Bootstrap Pass Rate (%, Higher = More Robust)", labelpad=10)
+    ax.set_xlim(75.5, 96.0)
+    ax.set_ylim(71.8, 76.2)
+    ax.set_xlabel("Median Pass Duration (Exchange Sessions, Lower = Faster Pass)", labelpad=10, fontweight="bold", color="#0F172A")
+    ax.set_ylabel("Bootstrap Pass Rate (%, Higher = More Robust)", labelpad=10, fontweight="bold", color="#0F172A")
     ax.grid(True, linestyle="--", alpha=0.6)
-    ax.legend(loc="lower left", framealpha=0.95)
+    ax.legend(loc="lower right", framealpha=0.95, facecolor="#FFFFFF", edgecolor="#CBD5E1", fontsize=8.5)
 
     plt.tight_layout()
     fig.savefig(save_path, dpi=300, bbox_inches="tight")
@@ -711,8 +721,8 @@ def _plot_figure3_funded_comparison(funded_df: pd.DataFrame, save_path: Path):
         for ev in df["net_lifetime_ev"]
     ]
     bars2 = ax2.barh(df["short_name"], df["net_lifetime_ev"], color=colors2, height=0.65, edgecolor="#111827", lw=0.8)
-    ax2.set_xlabel("Net Lifetime EV per $39 Attempt ($)", labelpad=8)
-    ax2.set_title("Panel B: Net Lifetime EV ($)\n(EV = PassRate × MeanNet - $39, Higher = Better)", pad=10)
+    ax2.set_xlabel(r"Net Lifetime EV per \$39 Attempt (\$)", labelpad=8)
+    ax2.set_title(r"Panel B: Net Lifetime EV (\$)" + "\n" + r"(EV = PassRate × MeanNet - \$39, Higher = Better)", pad=10)
     ax2.invert_yaxis()
     ax2.grid(True, axis="x", linestyle="--", alpha=0.6)
     for bar in bars2:
@@ -823,30 +833,35 @@ def _plot_figure4_trajectories(
 
         ax.plot(sessions_x, equity, color="#2563EB", lw=2.0, label="Account Balance ($)")
         ax.plot(sessions_x, floors, color="#EF4444", lw=1.6, linestyle="--", label="Trailing Drawdown Floor ($)")
-        ax.fill_between(sessions_x, floors, equity, color="#3B82F6", alpha=0.12, label="Cushion Buffer ($bal - floor$)")
+        ax.fill_between(sessions_x, floors, equity, color="#3B82F6", alpha=0.12, label="Cushion Buffer (Balance - Floor)")
         ax.axhline(25000.0, color="#9CA3AF", linestyle=":", lw=1.0, label="Starting Capital ($25k)")
         ax.axhline(25100.0, color="#F59E0B", linestyle=":", lw=1.0, label="Permanent Lock Floor ($25.1k)")
 
-        # Mark payouts
-        for p_sess, p_amt in payouts:
+        # Mark payouts with alternating vertical staggering to prevent horizontal tag collision
+        for p_idx, (p_sess, p_amt) in enumerate(payouts):
             if p_sess < len(equity):
                 ax.scatter(
                     [p_sess], [equity[p_sess]],
                     color="#10B981", edgecolor="#065F46", s=100, zorder=5, marker="^"
                 )
+                # Stagger height to avoid overlap when payouts occur in quick succession
+                y_stagger = 120 if (p_idx % 2 == 0) else 240
                 ax.annotate(
                     f"Payout +${p_amt:.0f}",
                     xy=(p_sess, equity[p_sess]),
-                    xytext=(p_sess - 5, equity[p_sess] + 120),
+                    xytext=(p_sess, equity[p_sess] + y_stagger),
                     arrowprops=dict(arrowstyle="->", color="#059669", lw=1.0),
-                    fontsize=8.5,
+                    ha="center",
+                    fontsize=8.0,
                     fontweight="bold",
-                    bbox=dict(boxstyle="round,pad=0.2", fc="#ECFDF5", ec="#10B981", lw=0.8),
+                    bbox=dict(boxstyle="round,pad=0.25", fc="#ECFDF5", ec="#10B981", lw=0.8),
+                    zorder=6,
                 )
 
         status_str = f"Final Status: {res['status'].upper()} ({len(payouts)} payouts, ${sum(p[1] for p in payouts):.0f} net)"
         ax.set_title(f"Panel {letter}: {pol_title}\n{status_str}", pad=8, fontsize=11)
         ax.set_ylabel("Account Balance ($)", labelpad=6)
+        ax.set_ylim(23850.0, max(equity.max() + 380, 26200.0))
         ax.grid(True, linestyle="--", alpha=0.6)
         if (r, c) == (0, 0):
             ax.legend(loc="lower left", fontsize=8.5, framealpha=0.9)
@@ -1135,6 +1150,11 @@ def main():
         default=-1,
         help="Parallel CPU cores for grid evaluation (-1 for all cores, default: -1)",
     )
+    parser.add_argument(
+        "--plots-only",
+        action="store_true",
+        help="Skip simulation and regenerate publication figures from existing CSVs in out_dir",
+    )
     args = parser.parse_args()
 
     out_dir = args.out_dir
@@ -1144,7 +1164,6 @@ def main():
     print("LUCIDFLEX 25K SIZING MATH & CUSHION OPTIMIZATION PIPELINE")
     print("=" * 80)
     print(f"Output directory: {out_dir}")
-    print(f"Grid Sims: {args.n_sims_grid} | Funded Sims: {args.n_sims_funded} | Seed: {args.seed}")
 
     # 1. Load Data & Verify R1
     print("\n--- Phase 1: Data Ingestion & Signal Freeze Verification (R1) ---")
@@ -1161,63 +1180,73 @@ def main():
     print(f"Signal Freeze Status: {'VERIFIED 100% FROZEN' if verification['is_frozen'] else 'FAILED'}")
     assert verification["is_frozen"], "R1 Verification Failed: Signals or trade counts tampered!"
 
-    # 2. Run Evaluation Ratchet Grid Search (R2)
-    print("\n--- Phase 2: Evaluation Ratchet Grid Search (R2) ---")
-    grid_df, pareto_df = execute_evaluation_grid(
-        legs=legs,
-        t2_range=(200.0, 400.0, 25.0),
-        t3_range=(500.0, 850.0, 25.0),
-        n_sims=args.n_sims_grid,
-        seed=args.seed,
-        block_size=args.block_size,
-        horizon=args.horizon,
-        n_jobs=args.n_jobs,
-    )
-
     grid_csv = out_dir / "evaluation_ratchet_grid_results.csv"
     pareto_csv = out_dir / "evaluation_pareto_frontier.csv"
-    grid_df.to_csv(grid_csv, index=False)
-    pareto_df.to_csv(pareto_csv, index=False)
-    print(f"Exported: {grid_csv}")
-    print(f"Exported: {pareto_csv}")
-
-    # Optimal candidate from Pareto
-    feasible_pareto = pareto_df[pareto_df["pass_rate"] >= 74.0]
-    if len(feasible_pareto) > 0:
-        optimal_pt = feasible_pareto.sort_values("pass_med_sessions").iloc[0]
-    else:
-        optimal_pt = pareto_df.sort_values("pass_med_sessions").iloc[0]
-    optimal_t2, optimal_t3 = float(optimal_pt["t2"]), float(optimal_pt["t3"])
-    print(f"Selected Optimal Candidate for Funded Testing: T2=${optimal_t2}, T3=${optimal_t3}")
-
-    # 3. Run Funded Mode Transition Simulation (R3)
-    print("\n--- Phase 3: Funded Mode Transition & Infant Mortality Analysis (R3) ---")
-    eval_policy = da.POLICIES["live_ratchet"]
-    funded_policies = get_funded_policies_suite(
-        optimal_t2=optimal_t2, optimal_t3=optimal_t3
-    )
-
-    funded_df = execute_funded_transition(
-        legs=legs,
-        eval_policy=eval_policy,
-        funded_policies=funded_policies,
-        n_sims=args.n_sims_funded,
-        seed=args.seed,
-        funded_horizon=args.funded_horizon,
-        eval_horizon=args.horizon,
-        block_size=args.block_size,
-    )
-
     funded_csv = out_dir / "funded_transition_policy_comparison.csv"
-    funded_df.to_csv(funded_csv, index=False)
-    print(f"Exported: {funded_csv}")
-
-    # 4. Generate Summary Metrics Table
-    print("\n--- Phase 4: High-Level Summary Metrics Table ---")
-    summary_df = generate_summary_metrics(grid_df, pareto_df, funded_df)
     summary_csv = out_dir / "sizing_cushion_summary_metrics.csv"
-    summary_df.to_csv(summary_csv, index=False)
-    print(f"Exported: {summary_csv}")
+
+    if args.plots_only:
+        print("\n--- Plots Only Mode: Loading verified simulation CSVs ---")
+        grid_df = pd.read_csv(grid_csv)
+        pareto_df = pd.read_csv(pareto_csv)
+        funded_df = pd.read_csv(funded_csv)
+        summary_df = pd.read_csv(summary_csv)
+    else:
+        print(f"Grid Sims: {args.n_sims_grid} | Funded Sims: {args.n_sims_funded} | Seed: {args.seed}")
+
+        # 2. Run Evaluation Ratchet Grid Search (R2)
+        print("\n--- Phase 2: Evaluation Ratchet Grid Search (R2) ---")
+        grid_df, pareto_df = execute_evaluation_grid(
+            legs=legs,
+            t2_range=(200.0, 400.0, 25.0),
+            t3_range=(500.0, 850.0, 25.0),
+            n_sims=args.n_sims_grid,
+            seed=args.seed,
+            block_size=args.block_size,
+            horizon=args.horizon,
+            n_jobs=args.n_jobs,
+        )
+
+        grid_df.to_csv(grid_csv, index=False)
+        pareto_df.to_csv(pareto_csv, index=False)
+        print(f"Exported: {grid_csv}")
+        print(f"Exported: {pareto_csv}")
+
+        # Optimal candidate from Pareto
+        feasible_pareto = pareto_df[pareto_df["pass_rate"] >= 74.0]
+        if len(feasible_pareto) > 0:
+            optimal_pt = feasible_pareto.sort_values("pass_med_sessions").iloc[0]
+        else:
+            optimal_pt = pareto_df.sort_values("pass_med_sessions").iloc[0]
+        optimal_t2, optimal_t3 = float(optimal_pt["t2"]), float(optimal_pt["t3"])
+        print(f"Selected Optimal Candidate for Funded Testing: T2=${optimal_t2}, T3=${optimal_t3}")
+
+        # 3. Run Funded Mode Transition Simulation (R3)
+        print("\n--- Phase 3: Funded Mode Transition & Infant Mortality Analysis (R3) ---")
+        eval_policy = da.POLICIES["live_ratchet"]
+        funded_policies = get_funded_policies_suite(
+            optimal_t2=optimal_t2, optimal_t3=optimal_t3
+        )
+
+        funded_df = execute_funded_transition(
+            legs=legs,
+            eval_policy=eval_policy,
+            funded_policies=funded_policies,
+            n_sims=args.n_sims_funded,
+            seed=args.seed,
+            funded_horizon=args.funded_horizon,
+            eval_horizon=args.horizon,
+            block_size=args.block_size,
+        )
+
+        funded_df.to_csv(funded_csv, index=False)
+        print(f"Exported: {funded_csv}")
+
+        # 4. Generate Summary Metrics Table
+        print("\n--- Phase 4: High-Level Summary Metrics Table ---")
+        summary_df = generate_summary_metrics(grid_df, pareto_df, funded_df)
+        summary_df.to_csv(summary_csv, index=False)
+        print(f"Exported: {summary_csv}")
 
     # 5. Generate Figures (R4)
     print("\n--- Phase 5: Publication-Grade Visualizations (300 DPI) ---")

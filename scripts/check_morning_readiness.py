@@ -58,6 +58,7 @@ def check_csv_feeds() -> list[dict[str, any]]:
         ("NQ / MNQ", ROOT / "data/raw/@NQ.CQG_1.csv"),
         ("ES / MES", ROOT / "data/raw/@ES.CQG_1.csv"),
         ("GC / MGC", ROOT / "data/raw/@GC.CQG_1.csv"),
+        ("CL / MCL", ROOT / "data/raw/@CL.CQG_1.csv"),
     ]
     results = []
     now = datetime.now()

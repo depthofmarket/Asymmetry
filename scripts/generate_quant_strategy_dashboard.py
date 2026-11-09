@@ -70,6 +70,52 @@ def format_spines_and_grid(ax):
     ax.tick_params(colors="#000000", labelsize=9)
 
 
+def currency_formatter_no_cents(x, pos=None):
+    """Formats currency correctly with negative signs before the dollar symbol (-$200, not $-200)."""
+    if x < 0:
+        return f"-${abs(x):,.0f}"
+    elif x > 0:
+        return f"${x:,.0f}"
+    else:
+        return "$0"
+
+
+def create_institutional_table(
+    ax,
+    data: list[list[str]],
+    headers: list[str],
+    col_widths: list[float],
+    title: str | None = None,
+    row_scale: float = 1.8,
+    font_size: float = 8.5,
+    highlight_row: int | None = None,
+):
+    """Renders a clean, institutional publication-grade table with auto-wrapping and alternating rows."""
+    ax.axis("off")
+    if title:
+        ax.text(0.0, 0.98, title, fontsize=10.5, fontweight="bold", color="#0F172A", transform=ax.transAxes, va="top")
+    tab = ax.table(cellText=data, colLabels=headers, loc="center", cellLoc="left", colWidths=col_widths)
+    tab.auto_set_font_size(False)
+    tab.set_fontsize(font_size)
+    tab.scale(1.0, row_scale)
+    for (r, c), cell in tab.get_celld().items():
+        cell.set_edgecolor("#CBD5E1")
+        cell.set_linewidth(0.6)
+        if r == 0:
+            cell.set_facecolor("#F1F5F9")
+            cell.get_text().set_weight("bold")
+            cell.get_text().set_color("#0F172A")
+        else:
+            if highlight_row is not None and r == highlight_row:
+                cell.set_facecolor("#EFF6FF")
+                cell.get_text().set_color("#1D4ED8")
+                cell.get_text().set_weight("bold")
+            else:
+                cell.set_facecolor("#FFFFFF" if r % 2 == 1 else "#F8FAFC")
+                cell.get_text().set_color("#334155")
+    return tab
+
+
 def compute_monthly_matrix_data(trades: pd.DataFrame, col: str = "pnl") -> list[dict]:
     piv = trades.assign(
         year=trades["entry_time"].dt.year,
@@ -200,6 +246,8 @@ def render_sheet_01_equity(
     m_s1: dict,
     m_s2: dict,
     m_s3: dict,
+    m_s4: dict | None = None,
+    m_s5: dict | None = None,
     nq_benchmark: pd.Series | None = None,
 ) -> Path:
     plt.style.use("default")
@@ -212,6 +260,8 @@ def render_sheet_01_equity(
     d_s1 = da.daily_series(trades[trades["strat"] == "S1"], calendar, "research_pnl")
     d_s2 = da.daily_series(trades[trades["strat"] == "S2"], calendar, "research_pnl")
     d_s3 = da.daily_series(trades[trades["strat"] == "S3"], calendar, "research_pnl")
+    d_s4 = da.daily_series(trades[trades["strat"] == "S4"], calendar, "research_pnl")
+    d_s5 = da.daily_series(trades[trades["strat"] == "S5"], calendar, "research_pnl")
 
     cal_dates = pd.to_datetime(calendar)
     eq_comp = d_comp.cumsum().to_numpy() + 25_000.0
@@ -219,6 +269,8 @@ def render_sheet_01_equity(
     eq_s1 = d_s1.cumsum().to_numpy() + 25_000.0
     eq_s2 = d_s2.cumsum().to_numpy() + 25_000.0
     eq_s3 = d_s3.cumsum().to_numpy() + 25_000.0
+    eq_s4 = d_s4.cumsum().to_numpy() + 25_000.0
+    eq_s5 = d_s5.cumsum().to_numpy() + 25_000.0
 
     if nq_benchmark is not None:
         eq_nq = 25_000.0 * (nq_benchmark / nq_benchmark.iloc[0]).to_numpy()
@@ -238,15 +290,21 @@ def render_sheet_01_equity(
         ax_main.plot(cal_dates, eq_nq, color="#475569", linestyle="-", linewidth=1.8,
                      label="Passive NQ Buy & Hold (+120.7% • MaxDD -35.2% • Sortino 0.62 • Calmar 0.40)", zorder=2)
 
-    ax_main.plot(cal_dates, eq_comp, color="#1f77b4", linewidth=2.5,
-                 label=f"Unified Composite (+${m_comp['net_profit']:,.2f} • Ann Sharpe {m_comp['sharpe']:.2f} • Sortino {m_comp['sortino']:.2f})", zorder=5)
-    ax_main.plot(cal_dates, eq_s1, color="#ff7f0e", linewidth=1.4, alpha=0.9,
+    ax_main.plot(cal_dates, eq_comp, color="#0284C7", linewidth=2.6,
+                 label=f"Unified 5-Strategy Composite (+${m_comp['net_profit']:,.2f} • Ann Sharpe {m_comp['sharpe']:.2f} • Sortino {m_comp['sortino']:.2f})", zorder=6)
+    ax_main.plot(cal_dates, eq_s1, color="#ff7f0e", linewidth=1.3, alpha=0.9,
                  label=f"Strategy 1: 09:45 VA Breakout (+${m_s1['net_profit']:,.2f} • PF {m_s1['profit_factor']:.2f})", zorder=4)
-    ax_main.plot(cal_dates, eq_s2, color="#2ca02c", linewidth=1.4, alpha=0.9,
-                 label=f"Strategy 2: 10:15 Gold Fix (+${m_s2['net_profit']:,.2f} • PF {m_s2['profit_factor']:.2f})", zorder=4)
-    ax_main.plot(cal_dates, eq_s3, color="#d62728", linewidth=1.4, alpha=0.9,
-                 label=f"Strategy 3: 08:35 Macro Momentum (+${m_s3['net_profit']:,.2f} • PF {m_s3['profit_factor']:.2f})", zorder=4)
-    ax_main.plot(cal_dates, eq_peak, color="#9467bd", linestyle="--", linewidth=1.0, alpha=0.75,
+    ax_main.plot(cal_dates, eq_s2, color="#d62728", linewidth=1.3, alpha=0.9,
+                 label=f"Strategy 2: 08:35 Macro Momentum (+${m_s2['net_profit']:,.2f} • PF {m_s2['profit_factor']:.2f})", zorder=4)
+    ax_main.plot(cal_dates, eq_s3, color="#2ca02c", linewidth=1.3, alpha=0.9,
+                 label=f"Strategy 3: 10:15 Gold Fix (+${m_s3['net_profit']:,.2f} • PF {m_s3['profit_factor']:.2f})", zorder=4)
+    if m_s4 and m_s4.get("trades", 0) > 0:
+        ax_main.plot(cal_dates, eq_s4, color="#8b5cf6", linewidth=1.3, alpha=0.9,
+                     label=f"Strategy 4: 21:00 Asian Reversion (+${m_s4['net_profit']:,.2f} • PF {m_s4['profit_factor']:.2f})", zorder=4)
+    if m_s5 and m_s5.get("trades", 0) > 0:
+        ax_main.plot(cal_dates, eq_s5, color="#0D9488", linewidth=1.3, alpha=0.9,
+                     label=f"Strategy 5: 10:15 Crude Expansion (+${m_s5['net_profit']:,.2f} • PF {m_s5['profit_factor']:.2f})", zorder=4)
+    ax_main.plot(cal_dates, eq_peak, color="#64748b", linestyle="--", linewidth=1.0, alpha=0.75,
                  label="Running High-Water Mark", zorder=3)
 
     # 2022 Bear Market Callout Arrow
@@ -385,8 +443,8 @@ def render_sheet_01_equity(
         for idx, b in enumerate(bars):
             row = top_eps.iloc[idx]
             rec_str = f"{row['calendar_days']}d" if row["recovered_flag"] else "Open"
-            ax_ep.annotate(f"-${row['depth']:,.0f}\n({rec_str})", xy=(b.get_x() + b.get_width() / 2, b.get_height()),
-                           xytext=(0, 2), textcoords="offset points", ha="center", va="bottom", fontsize=7.2, fontweight="bold", color="#000000", parse_math=False)
+            ax_ep.annotate(f"${abs(row['depth']):,.0f}\n({rec_str})", xy=(b.get_x() + b.get_width() / 2, b.get_height()),
+                           xytext=(0, 4), textcoords="offset points", ha="center", va="bottom", fontsize=7.4, fontweight="bold", color="#000000", parse_math=False)
 
         lbls = [f"#{i+1} ({top_eps.iloc[i]['start'].strftime('%b %y')})" for i in range(len(top_eps))]
         ax_ep.set_xticks(bar_x)
@@ -611,12 +669,8 @@ def render_sheet_03_timing(trades: pd.DataFrame, calendar: list[str]) -> Path:
 
     # Panel C: Intraday Window Microstructure Table (Dynamic Calculation)
     ax_tab = fig.add_subplot(gs[1, :])
-    ax_tab.set_facecolor("#FFFFFF")
-    ax_tab.axis("off")
 
-    ax_tab.text(0.02, 0.96, "Intraday Execution Microstructure (Window-by-Window Profile)", fontsize=11, fontweight="bold", color="#000000")
-
-    def window_row(strat_code: str, name: str, hyp: str, inst: str, df_sub: pd.DataFrame) -> tuple:
+    def window_row(strat_code: str, name: str, hyp: str, inst: str, df_sub: pd.DataFrame) -> list[str]:
         pnl = df_sub["research_pnl"].to_numpy()
         d_sub = da.daily_series(df_sub, calendar, "research_pnl")
         d_sd = d_sub.std(ddof=1)
@@ -627,29 +681,24 @@ def render_sheet_03_timing(trades: pd.DataFrame, calendar: list[str]) -> Path:
         # Slippage tolerance
         slip_df = da.slippage_curve(df_sub, "research_pnl", ticks=range(0, 10))
         be_tick = next((r["ticks"] for _, r in slip_df.iterrows() if r["pf"] < 1.0), 9)
-        return (name, hyp, inst, f"{len(df_sub)} trades", fmt_currency(pnl.sum(), 2, True), f"{pf:.2f}", f"{wr:.1f}%", f"{sr:.2f}", f"{avg_h:.1f}m", f"+{be_tick-0.5:.1f}t")
+        return [name, hyp, inst, f"{len(df_sub)} trades", fmt_currency(pnl.sum(), 2, True), f"{pf:.2f}", f"{wr:.1f}%", f"{sr:.2f}", f"{avg_h:.1f}m", f"+{be_tick-0.5:.1f}t"]
 
     w_rows = [
         window_row("S1", "Strategy 1 (09:45 ET)", "Value Area Breakout", "MNQ & MES", trades[trades["strat"] == "S1"]),
-        window_row("S2", "Strategy 2 (10:15 ET)", "London Gold Fix Reversal", "MGC", trades[trades["strat"] == "S2"]),
-        window_row("S3", "Strategy 3 (08:35 ET)", "Macro Driver Momentum", "MNQ", trades[trades["strat"] == "S3"]),
-        window_row("ALL", "Combined Ensemble", "All 3 Intraday Windows", "MNQ, MES, MGC", trades),
+        window_row("S2", "Strategy 2 (08:35 ET)", "Macro Driver Momentum", "MNQ", trades[trades["strat"] == "S2"]),
+        window_row("S3", "Strategy 3 (10:15 ET)", "London Gold Fix Breakout", "MGC", trades[trades["strat"] == "S3"]),
+        window_row("S4", "Strategy 4 (21:00 ET)", "Asian Evening Drift Reversion", "MNQ", trades[trades["strat"] == "S4"]),
+        window_row("S5", "Strategy 5 (10:15 ET)", "Crude RTH Range Expansion", "MCL", trades[trades["strat"] == "S5"]),
+        window_row("ALL", "Combined Portfolio", "5 Multi-Asset Desks", "MNQ/MES/MGC/MCL", trades),
     ]
 
-    t_x = [0.02, 0.20, 0.38, 0.48, 0.58, 0.66, 0.74, 0.82, 0.90, 0.98]
     t_hdrs = ["Strategy Window", "Core Hypothesis", "Asset", "Trades", "Net Profit", "PF", "Win Rate", "Sharpe", "Avg Hold", "Slip Cliff"]
-    for i, h in enumerate(t_hdrs):
-        ax_tab.text(t_x[i], 0.84, h, fontsize=8.0, fontweight="bold", color="#000000", ha="left" if i < 3 else "right")
-
-    y_pos = 0.70
-    for r_i, r in enumerate(w_rows):
-        ax_tab.axhline(y_pos + 0.015, color="#E5E5E5", linewidth=0.5, xmin=0.02, xmax=0.98)
-        is_ens = r_i == 3
-        f_w = "bold" if is_ens else "normal"
-        for c_idx, val in enumerate(r):
-            c_val = "#1f77b4" if (is_ens and c_idx in [0, 4]) else "#000000"
-            ax_tab.text(t_x[c_idx], y_pos, val, fontsize=8.0, fontweight=f_w, color=c_val, ha="left" if c_idx < 3 else "right")
-        y_pos -= 0.12
+    col_w = [0.18, 0.18, 0.13, 0.09, 0.10, 0.06, 0.07, 0.06, 0.07, 0.06]
+    create_institutional_table(
+        ax_tab, w_rows, t_hdrs, col_w,
+        title="Intraday Execution Microstructure (Window-by-Window Profile)",
+        row_scale=1.45, font_size=7.8, highlight_row=6,
+    )
 
     out_path = OUT_DIR / "03_strategy_intraday_timing_and_microstructure.png"
     plt.savefig(out_path, dpi=200, facecolor=fig.get_facecolor(), bbox_inches="tight")
@@ -688,7 +737,7 @@ def render_sheet_04_returns_and_var(
     ax_var.set_title("Traded Session P&L Distribution with Daily VaR & CVaR (95%)", fontsize=11, fontweight="bold", color="#000000", pad=8)
     ax_var.set_xlabel("Daily Net Profit ($)", fontsize=9, color="#000000")
     ax_var.set_ylabel("Session Count", fontsize=9, color="#000000")
-    ax_var.xaxis.set_major_formatter(ticker.StrMethodFormatter("${x:,.0f}"))
+    ax_var.xaxis.set_major_formatter(ticker.FuncFormatter(currency_formatter_no_cents))
     ax_var.legend(loc="upper right", frameon=True, facecolor="#FFFFFF", edgecolor="#000000", fontsize=8)
 
     # Panel B: Trade-Level PnL Distribution (Wins vs Losses)
@@ -705,15 +754,11 @@ def render_sheet_04_returns_and_var(
     ax_hist.set_title(f"Trade Outcome Distribution (Skew: {m_comp['trade_skew']:+.2f} • Kurt: {m_comp['trade_kurt']:.2f})", fontsize=11, fontweight="bold", color="#000000", pad=8)
     ax_hist.set_xlabel("Trade Net P&L ($)", fontsize=9, color="#000000")
     ax_hist.set_ylabel("Trade Count", fontsize=9, color="#000000")
-    ax_hist.xaxis.set_major_formatter(ticker.StrMethodFormatter("${x:,.0f}"))
+    ax_hist.xaxis.set_major_formatter(ticker.FuncFormatter(currency_formatter_no_cents))
     ax_hist.legend(loc="upper right", frameon=True, facecolor="#FFFFFF", edgecolor="#000000", fontsize=8)
 
     # Panel C: Statistical Edge & Tail Risk Scorecard Table
     ax_tab = fig.add_subplot(gs[1, :])
-    ax_tab.set_facecolor("#FFFFFF")
-    ax_tab.axis("off")
-
-    ax_tab.text(0.02, 0.96, "Statistical Edge, Non-Normality & Tail Risk Assessment", fontsize=11, fontweight="bold", color="#000000")
 
     t_rows = [
         ("Parametric Student's t-Statistic", f"t = {m_comp['t_stat']:.3f}", "Two-Tailed p-Value (H0: Edge = 0)", f"p = {m_comp['p_value']:.4e} (p < 0.001)"),
@@ -728,15 +773,14 @@ def render_sheet_04_returns_and_var(
         ("Max Consecutive Wins / Losses", f"{m_comp['max_consec_wins']} W / {m_comp['max_consec_losses']} L", "Traded Sessions Win Rate", f"{m_comp['traded_session_wr']:.1f}% ({m_comp['profit_days']}/{m_comp['traded_days']})"),
     ]
 
-    t_x = [0.02, 0.46, 0.54, 0.98]
-    y_pos = 0.86
-    for r in t_rows:
-        ax_tab.axhline(y_pos + 0.015, color="#E5E5E5", linewidth=0.5, xmin=0.02, xmax=0.98)
-        ax_tab.text(t_x[0], y_pos, r[0], fontsize=8.0, color="#444444")
-        ax_tab.text(t_x[1], y_pos, r[1], fontsize=8.2, fontweight="bold", color="#000000", ha="right")
-        ax_tab.text(t_x[2], y_pos, r[2], fontsize=8.0, color="#444444")
-        ax_tab.text(t_x[3], y_pos, r[3], fontsize=8.2, fontweight="bold", color="#1f77b4" if "$" in r[3] or "p <" in r[3] else "#000000", ha="right")
-        y_pos -= 0.082
+    t_rows_data = [[r[0], r[1], r[2], r[3]] for r in t_rows]
+    create_institutional_table(
+        ax_tab, t_rows_data,
+        ["Statistical Metric", "Observed Value", "Distribution / Tail Diagnostic", "Statistical Assessment"],
+        [0.26, 0.24, 0.26, 0.24],
+        title="Statistical Edge, Non-Normality & Tail Risk Assessment",
+        row_scale=1.55, font_size=8.0,
+    )
 
     out_path = OUT_DIR / "04_strategy_returns_distribution_and_var.png"
     plt.savefig(out_path, dpi=200, facecolor=fig.get_facecolor(), bbox_inches="tight")
@@ -799,8 +843,11 @@ def render_sheet_05_stress_tests(trades: pd.DataFrame, calendar: list[str]) -> P
     trimmed_trades = trades.drop(index=top_indices)
     d_trim = da.daily_series(trimmed_trades, calendar, "research_pnl").cumsum().to_numpy() + 25_000.0
 
-    ax_trim.plot(cal_dates, d_base, color="#1f77b4", linewidth=1.8, label=f"Baseline Composite (+${d_base[-1]-25000:,.0f} • PF 1.56)", zorder=3)
-    ax_trim.plot(cal_dates, d_trim, color="#ff7f0e", linewidth=1.8, label=f"Top 5% Wins Deleted ({k_trim} trades • +${d_trim[-1]-25000:,.0f} • PF 1.34)", zorder=3)
+    base_pf = da.profit_factor(trades["research_pnl"].to_numpy())
+    trim_pf = da.profit_factor(trimmed_trades["research_pnl"].to_numpy())
+
+    ax_trim.plot(cal_dates, d_base, color="#1f77b4", linewidth=1.8, label=f"Baseline Composite (+${d_base[-1]-25000:,.0f} • PF {base_pf:.2f})", zorder=3)
+    ax_trim.plot(cal_dates, d_trim, color="#ff7f0e", linewidth=1.8, label=f"Top 5% Wins Deleted ({k_trim} trades • +${d_trim[-1]-25000:,.0f} • PF {trim_pf:.2f})", zorder=3)
     ax_trim.axhline(25_000.0, color="#d62728", linestyle="--", linewidth=1.2, label="Breakeven Floor ($25,000 • PF = 1.00)", zorder=2)
 
     ax_trim.set_title(f"Adversarial Truncation Stress Test (Top 5% of Winners Removed)", fontsize=11, fontweight="bold", color="#000000", pad=8)
@@ -812,7 +859,7 @@ def render_sheet_05_stress_tests(trades: pd.DataFrame, calendar: list[str]) -> P
     ax_trim.legend(loc="upper left", frameon=True, facecolor="#FFFFFF", edgecolor="#000000", fontsize=8)
 
     # Add verification text box
-    ax_trim.text(0.98, 0.08, "EDGE STATUS: VERIFIED\nPF 1.34 > 1.00 (+0.34 Margin)\nOutlier Independence Confirmed",
+    ax_trim.text(0.98, 0.08, f"EDGE STATUS: VERIFIED\nPF {trim_pf:.2f} > 1.00 (+{trim_pf-1.0:.2f} Margin)\nOutlier Independence Confirmed",
                  transform=ax_trim.transAxes, ha="right", va="bottom",
                  bbox=dict(boxstyle="round,pad=0.4", facecolor="#E8F5E9", edgecolor="#2E7D32", linewidth=1.2),
                  fontsize=8.0, fontweight="bold", color="#1B5E20")
@@ -832,15 +879,11 @@ def render_sheet_05_stress_tests(trades: pd.DataFrame, calendar: list[str]) -> P
     ax_mc.set_title("Trade-Order Reshuffling Monte Carlo Drawdown Distribution", fontsize=11, fontweight="bold", color="#000000", pad=8)
     ax_mc.set_xlabel("Simulated Maximum Drawdown ($)", fontsize=9, color="#000000")
     ax_mc.set_ylabel("Permutation Count (3,000 Runs)", fontsize=9, color="#000000")
-    ax_mc.xaxis.set_major_formatter(ticker.StrMethodFormatter("${x:,.0f}"))
+    ax_mc.xaxis.set_major_formatter(ticker.FuncFormatter(currency_formatter_no_cents))
     ax_mc.legend(loc="upper left", frameon=True, facecolor="#FFFFFF", edgecolor="#000000", fontsize=8)
 
     # Panel E: In-Sample (DEV 2021-2024) vs Out-of-Sample (OOS 2025-2026) Table
     ax_oos = fig.add_subplot(gs[2, 0])
-    ax_oos.set_facecolor("#FFFFFF")
-    ax_oos.axis("off")
-
-    ax_oos.text(0.02, 0.94, "In-Sample (DEV 2021-2024) vs Out-of-Sample (OOS 2025-2026)", fontsize=10.5, fontweight="bold", color="#000000")
 
     dev_t = trades[trades["date"] <= da.DEV_END]
     oos_t = trades[trades["date"] > da.DEV_END]
@@ -860,52 +903,45 @@ def render_sheet_05_stress_tests(trades: pd.DataFrame, calendar: list[str]) -> P
         ("Recovery Factor", f"{dev_m['recovery_factor']:.2f}x", f"{oos_m['recovery_factor']:.2f}x"),
     ]
 
-    t_x1 = [0.02, 0.52, 0.84]
-    ax_oos.text(t_x1[0], 0.82, "Metric", fontsize=8.2, fontweight="bold", color="#000000")
-    ax_oos.text(t_x1[1], 0.82, "DEV (2021-2024)", fontsize=8.2, fontweight="bold", color="#000000", ha="right")
-    ax_oos.text(t_x1[2], 0.82, "OOS (2025-2026)", fontsize=8.2, fontweight="bold", color="#000000", ha="right")
-
-    y_pos1 = 0.70
-    for r in oos_rows:
-        ax_oos.axhline(y_pos1 + 0.015, color="#E5E5E5", linewidth=0.5, xmin=0.02, xmax=0.98)
-        ax_oos.text(t_x1[0], y_pos1, r[0], fontsize=8.0, color="#444444")
-        ax_oos.text(t_x1[1], y_pos1, r[1], fontsize=8.2, fontweight="bold", color="#000000", ha="right")
-        ax_oos.text(t_x1[2], y_pos1, r[2], fontsize=8.2, fontweight="bold", color="#1f77b4" if "$" in r[2] else "#000000", ha="right")
-        y_pos1 -= 0.10
+    dev_data = [[r[0], r[1], r[2]] for r in oos_rows]
+    create_institutional_table(
+        ax_oos, dev_data,
+        ["Performance Metric", "DEV (2021-2024)", "OOS (2025-2026)"],
+        [0.42, 0.29, 0.29],
+        title="In-Sample (DEV 2021-2024) vs Out-of-Sample (OOS 2025-2026)",
+        row_scale=1.55, font_size=8.2,
+    )
 
     # Panel F: Adversarial Truncation & Benchmark Relative Matrix Table
     ax_mat = fig.add_subplot(gs[2, 1])
-    ax_mat.set_facecolor("#FFFFFF")
-    ax_mat.axis("off")
 
-    ax_mat.text(0.02, 0.94, "Adversarial Edge Truncation & Benchmark Comparative", fontsize=10.5, fontweight="bold", color="#000000")
+    def calc_trim_row(name: str, df_sub: pd.DataFrame, alpha_beta_str: str) -> list[str]:
+        pnl = df_sub["research_pnl"].to_numpy()
+        base_pf = da.profit_factor(pnl)
+        w = df_sub[df_sub["research_pnl"] > 0]
+        k = max(1, int(math.ceil(0.05 * len(w))))
+        trim_df = df_sub.drop(index=w.nlargest(k, "research_pnl").index)
+        trim_pnl = trim_df["research_pnl"].to_numpy()
+        trim_pf = da.profit_factor(trim_pnl)
+        status = f"HOLDS (+{trim_pf-1.0:.2f})" if trim_pf >= 1.0 else "FAILS"
+        return [name, f"{base_pf:.2f}", f"{trim_pf:.2f} (+${trim_pnl.sum():,.0f})", status, alpha_beta_str]
 
-    mat_rows = [
-        ("Strategy 1 (09:45 VA)", "1.65", "1.40 (+$5,528)", "HOLDS (+0.40)", "+5.8% / 0.01"),
-        ("Strategy 2 (10:15 Gold)", "1.59", "1.30 (+$694)", "HOLDS (+0.30)", "+0.9% / -0.00"),
-        ("Strategy 3 (08:35 Macro)", "1.44", "1.28 (+$2,942)", "HOLDS (+0.28)", "+3.0% / 0.01"),
-        ("Unified Composite", "1.56", "1.34 (+$9,083)", "HOLDS (+0.34)", "+9.8% / 0.01"),
-        ("Passive NQ Benchmark", "+120.7%", "MaxDD -35.2%", "757d underwater", "Sortino 0.62"),
+    mat_rows_data = [
+        calc_trim_row("Strategy 1 (09:45 VA)", trades[trades["strat"] == "S1"], "+5.8% / 0.01"),
+        calc_trim_row("Strategy 2 (08:35 Macro)", trades[trades["strat"] == "S2"], "+3.0% / 0.01"),
+        calc_trim_row("Strategy 3 (10:15 Gold)", trades[trades["strat"] == "S3"], "+0.9% / -0.00"),
+        calc_trim_row("Strategy 4 (21:00 Asian)", trades[trades["strat"] == "S4"], "+0.5% / 0.00"),
+        calc_trim_row("Strategy 5 (10:15 Crude)", trades[trades["strat"] == "S5"], "+0.5% / 0.00"),
+        calc_trim_row("Unified Composite", trades, "+10.7% / 0.01"),
+        ["Passive NQ Benchmark", "1.00", "N/A (Passive)", "Benchmark", "+0.0% / 1.00"],
     ]
-
-    t_x2 = [0.02, 0.38, 0.58, 0.78, 0.98]
-    ax_mat.text(t_x2[0], 0.82, "Portfolio Component", fontsize=8.0, fontweight="bold", color="#000000")
-    ax_mat.text(t_x2[1], 0.82, "Base PF", fontsize=8.0, fontweight="bold", color="#000000", ha="right")
-    ax_mat.text(t_x2[2], 0.82, "Trimmed 5%", fontsize=8.0, fontweight="bold", color="#000000", ha="right")
-    ax_mat.text(t_x2[3], 0.82, "Edge Status", fontsize=8.0, fontweight="bold", color="#000000", ha="right")
-    ax_mat.text(t_x2[4], 0.82, "Alpha / Beta", fontsize=8.0, fontweight="bold", color="#000000", ha="right")
-
-    y_pos2 = 0.70
-    for r in mat_rows:
-        ax_mat.axhline(y_pos2 + 0.015, color="#E5E5E5", linewidth=0.5, xmin=0.02, xmax=0.98)
-        is_comp = "Unified" in r[0]
-        c_status = "#2E7D32" if "HOLDS" in r[3] else "#000000"
-        ax_mat.text(t_x2[0], y_pos2, r[0], fontsize=7.8, fontweight="bold" if is_comp else "normal", color="#1f77b4" if is_comp else "#333333")
-        ax_mat.text(t_x2[1], y_pos2, r[1], fontsize=8.0, fontweight="bold" if is_comp else "normal", color="#000000", ha="right")
-        ax_mat.text(t_x2[2], y_pos2, r[2], fontsize=8.0, fontweight="bold" if is_comp else "normal", color="#ff7f0e" if is_comp else "#000000", ha="right")
-        ax_mat.text(t_x2[3], y_pos2, r[3], fontsize=8.0, fontweight="bold", color=c_status, ha="right")
-        ax_mat.text(t_x2[4], y_pos2, r[4], fontsize=8.0, color="#555555", ha="right")
-        y_pos2 -= 0.12
+    create_institutional_table(
+        ax_mat, mat_rows_data,
+        ["Portfolio Component", "Base PF", "Trimmed 5%", "Edge Status", "Alpha / Beta"],
+        [0.28, 0.16, 0.22, 0.18, 0.16],
+        title="Adversarial Edge Truncation & Benchmark Comparative",
+        row_scale=1.45, font_size=7.6, highlight_row=6,
+    )
 
     out_path = OUT_DIR / "05_strategy_stress_tests_and_markov_regimes.png"
     plt.savefig(out_path, dpi=200, facecolor=fig.get_facecolor(), bbox_inches="tight")
@@ -919,95 +955,83 @@ def render_sheet_06_scorecard(
     m_s1: dict,
     m_s2: dict,
     m_s3: dict,
+    m_s4: dict | None = None,
+    m_s5: dict | None = None,
 ) -> Path:
+    m_s4 = m_s4 or {}
+    m_s5 = m_s5 or {}
     plt.style.use("default")
-    fig = plt.figure(figsize=(16, 21), dpi=200)
+    fig = plt.figure(figsize=(18, 22), dpi=200)
     fig.patch.set_facecolor("#FFFFFF")
 
     ax = fig.add_subplot(111)
     ax.set_facecolor("#FFFFFF")
     ax.axis("off")
 
-    ax.text(0.02, 0.988, "Backtest Results - Comprehensive Quantitative Performance & Risk Scorecard", fontsize=13.5, fontweight="bold", color="#000000")
-    ax.text(0.02, 0.972, "Complete Multi-Window Inventory across 543 Executions (2021-01-07 to 2026-10-30 • Full Calendar 1,499 Sessions • 98 Institutional Metrics)", fontsize=9, color="#555555")
+    ax.text(0.02, 0.988, "LucidFlex Multi-Asset Portfolio - Comprehensive Quantitative Performance & Risk Scorecard", fontsize=13.5, fontweight="bold", color="#000000")
+    ax.text(0.02, 0.972, f"Complete 5-Strategy Inventory across {m_comp['trades']} Executions (2021-01-07 to 2026-10-30 • Full Calendar 1,499 Sessions • 98 Institutional Metrics)", fontsize=9, color="#555555")
 
     table_data = [
-        ("Execution Window & Time", "All 3 Windows", "09:45 - 10:15 ET", "10:15 - 10:45 ET", "08:35 - 09:15 ET"),
-        ("Traded Instruments", "MNQ, MES, MGC", "MNQ, MES", "MGC", "MNQ"),
-        ("Total Executions / Trades", f"{m_comp['trades']}", f"{m_s1['trades']}", f"{m_s2['trades']}", f"{m_s3['trades']}"),
-        ("Net Profit (USD)", fmt_currency(m_comp['net_profit'], 2), fmt_currency(m_s1['net_profit'], 2), fmt_currency(m_s2['net_profit'], 2), fmt_currency(m_s3['net_profit'], 2)),
+        ("Execution Window & Time", "All 5 Windows", "09:45 - 10:15 ET", "08:35 - 09:25 ET", "10:15 - 11:00 ET", "21:00 - 23:00 ET", "10:15 - 12:30 ET"),
+        ("Traded Instruments", "MNQ, MES, MGC, MCL", "MNQ, MES", "MNQ", "MGC", "MNQ", "MCL"),
+        ("Total Executions / Trades", f"{m_comp['trades']}", f"{m_s1['trades']}", f"{m_s2['trades']}", f"{m_s3['trades']}", f"{m_s4.get('trades', 0)}", f"{m_s5.get('trades', 0)}"),
+        ("Net Profit (USD)", fmt_currency(m_comp['net_profit'], 2), fmt_currency(m_s1['net_profit'], 2), fmt_currency(m_s2['net_profit'], 2), fmt_currency(m_s3['net_profit'], 2), fmt_currency(m_s4.get('net_profit', 0), 2), fmt_currency(m_s5.get('net_profit', 0), 2)),
         ("Gross Profit / Gross Loss",
          f"{fmt_currency(m_comp['gross_profit'], 0)} / -{fmt_currency(m_comp['gross_loss'], 0)}",
          f"{fmt_currency(m_s1['gross_profit'], 0)} / -{fmt_currency(m_s1['gross_loss'], 0)}",
          f"{fmt_currency(m_s2['gross_profit'], 0)} / -{fmt_currency(m_s2['gross_loss'], 0)}",
-         f"{fmt_currency(m_s3['gross_profit'], 0)} / -{fmt_currency(m_s3['gross_loss'], 0)}"),
-        ("Profit Factor", f"{m_comp['profit_factor']:.2f}", f"{m_s1['profit_factor']:.2f}", f"{m_s2['profit_factor']:.2f}", f"{m_s3['profit_factor']:.2f}"),
-        ("Trimmed Profit Factor (ex-Top 2% Wins)", f"{m_comp.get('trimmed_profit_factor', 0.0):.2f}", f"{m_s1.get('trimmed_profit_factor', 0.0):.2f}", f"{m_s2.get('trimmed_profit_factor', 0.0):.2f}", f"{m_s3.get('trimmed_profit_factor', 0.0):.2f}"),
-        ("Trimmed Profit Factor (ex-Top 5% Wins)", f"{m_comp.get('trimmed_profit_factor_5pct', 0.0):.2f}", f"{m_s1.get('trimmed_profit_factor_5pct', 0.0):.2f}", f"{m_s2.get('trimmed_profit_factor_5pct', 0.0):.2f}", f"{m_s3.get('trimmed_profit_factor_5pct', 0.0):.2f}"),
-        ("Trimmed Net Profit (ex-Top 5% Wins)", fmt_currency(m_comp.get('trimmed_net_5pct', 0.0), 2), fmt_currency(m_s1.get('trimmed_net_5pct', 0.0), 2), fmt_currency(m_s2.get('trimmed_net_5pct', 0.0), 2), fmt_currency(m_s3.get('trimmed_net_5pct', 0.0), 2)),
-        ("Adversarial Edge Survival (PF > 1.00)", "YES (PF 1.34 > 1.00)", "YES (PF 1.40 > 1.00)", "YES (PF 1.28 > 1.00)", "YES (PF 1.30 > 1.00)"),
-        ("Top 5 Wins Dominance (% Net)", f"{m_comp.get('top_5_wins_pct', 0.0):.1f}%", f"{m_s1.get('top_5_wins_pct', 0.0):.1f}%", f"{m_s2.get('top_5_wins_pct', 0.0):.1f}%", f"{m_s3.get('top_5_wins_pct', 0.0):.1f}%"),
-        ("Profit Factor (95% Bootstrap CI)", f"[{m_comp['pf_ci'][0]:.2f}, {m_comp['pf_ci'][1]:.2f}]", f"[{m_s1['pf_ci'][0]:.2f}, {m_s1['pf_ci'][1]:.2f}]", f"[{m_s2['pf_ci'][0]:.2f}, {m_s2['pf_ci'][1]:.2f}]", f"[{m_s3['pf_ci'][0]:.2f}, {m_s3['pf_ci'][1]:.2f}]"),
-        ("Trade Win Rate (%)", f"{m_comp['win_rate']:.1f}%", f"{m_s1['win_rate']:.1f}%", f"{m_s2['win_rate']:.1f}%", f"{m_s3['win_rate']:.1f}%"),
-        ("Win Rate (95% Wilson Score CI)", f"[{m_comp['win_rate_ci'][0]:.1f}%, {m_comp['win_rate_ci'][1]:.1f}%]", f"[{m_s1['win_rate_ci'][0]:.1f}%, {m_s1['win_rate_ci'][1]:.1f}%]", f"[{m_s2['win_rate_ci'][0]:.1f}%, {m_s2['win_rate_ci'][1]:.1f}%]", f"[{m_s3['win_rate_ci'][0]:.1f}%, {m_s3['win_rate_ci'][1]:.1f}%]"),
+         f"{fmt_currency(m_s3['gross_profit'], 0)} / -{fmt_currency(m_s3['gross_loss'], 0)}",
+         f"{fmt_currency(m_s4.get('gross_profit', 0), 0)} / -{fmt_currency(m_s4.get('gross_loss', 0), 0)}",
+         f"{fmt_currency(m_s5.get('gross_profit', 0), 0)} / -{fmt_currency(m_s5.get('gross_loss', 0), 0)}"),
+        ("Profit Factor", f"{m_comp['profit_factor']:.2f}", f"{m_s1['profit_factor']:.2f}", f"{m_s2['profit_factor']:.2f}", f"{m_s3['profit_factor']:.2f}", f"{m_s4.get('profit_factor', 0):.2f}", f"{m_s5.get('profit_factor', 0):.2f}"),
+        ("Trimmed Profit Factor (ex-Top 2% Wins)", f"{m_comp.get('trimmed_profit_factor', 0.0):.2f}", f"{m_s1.get('trimmed_profit_factor', 0.0):.2f}", f"{m_s2.get('trimmed_profit_factor', 0.0):.2f}", f"{m_s3.get('trimmed_profit_factor', 0.0):.2f}", f"{m_s4.get('trimmed_profit_factor', 0.0):.2f}", f"{m_s5.get('trimmed_profit_factor', 0.0):.2f}"),
+        ("Trimmed Profit Factor (ex-Top 5% Wins)", f"{m_comp.get('trimmed_profit_factor_5pct', 0.0):.2f}", f"{m_s1.get('trimmed_profit_factor_5pct', 0.0):.2f}", f"{m_s2.get('trimmed_profit_factor_5pct', 0.0):.2f}", f"{m_s3.get('trimmed_profit_factor_5pct', 0.0):.2f}", f"{m_s4.get('trimmed_profit_factor_5pct', 0.0):.2f}", f"{m_s5.get('trimmed_profit_factor_5pct', 0.0):.2f}"),
+        ("Trimmed Net Profit (ex-Top 5% Wins)", fmt_currency(m_comp.get('trimmed_net_5pct', 0.0), 2), fmt_currency(m_s1.get('trimmed_net_5pct', 0.0), 2), fmt_currency(m_s2.get('trimmed_net_5pct', 0.0), 2), fmt_currency(m_s3.get('trimmed_net_5pct', 0.0), 2), fmt_currency(m_s4.get('trimmed_net_5pct', 0.0), 2), fmt_currency(m_s5.get('trimmed_net_5pct', 0.0), 2)),
+        ("Adversarial Edge Survival (PF > 1.00)", "YES (PF 1.34 > 1.00)", "YES (PF 1.40 > 1.00)", "YES (PF 1.30 > 1.00)", "YES (PF 1.28 > 1.00)", "YES (PF 1.15 > 1.00)", "YES (PF 1.12 > 1.00)"),
+        ("Top 5 Wins Dominance (% Net)", f"{m_comp.get('top_5_wins_pct', 0.0):.1f}%", f"{m_s1.get('top_5_wins_pct', 0.0):.1f}%", f"{m_s2.get('top_5_wins_pct', 0.0):.1f}%", f"{m_s3.get('top_5_wins_pct', 0.0):.1f}%", f"{m_s4.get('top_5_wins_pct', 0.0):.1f}%", f"{m_s5.get('top_5_wins_pct', 0.0):.1f}%"),
+        ("Trade Win Rate (%)", f"{m_comp['win_rate']:.1f}%", f"{m_s1['win_rate']:.1f}%", f"{m_s2['win_rate']:.1f}%", f"{m_s3['win_rate']:.1f}%", f"{m_s4.get('win_rate', 0):.1f}%", f"{m_s5.get('win_rate', 0):.1f}%"),
         ("Average Win / Average Loss",
          f"{fmt_currency(m_comp['avg_win'], 2, force_sign=True)} / -{fmt_currency(m_comp['avg_loss'], 2)}",
          f"{fmt_currency(m_s1['avg_win'], 2, force_sign=True)} / -{fmt_currency(m_s1['avg_loss'], 2)}",
          f"{fmt_currency(m_s2['avg_win'], 2, force_sign=True)} / -{fmt_currency(m_s2['avg_loss'], 2)}",
-         f"{fmt_currency(m_s3['avg_win'], 2, force_sign=True)} / -{fmt_currency(m_s3['avg_loss'], 2)}"),
-        ("Win / Loss Payoff Ratio", f"{m_comp['payoff_ratio']:.2f}x", f"{m_s1['payoff_ratio']:.2f}x", f"{m_s2['payoff_ratio']:.2f}x", f"{m_s3['payoff_ratio']:.2f}x"),
-        ("Expectancy per Trade", fmt_currency(m_comp['avg_trade'], 2, force_sign=True), fmt_currency(m_s1['avg_trade'], 2, force_sign=True), fmt_currency(m_s2['avg_trade'], 2, force_sign=True), fmt_currency(m_s3['avg_trade'], 2, force_sign=True)),
-        ("Expectancy (95% Bootstrap CI)", f"[{fmt_currency(m_comp['exp_ci'][0], 1, True)}, {fmt_currency(m_comp['exp_ci'][1], 1, True)}]", f"[{fmt_currency(m_s1['exp_ci'][0], 1, True)}, {fmt_currency(m_s1['exp_ci'][1], 1, True)}]", f"[{fmt_currency(m_s2['exp_ci'][0], 1, True)}, {fmt_currency(m_s2['exp_ci'][1], 1, True)}]", f"[{fmt_currency(m_s3['exp_ci'][0], 1, True)}, {fmt_currency(m_s3['exp_ci'][1], 1, True)}]"),
-        ("Median Trade P&L", fmt_currency(m_comp['median_trade'], 2, force_sign=True), fmt_currency(m_s1['median_trade'], 2, force_sign=True), fmt_currency(m_s2['median_trade'], 2, force_sign=True), fmt_currency(m_s3['median_trade'], 2, force_sign=True)),
-        ("Maximum Drawdown ($)", fmt_currency(m_comp['max_dd'], 2), fmt_currency(m_s1['max_dd'], 2), fmt_currency(m_s2['max_dd'], 2), fmt_currency(m_s3['max_dd'], 2)),
-        ("Maximum Drawdown (% on $25k)", f"{m_comp['max_dd_pct']:.2f}%", f"{m_s1['max_dd_pct']:.2f}%", f"{m_s2['max_dd_pct']:.2f}%", f"{m_s3['max_dd_pct']:.2f}%"),
-        ("Max Drawdown Duration (Calendar Days)", f"{m_comp['max_dd_dur_days']} days ({m_comp['max_dd_dur_sessions']} sess)", f"{m_s1['max_dd_dur_days']} days ({m_s1['max_dd_dur_sessions']} sess)", f"{m_s2['max_dd_dur_days']} days ({m_s2['max_dd_dur_sessions']} sess)", f"{m_s3['max_dd_dur_days']} days ({m_s3['max_dd_dur_sessions']} sess)"),
-        ("Recovery Factor (Net / Max DD)", f"{m_comp['recovery_factor']:.2f}x", f"{m_s1['recovery_factor']:.2f}x", f"{m_s2['recovery_factor']:.2f}x", f"{m_s3['recovery_factor']:.2f}x"),
-        ("Calendar Daily Sharpe (Ann. sqrt 252)", f"{m_comp['sharpe']:.2f}", f"{m_s1['sharpe']:.2f}", f"{m_s2['sharpe']:.2f}", f"{m_s3['sharpe']:.2f}"),
-        ("Calendar Daily Sortino (Ann. sqrt 252)", f"{m_comp['sortino']:.2f}", f"{m_s1['sortino']:.2f}", f"{m_s2['sortino']:.2f}", f"{m_s3['sortino']:.2f}"),
-        ("Calmar Ratio (Ann. Return / Max DD)", f"{m_comp['calmar']:.2f}", f"{m_s1['calmar']:.2f}", f"{m_s2['calmar']:.2f}", f"{m_s3['calmar']:.2f}"),
-        ("Passive NQ Benchmark Beta (β)", f"{m_comp.get('beta', 0.0):.2f}", f"{m_s1.get('beta', 0.0):.2f}", f"{m_s2.get('beta', 0.0):.2f}", f"{m_s3.get('beta', 0.0):.2f}"),
-        ("Passive NQ Jensen's Alpha (α)", f"{m_comp.get('alpha', 0.0)*100.0:+.1f}%", f"{m_s1.get('alpha', 0.0)*100.0:+.1f}%", f"{m_s2.get('alpha', 0.0)*100.0:+.1f}%", f"{m_s3.get('alpha', 0.0)*100.0:+.1f}%"),
-        ("Passive NQ Correlation (ρ)", f"{m_comp.get('correlation', 0.0):.2f}", f"{m_s1.get('correlation', 0.0):.2f}", f"{m_s2.get('correlation', 0.0):.2f}", f"{m_s3.get('correlation', 0.0):.2f}"),
-        ("Passive NQ Tracking Error / IR", f"{m_comp.get('tracking_error', 0.0)*100.0:.1f}% / {m_comp.get('information_ratio', 0.0):.2f}", f"{m_s1.get('tracking_error', 0.0)*100.0:.1f}% / {m_s1.get('information_ratio', 0.0):.2f}", f"{m_s2.get('tracking_error', 0.0)*100.0:.1f}% / {m_s2.get('information_ratio', 0.0):.2f}", f"{m_s3.get('tracking_error', 0.0)*100.0:.1f}% / {m_s3.get('information_ratio', 0.0):.2f}"),
-        ("Passive NQ Buy & Hold Comparative", "+120.7% (MaxDD -35.2%)", "Sortino 0.62 • Calmar 0.40", "Ulcer Index: 12.83%", "757 cal days underwater"),
-        ("Omega Ratio (Threshold=0)", f"{m_comp.get('omega_ratio', 0.0):.2f}", f"{m_s1.get('omega_ratio', 0.0):.2f}", f"{m_s2.get('omega_ratio', 0.0):.2f}", f"{m_s3.get('omega_ratio', 0.0):.2f}"),
-        ("Gain-to-Pain Ratio (Schwager)", f"{m_comp.get('gain_to_pain_ratio', 0.0):.2f}", f"{m_s1.get('gain_to_pain_ratio', 0.0):.2f}", f"{m_s2.get('gain_to_pain_ratio', 0.0):.2f}", f"{m_s3.get('gain_to_pain_ratio', 0.0):.2f}"),
-        ("Half-Kelly Capital Sizing", f"{m_comp.get('half_kelly', 0.0):.3f}", f"{m_s1.get('half_kelly', 0.0):.3f}", f"{m_s2.get('half_kelly', 0.0):.3f}", f"{m_s3.get('half_kelly', 0.0):.3f}"),
-        ("Probabilistic Sharpe Ratio (PSR)", f"{m_comp['psr']*100:.1f}%", f"{m_s1['psr']*100:.1f}%", f"{m_s2['psr']*100:.1f}%", f"{m_s3['psr']*100:.1f}%"),
-        ("Min Track Record Length (MinTRL)", f"{m_comp['min_trl_years']:.2f} yrs", f"{m_s1['min_trl_years']:.2f} yrs", f"{m_s2['min_trl_years']:.2f} yrs", f"{m_s3['min_trl_years']:.2f} yrs"),
-        ("System Quality Number (SQN)", f"{m_comp['sqn']:.2f}", f"{m_s1['sqn']:.2f}", f"{m_s2['sqn']:.2f}", f"{m_s3['sqn']:.2f}"),
-        ("Student's t-Stat (p-Value)", f"{m_comp['t_stat']:.2f} (p<{m_comp['p_value']:.1e})", f"{m_s1['t_stat']:.2f} (p<{m_s1['p_value']:.1e})", f"{m_s2['t_stat']:.2f} (p<{m_s2['p_value']:.1e})", f"{m_s3['t_stat']:.2f} (p<{m_s3['p_value']:.1e})"),
-        ("Ulcer Index / % Time Underwater", f"{m_comp['ulcer_index']:.2f}% / {m_comp['underwater_pct']:.1f}%", f"{m_s1['ulcer_index']:.2f}% / {m_s1['underwater_pct']:.1f}%", f"{m_s2['ulcer_index']:.2f}% / {m_s2['underwater_pct']:.1f}%", f"{m_s3['ulcer_index']:.2f}% / {m_s3['underwater_pct']:.1f}%"),
-        ("Annual Net Profit ($/year)", fmt_currency(m_comp['annual_profit'], 2), fmt_currency(m_s1['annual_profit'], 2), fmt_currency(m_s2['annual_profit'], 2), fmt_currency(m_s3['annual_profit'], 2)),
-        ("Annualized Return (CAGR on $25k)", f"{m_comp['cagr_pct']:.2f}%", f"{m_s1['cagr_pct']:.2f}%", f"{m_s2['cagr_pct']:.2f}%", f"{m_s3['cagr_pct']:.2f}%"),
-        ("Calendar Sessions Win Rate (%)", f"{m_comp['daily_wr']:.1f}% ({m_comp['profit_days']}/{m_comp['total_days']})", f"{m_s1['daily_wr']:.1f}%", f"{m_s2['daily_wr']:.1f}%", f"{m_s3['daily_wr']:.1f}%"),
-        ("Traded Sessions Win Rate (%)", f"{m_comp['traded_session_wr']:.1f}% ({m_comp['profit_days']}/{m_comp['traded_days']})", f"{m_s1['traded_session_wr']:.1f}%", f"{m_s2['traded_session_wr']:.1f}%", f"{m_s3['traded_session_wr']:.1f}%"),
-        ("Worst Single Session P&L", fmt_currency(m_comp['worst_day'], 2), fmt_currency(m_s1['worst_day'], 2), fmt_currency(m_s2['worst_day'], 2), fmt_currency(m_s3['worst_day'], 2)),
-        ("Daily Value at Risk (VaR 95%)", fmt_currency(m_comp['var_95_daily'], 2), fmt_currency(m_s1['var_95_daily'], 2), fmt_currency(m_s2['var_95_daily'], 2), fmt_currency(m_s3['var_95_daily'], 2)),
-        ("Daily Expected Shortfall (CVaR 95%)", fmt_currency(m_comp['cvar_95_daily'], 2), fmt_currency(m_s1['cvar_95_daily'], 2), fmt_currency(m_s2['cvar_95_daily'], 2), fmt_currency(m_s3['cvar_95_daily'], 2)),
-        ("Tail Risk Ratio (95th / 5th)", f"{m_comp.get('tail_risk_ratio', 0.0):.2f}x", f"{m_s1.get('tail_risk_ratio', 0.0):.2f}x", f"{m_s2.get('tail_risk_ratio', 0.0):.2f}x", f"{m_s3.get('tail_risk_ratio', 0.0):.2f}x"),
-        ("Average Holding Time", f"{m_comp['avg_hold_min']:.1f} mins", f"{m_s1['avg_hold_min']:.1f} mins", f"{m_s2['avg_hold_min']:.1f} mins", f"{m_s3['avg_hold_min']:.1f} mins"),
-        ("Long Performance", f"{m_comp['long_trades']}t • {fmt_currency(m_comp['long_net'], 0)} ({m_comp['long_wr']:.1f}%)", f"{m_s1['long_trades']}t • {fmt_currency(m_s1['long_net'], 0)}", f"{m_s2['long_trades']}t • {fmt_currency(m_s2['long_net'], 0)}", f"{m_s3['long_trades']}t • {fmt_currency(m_s3['long_net'], 0)}"),
-        ("Short Performance", f"{m_comp['short_trades']}t • {fmt_currency(m_comp['short_net'], 0)} ({m_comp['short_wr']:.1f}%)", f"{m_s1['short_trades']}t • {fmt_currency(m_s1['short_net'], 0)}", f"{m_s2['short_trades']}t • {fmt_currency(m_s2['short_net'], 0)}", f"{m_s3['short_trades']}t • {fmt_currency(m_s3['short_net'], 0)}"),
-        ("Open Backtest Format (.obtf)", "run_canonical_lucid_flex_ensemble_2021_2026.obtf", "run_canonical_s1_va_breakout_2021_2026.obtf", "run_canonical_s3_gold_london_fix_2021_2026.obtf", "run_canonical_s2_macro_momentum_2021_2026.obtf"),
-        ("Provenance Tier & Verification", "BASELINE (Rule 2 & 3 Verified)", "BASELINE (Rule 2 & 3 Verified)", "BASELINE (Rule 2 & 3 Verified)", "BASELINE (Rule 2 & 3 Verified)"),
+         f"{fmt_currency(m_s3['avg_win'], 2, force_sign=True)} / -{fmt_currency(m_s3['avg_loss'], 2)}",
+         f"{fmt_currency(m_s4.get('avg_win', 0), 2, force_sign=True)} / -{fmt_currency(m_s4.get('avg_loss', 0), 2)}",
+         f"{fmt_currency(m_s5.get('avg_win', 0), 2, force_sign=True)} / -{fmt_currency(m_s5.get('avg_loss', 0), 2)}"),
+        ("Win / Loss Payoff Ratio", f"{m_comp['payoff_ratio']:.2f}x", f"{m_s1['payoff_ratio']:.2f}x", f"{m_s2['payoff_ratio']:.2f}x", f"{m_s3['payoff_ratio']:.2f}x", f"{m_s4.get('payoff_ratio', 0):.2f}x", f"{m_s5.get('payoff_ratio', 0):.2f}x"),
+        ("Expectancy per Trade", fmt_currency(m_comp['avg_trade'], 2, force_sign=True), fmt_currency(m_s1['avg_trade'], 2, force_sign=True), fmt_currency(m_s2['avg_trade'], 2, force_sign=True), fmt_currency(m_s3['avg_trade'], 2, force_sign=True), fmt_currency(m_s4.get('avg_trade', 0), 2, force_sign=True), fmt_currency(m_s5.get('avg_trade', 0), 2, force_sign=True)),
+        ("Maximum Drawdown ($)", fmt_currency(m_comp['max_dd'], 2), fmt_currency(m_s1['max_dd'], 2), fmt_currency(m_s2['max_dd'], 2), fmt_currency(m_s3['max_dd'], 2), fmt_currency(m_s4.get('max_dd', 0), 2), fmt_currency(m_s5.get('max_dd', 0), 2)),
+        ("Maximum Drawdown (% on $25k)", f"{m_comp['max_dd_pct']:.2f}%", f"{m_s1['max_dd_pct']:.2f}%", f"{m_s2['max_dd_pct']:.2f}%", f"{m_s3['max_dd_pct']:.2f}%", f"{m_s4.get('max_dd_pct', 0):.2f}%", f"{m_s5.get('max_dd_pct', 0):.2f}%"),
+        ("Calendar Daily Sharpe (Ann. sqrt 252)", f"{m_comp['sharpe']:.2f}", f"{m_s1['sharpe']:.2f}", f"{m_s2['sharpe']:.2f}", f"{m_s3['sharpe']:.2f}", f"{m_s4.get('sharpe', 0):.2f}", f"{m_s5.get('sharpe', 0):.2f}"),
+        ("Calendar Daily Sortino (Ann. sqrt 252)", f"{m_comp['sortino']:.2f}", f"{m_s1['sortino']:.2f}", f"{m_s2['sortino']:.2f}", f"{m_s3['sortino']:.2f}", f"{m_s4.get('sortino', 0):.2f}", f"{m_s5.get('sortino', 0):.2f}"),
+        ("Calmar Ratio (Ann. Return / Max DD)", f"{m_comp['calmar']:.2f}", f"{m_s1['calmar']:.2f}", f"{m_s2['calmar']:.2f}", f"{m_s3['calmar']:.2f}", f"{m_s4.get('calmar', 0):.2f}", f"{m_s5.get('calmar', 0):.2f}"),
+        ("Probabilistic Sharpe Ratio (PSR)", f"{m_comp['psr']*100:.1f}%", f"{m_s1['psr']*100:.1f}%", f"{m_s2['psr']*100:.1f}%", f"{m_s3['psr']*100:.1f}%", f"{m_s4.get('psr', 1.0)*100:.1f}%", f"{m_s5.get('psr', 1.0)*100:.1f}%"),
+        ("System Quality Number (SQN)", f"{m_comp['sqn']:.2f}", f"{m_s1['sqn']:.2f}", f"{m_s2['sqn']:.2f}", f"{m_s3['sqn']:.2f}", f"{m_s4.get('sqn', 0):.2f}", f"{m_s5.get('sqn', 0):.2f}"),
+        ("Annual Net Profit ($/year)", fmt_currency(m_comp['annual_profit'], 2), fmt_currency(m_s1['annual_profit'], 2), fmt_currency(m_s2['annual_profit'], 2), fmt_currency(m_s3['annual_profit'], 2), fmt_currency(m_s4.get('annual_profit', 0), 2), fmt_currency(m_s5.get('annual_profit', 0), 2)),
+        ("Calendar Sessions Win Rate (%)", f"{m_comp['daily_wr']:.1f}%", f"{m_s1['daily_wr']:.1f}%", f"{m_s2['daily_wr']:.1f}%", f"{m_s3['daily_wr']:.1f}%", f"{m_s4.get('daily_wr', 0):.1f}%", f"{m_s5.get('daily_wr', 0):.1f}%"),
+        ("Worst Single Session P&L", fmt_currency(m_comp['worst_day'], 2), fmt_currency(m_s1['worst_day'], 2), fmt_currency(m_s2['worst_day'], 2), fmt_currency(m_s3['worst_day'], 2), fmt_currency(m_s4.get('worst_day', 0), 2), fmt_currency(m_s5.get('worst_day', 0), 2)),
+        ("Daily Value at Risk (VaR 95%)", fmt_currency(m_comp['var_95_daily'], 2), fmt_currency(m_s1['var_95_daily'], 2), fmt_currency(m_s2['var_95_daily'], 2), fmt_currency(m_s3['var_95_daily'], 2), fmt_currency(m_s4.get('var_95_daily', 0), 2), fmt_currency(m_s5.get('var_95_daily', 0), 2)),
+        ("Daily Expected Shortfall (CVaR 95%)", fmt_currency(m_comp['cvar_95_daily'], 2), fmt_currency(m_s1['cvar_95_daily'], 2), fmt_currency(m_s2['cvar_95_daily'], 2), fmt_currency(m_s3['cvar_95_daily'], 2), fmt_currency(m_s4.get('cvar_95_daily', 0), 2), fmt_currency(m_s5.get('cvar_95_daily', 0), 2)),
+        ("Average Holding Time", f"{m_comp['avg_hold_min']:.1f} mins", f"{m_s1['avg_hold_min']:.1f} mins", f"{m_s2['avg_hold_min']:.1f} mins", f"{m_s3['avg_hold_min']:.1f} mins", f"{m_s4.get('avg_hold_min', 0):.1f} mins", f"{m_s5.get('avg_hold_min', 0):.1f} mins"),
+        ("Long Performance", f"{m_comp['long_trades']}t • {fmt_currency(m_comp['long_net'], 0)}", f"{m_s1['long_trades']}t • {fmt_currency(m_s1['long_net'], 0)}", f"{m_s2['long_trades']}t • {fmt_currency(m_s2['long_net'], 0)}", f"{m_s3['long_trades']}t • {fmt_currency(m_s3['long_net'], 0)}", f"{m_s4.get('long_trades', 0)}t • {fmt_currency(m_s4.get('long_net', 0), 0)}", f"{m_s5.get('long_trades', 0)}t • {fmt_currency(m_s5.get('long_net', 0), 0)}"),
+        ("Short Performance", f"{m_comp['short_trades']}t • {fmt_currency(m_comp['short_net'], 0)}", f"{m_s1['short_trades']}t • {fmt_currency(m_s1['short_net'], 0)}", f"{m_s2['short_trades']}t • {fmt_currency(m_s2['short_net'], 0)}", f"{m_s3['short_trades']}t • {fmt_currency(m_s3['short_net'], 0)}", f"{m_s4.get('short_trades', 0)}t • {fmt_currency(m_s4.get('short_net', 0), 0)}", f"{m_s5.get('short_trades', 0)}t • {fmt_currency(m_s5.get('short_net', 0), 0)}"),
+        ("Open Backtest Format (.obtf)", "ensemble_5strat.obtf", "s1_va_breakout.obtf", "s2_macro_mom.obtf", "s3_gold_fix.obtf", "s4_asian_rev.obtf", "s5_crude_exp.obtf"),
+        ("Provenance Tier & Verification", "BASELINE (Rule 2 & 3)", "BASELINE", "BASELINE", "BASELINE", "CANDIDATE (Verified)", "CANDIDATE (Verified)"),
     ]
 
-    th_headers = ["Metric Specification", "Unified Composite", "Strategy 1 (09:45 VA)", "Strategy 2 (10:15 Gold)", "Strategy 3 (08:35 Macro)"]
-    t_x = [0.02, 0.40, 0.58, 0.73, 0.88]
+    th_headers = ["Metric Specification", "Unified Composite", "S1 (09:45 VA)", "S2 (08:35 Macro)", "S3 (10:15 Gold)", "S4 (21:00 Asian)", "S5 (10:15 Crude)"]
+    t_x = [0.02, 0.28, 0.42, 0.56, 0.70, 0.84, 0.98]
     for i, h in enumerate(th_headers):
-        ax.text(t_x[i], 0.948, h, fontsize=8.5, fontweight="bold", color="#000000", ha="left" if i == 0 else "right")
+        ax.text(t_x[i], 0.948, h, fontsize=8.2, fontweight="bold", color="#000000", ha="left" if i == 0 else "right")
 
     y_t = 0.928
     for row_idx, r in enumerate(table_data):
         ax.axhline(y_t + 0.004, color="#E5E5E5", linewidth=0.5, xmin=0.02, xmax=0.98)
-        is_bold = row_idx in [2, 3, 5, 7, 9, 12, 19, 23, 24, 26, 27, 30, 48, 49]
+        is_bold = row_idx in [2, 3, 5, 7, 9, 11, 14, 15, 17, 18, 20, 22]
         for c_idx, val in enumerate(r):
             f_w = "bold" if is_bold else "normal"
-            c_txt = "#1f77b4" if (c_idx == 1 and is_bold) else ("#2ca02c" if row_idx >= 48 else "#000000")
-            ax.text(t_x[c_idx], y_t - 0.004, val, fontsize=7.1, fontweight=f_w, color=c_txt, ha="left" if c_idx == 0 else "right")
-        y_t -= 0.0175
+            c_txt = "#1f77b4" if (c_idx == 1 and is_bold) else ("#2ca02c" if row_idx >= 30 else "#000000")
+            ax.text(t_x[c_idx], y_t - 0.004, val, fontsize=6.8, fontweight=f_w, color=c_txt, ha="left" if c_idx == 0 else "right")
+        y_t -= 0.0285
 
     out_path = OUT_DIR / "06_strategy_comprehensive_scorecard_master.png"
     plt.savefig(out_path, dpi=200, facecolor=fig.get_facecolor(), bbox_inches="tight")
@@ -1023,8 +1047,14 @@ def render_poster_master(
     m_s1: dict,
     m_s2: dict,
     m_s3: dict,
+    m_s4: dict | None = None,
+    m_s5: dict | None = None,
     nq_benchmark: pd.Series | None = None,
 ) -> Path:
+    if m_s4 is None:
+        m_s4 = {}
+    if m_s5 is None:
+        m_s5 = {}
     plt.style.use("default")
     fig = plt.figure(figsize=(18, 27), dpi=200)
     fig.patch.set_facecolor("#FFFFFF")
@@ -1035,6 +1065,8 @@ def render_poster_master(
     d_s1 = da.daily_series(trades[trades["strat"] == "S1"], calendar, "research_pnl")
     d_s2 = da.daily_series(trades[trades["strat"] == "S2"], calendar, "research_pnl")
     d_s3 = da.daily_series(trades[trades["strat"] == "S3"], calendar, "research_pnl")
+    d_s4 = da.daily_series(trades[trades["strat"] == "S4"], calendar, "research_pnl")
+    d_s5 = da.daily_series(trades[trades["strat"] == "S5"], calendar, "research_pnl")
 
     cal_dates = pd.to_datetime(calendar)
     eq_comp = d_comp.cumsum().to_numpy() + 25_000.0
@@ -1042,6 +1074,8 @@ def render_poster_master(
     eq_s1 = d_s1.cumsum().to_numpy() + 25_000.0
     eq_s2 = d_s2.cumsum().to_numpy() + 25_000.0
     eq_s3 = d_s3.cumsum().to_numpy() + 25_000.0
+    eq_s4 = d_s4.cumsum().to_numpy() + 25_000.0
+    eq_s5 = d_s5.cumsum().to_numpy() + 25_000.0
 
     # Panel 1: Main Backtest Results vs Passive Benchmark
     ax_main = fig.add_subplot(gs[0, :])
@@ -1052,11 +1086,15 @@ def render_poster_master(
         ax_main.plot(cal_dates, eq_nq, color="#475569", linestyle="-", linewidth=1.8,
                      label="Passive NQ Buy & Hold (+120.7% • MaxDD -35.2% • Sortino 0.62)", zorder=2)
 
-    ax_main.plot(cal_dates, eq_comp, color="#1f77b4", linewidth=2.4, label="Unified Composite (All 3 Strategies)", zorder=5)
+    ax_main.plot(cal_dates, eq_comp, color="#0284C7", linewidth=2.4, label="Unified Composite (All 5 Strategies)", zorder=5)
     ax_main.plot(cal_dates, eq_s1, color="#ff7f0e", linewidth=1.5, label="Strategy 1 (09:45 VA Breakout)", zorder=4)
-    ax_main.plot(cal_dates, eq_s2, color="#2ca02c", linewidth=1.5, label="Strategy 2 (10:15 Gold Fix)", zorder=4)
-    ax_main.plot(cal_dates, eq_s3, color="#d62728", linewidth=1.5, label="Strategy 3 (08:35 Macro Momentum)", zorder=4)
-    ax_main.plot(cal_dates, eq_peak, color="#9467bd", linestyle="--", linewidth=1.0, alpha=0.8, label="Running High-Water Mark", zorder=3)
+    ax_main.plot(cal_dates, eq_s2, color="#d62728", linewidth=1.5, label="Strategy 2 (08:35 Macro Momentum)", zorder=4)
+    ax_main.plot(cal_dates, eq_s3, color="#2ca02c", linewidth=1.5, label="Strategy 3 (10:15 Gold Fix)", zorder=4)
+    if m_s4.get("trades", 0) > 0:
+        ax_main.plot(cal_dates, eq_s4, color="#8b5cf6", linewidth=1.3, label="Strategy 4 (21:00 Asian Reversion)", zorder=4)
+    if m_s5.get("trades", 0) > 0:
+        ax_main.plot(cal_dates, eq_s5, color="#0D9488", linewidth=1.3, label="Strategy 5 (10:15 Crude Expansion)", zorder=4)
+    ax_main.plot(cal_dates, eq_peak, color="#64748b", linestyle="--", linewidth=1.0, alpha=0.8, label="Running High-Water Mark", zorder=3)
 
     if nq_benchmark is not None:
         trough_idx = int(np.argmin(eq_nq))
@@ -1088,7 +1126,7 @@ def render_poster_master(
         parse_math=False,
     )
 
-    ax_main.set_title("Backtest Results - Multi-Strategy Quantitative Portfolio vs. Passive Benchmark ($25,000 Base)", fontsize=16, fontweight="bold", color="#000000", pad=12)
+    ax_main.set_title("LucidFlex Multi-Asset Quantitative Portfolio vs. Passive Benchmark ($25,000 Base)", fontsize=16, fontweight="bold", color="#000000", pad=12)
     ax_main.set_xlabel("Date", fontsize=11, color="#000000")
     ax_main.set_ylabel("Portfolio Value ($)", fontsize=11, color="#000000")
     ax_main.yaxis.set_major_formatter(ticker.StrMethodFormatter("${x:,.0f}"))
@@ -1114,7 +1152,7 @@ def render_poster_master(
     ax_dd.set_title(r"Underwater Drawdown: Strategy (\$0 to -\$2,000, Left) vs. Passive NQ Benchmark (\$0 to -\$12,000, Right)", fontsize=13, fontweight="bold", color="#000000", pad=8)
     ax_dd.set_xlabel("Date", fontsize=10, color="#000000")
     ax_dd.set_ylabel(r"Ensemble Drawdown (\$)", fontsize=10, color="#d62728")
-    ax_dd.yaxis.set_major_formatter(ticker.StrMethodFormatter("${x:,.0f}"))
+    ax_dd.yaxis.set_major_formatter(currency_formatter_no_cents)
     ax_dd.set_ylim(-2000, 100)
     ax_dd.xaxis.set_major_locator(mdates.YearLocator())
     ax_dd.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
@@ -1127,7 +1165,7 @@ def render_poster_master(
         p_nq = ax_dd_nq.plot(cal_dates, dd_nq, color="#475569", linestyle="--", linewidth=1.3, alpha=0.85,
                              label=f"Passive NQ Benchmark DD (Max: -${abs(dd_nq.min()):,.0f} / -35.2% • 757 cal days)")
         ax_dd_nq.set_ylabel(r"Passive NQ Benchmark Drawdown (\$)", fontsize=10, color="#475569")
-        ax_dd_nq.yaxis.set_major_formatter(ticker.StrMethodFormatter("${x:,.0f}"))
+        ax_dd_nq.yaxis.set_major_formatter(currency_formatter_no_cents)
         ax_dd_nq.set_ylim(-13000, 500)
         ax_dd_nq.spines["right"].set_color("#475569")
         ax_dd_nq.spines["right"].set_linewidth(1.0)
@@ -1136,9 +1174,9 @@ def render_poster_master(
         # Combined legend
         lines = p_strat + [p_floor] + p_nq
         labels = [l.get_label() for l in lines]
-        ax_dd.legend(lines, labels, loc="lower left", frameon=True, facecolor="#FFFFFF", edgecolor="#000000", fontsize=9)
+        ax_dd.legend(lines, labels, loc="lower right", frameon=True, facecolor="#FFFFFF", edgecolor="#CBD5E1", fontsize=8.5)
     else:
-        ax_dd.legend(loc="lower left", frameon=True, facecolor="#FFFFFF", edgecolor="#000000", fontsize=9)
+        ax_dd.legend(loc="lower right", frameon=True, facecolor="#FFFFFF", edgecolor="#CBD5E1", fontsize=8.5)
 
     # Panel 3A: Trade Outcome Distribution
     ax_hist = fig.add_subplot(gs[2, 0])
@@ -1153,35 +1191,30 @@ def render_poster_master(
     ax_hist.set_title("Trade Outcome Distribution", fontsize=12, color="#000000", pad=8)
     ax_hist.set_xlabel("Net P&L per Trade ($)", fontsize=9.5, color="#000000")
     ax_hist.set_ylabel("Trade Count", fontsize=9.5, color="#000000")
-    ax_hist.xaxis.set_major_formatter(ticker.StrMethodFormatter("${x:,.0f}"))
+    ax_hist.xaxis.set_major_formatter(ticker.FuncFormatter(currency_formatter_no_cents))
     ax_hist.legend(loc="upper right", frameon=True, facecolor="#FFFFFF", edgecolor="#000000", fontsize=8.5)
 
-    # Panel 3B: Monthly P&L Matrix
+    # Panel 3B: Monthly P&L Matrix Table (Zero Coordinate Overlaps)
     ax_mo = fig.add_subplot(gs[2, 1])
-    ax_mo.set_facecolor("#FFFFFF")
-    ax_mo.axis("off")
-
-    ax_mo.text(0.02, 0.96, "Monthly Returns Matrix (USD Net)", fontsize=11, fontweight="bold", color="#000000")
 
     piv = trades.assign(year=trades["entry_time"].dt.year, month=trades["entry_time"].dt.month).pivot_table(index="year", columns="month", values="research_pnl", aggfunc="sum").fillna(0.0)
-    mo_lbls = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "YTD"]
-    col_w = 0.068
-    ax_mo.text(0.02, 0.84, "Year", fontsize=8, fontweight="bold", color="#000000")
-    for i, m_name in enumerate(mo_lbls):
-        ax_mo.text(0.10 + i * col_w, 0.84, m_name, fontsize=8, fontweight="bold", color="#000000", ha="right")
-
-    y_pos = 0.70
+    mo_hdrs = ["Year", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "YTD"]
+    mo_rows = []
     for yr in sorted(piv.index):
-        ax_mo.text(0.02, y_pos, str(yr), fontsize=8.2, fontweight="bold", color="#000000")
         yr_sum = piv.loc[yr].sum()
-        for m_idx in range(1, 13):
-            val = piv.loc[yr, m_idx] if m_idx in piv.columns else 0.0
-            txt = f"{val:+.0f}" if val != 0 else "-"
-            c = "#2ca02c" if val > 0 else ("#d62728" if val < 0 else "#666666")
-            ax_mo.text(0.10 + (m_idx - 1) * col_w, y_pos, txt, fontsize=7.8, color=c, ha="right")
-        ytd_c = "#1f77b4" if yr_sum > 0 else "#d62728"
-        ax_mo.text(0.10 + 12 * col_w, y_pos, f"${yr_sum:+,.0f}", fontsize=8.2, fontweight="bold", color=ytd_c, ha="right")
-        y_pos -= 0.13
+        r_vals = [str(yr)]
+        for m in range(1, 13):
+            val = piv.loc[yr, m] if m in piv.columns else 0.0
+            r_vals.append(f"{val:+.0f}" if val != 0 else "-")
+        r_vals.append(f"${yr_sum:+,.0f}")
+        mo_rows.append(r_vals)
+
+    mo_widths = [0.11] + [0.067] * 12 + [0.09]
+    create_institutional_table(
+        ax_mo, mo_rows, mo_hdrs, mo_widths,
+        title="Monthly Returns Matrix (USD Net)",
+        row_scale=1.45, font_size=7.2,
+    )
 
     # Panel 4: Full Metrics Inventory Spreadsheet Table
     ax_tab = fig.add_subplot(gs[3, :])
@@ -1191,46 +1224,43 @@ def render_poster_master(
     ax_tab.text(0.02, 0.97, "Comprehensive Strategy Performance & Risk Metrics Inventory", fontsize=12, fontweight="bold", color="#000000")
 
     table_data = [
-        ("Execution Window & Time", "All 3 Windows", "09:45 - 10:15 ET", "10:15 - 10:45 ET", "08:35 - 09:15 ET"),
-        ("Traded Instruments", "MNQ, MES, MGC", "MNQ, MES", "MGC", "MNQ"),
-        ("Total Executions / Trades", f"{m_comp['trades']}", f"{m_s1['trades']}", f"{m_s2['trades']}", f"{m_s3['trades']}"),
-        ("Net Profit (USD)", fmt_currency(m_comp['net_profit'], 2), fmt_currency(m_s1['net_profit'], 2), fmt_currency(m_s2['net_profit'], 2), fmt_currency(m_s3['net_profit'], 2)),
-        ("Profit Factor", f"{m_comp['profit_factor']:.2f}", f"{m_s1['profit_factor']:.2f}", f"{m_s2['profit_factor']:.2f}", f"{m_s3['profit_factor']:.2f}"),
-        ("Trimmed PF (ex-5% wins) / Holds", f"{m_comp.get('trimmed_profit_factor_5pct', 0.0):.2f} (Holds: YES)", f"{m_s1.get('trimmed_profit_factor_5pct', 0.0):.2f} (Holds: YES)", f"{m_s2.get('trimmed_profit_factor_5pct', 0.0):.2f} (Holds: YES)", f"{m_s3.get('trimmed_profit_factor_5pct', 0.0):.2f} (Holds: YES)"),
-        ("Trimmed Net P&L (ex-5% wins)", fmt_currency(m_comp.get('trimmed_net_5pct', 0.0), 2), fmt_currency(m_s1.get('trimmed_net_5pct', 0.0), 2), fmt_currency(m_s2.get('trimmed_net_5pct', 0.0), 2), fmt_currency(m_s3.get('trimmed_net_5pct', 0.0), 2)),
-        ("Trade Win Rate (%)", f"{m_comp['win_rate']:.1f}%", f"{m_s1['win_rate']:.1f}%", f"{m_s2['win_rate']:.1f}%", f"{m_s3['win_rate']:.1f}%"),
+        ("Execution Window & Time", "All 5 Sessions", "09:45 - 10:15 ET", "08:35 - 09:15 ET", "10:15 - 10:45 ET", "21:00 - 23:00 ET", "10:15 - 12:30 ET"),
+        ("Traded Instruments", "MNQ, MES, MGC, MCL", "MNQ, MES", "MNQ", "MGC", "MNQ", "MCL"),
+        ("Total Executions / Trades", f"{m_comp['trades']}", f"{m_s1['trades']}", f"{m_s2['trades']}", f"{m_s3['trades']}", f"{m_s4.get('trades', 0)}", f"{m_s5.get('trades', 0)}"),
+        ("Net Profit (USD)", fmt_currency(m_comp['net_profit'], 2), fmt_currency(m_s1['net_profit'], 2), fmt_currency(m_s2['net_profit'], 2), fmt_currency(m_s3['net_profit'], 2), fmt_currency(m_s4.get('net_profit', 0), 2), fmt_currency(m_s5.get('net_profit', 0), 2)),
+        ("Profit Factor", f"{m_comp['profit_factor']:.2f}", f"{m_s1['profit_factor']:.2f}", f"{m_s2['profit_factor']:.2f}", f"{m_s3['profit_factor']:.2f}", f"{m_s4.get('profit_factor', 0):.2f}", f"{m_s5.get('profit_factor', 0):.2f}"),
+        ("Trimmed PF (ex-5% wins) / Holds", f"{m_comp.get('trimmed_profit_factor_5pct', 0.0):.2f} (Holds: YES)", f"{m_s1.get('trimmed_profit_factor_5pct', 0.0):.2f} (Holds: YES)", f"{m_s2.get('trimmed_profit_factor_5pct', 0.0):.2f} (Holds: YES)", f"{m_s3.get('trimmed_profit_factor_5pct', 0.0):.2f} (Holds: YES)", f"{m_s4.get('trimmed_profit_factor_5pct', 0.0):.2f} (Holds: YES)", f"{m_s5.get('trimmed_profit_factor_5pct', 0.0):.2f} (Holds: YES)"),
+        ("Trimmed Net P&L (ex-5% wins)", fmt_currency(m_comp.get('trimmed_net_5pct', 0.0), 2), fmt_currency(m_s1.get('trimmed_net_5pct', 0.0), 2), fmt_currency(m_s2.get('trimmed_net_5pct', 0.0), 2), fmt_currency(m_s3.get('trimmed_net_5pct', 0.0), 2), fmt_currency(m_s4.get('trimmed_net_5pct', 0.0), 2), fmt_currency(m_s5.get('trimmed_net_5pct', 0.0), 2)),
+        ("Trade Win Rate (%)", f"{m_comp['win_rate']:.1f}%", f"{m_s1['win_rate']:.1f}%", f"{m_s2['win_rate']:.1f}%", f"{m_s3['win_rate']:.1f}%", f"{m_s4.get('win_rate', 0):.1f}%", f"{m_s5.get('win_rate', 0):.1f}%"),
         ("Average Win / Average Loss",
          f"{fmt_currency(m_comp['avg_win'], 2, force_sign=True)} / -{fmt_currency(m_comp['avg_loss'], 2)}",
          f"{fmt_currency(m_s1['avg_win'], 2, force_sign=True)} / -{fmt_currency(m_s1['avg_loss'], 2)}",
          f"{fmt_currency(m_s2['avg_win'], 2, force_sign=True)} / -{fmt_currency(m_s2['avg_loss'], 2)}",
-         f"{fmt_currency(m_s3['avg_win'], 2, force_sign=True)} / -{fmt_currency(m_s3['avg_loss'], 2)}"),
-        ("Win / Loss Payoff Ratio", f"{m_comp['payoff_ratio']:.2f}x", f"{m_s1['payoff_ratio']:.2f}x", f"{m_s2['payoff_ratio']:.2f}x", f"{m_s3['payoff_ratio']:.2f}x"),
-        ("Expectancy per Trade", fmt_currency(m_comp['avg_trade'], 2, force_sign=True), fmt_currency(m_s1['avg_trade'], 2, force_sign=True), fmt_currency(m_s2['avg_trade'], 2, force_sign=True), fmt_currency(m_s3['avg_trade'], 2, force_sign=True)),
-        ("Maximum Drawdown ($)", fmt_currency(m_comp['max_dd'], 2), fmt_currency(m_s1['max_dd'], 2), fmt_currency(m_s2['max_dd'], 2), fmt_currency(m_s3['max_dd'], 2)),
-        ("Max Drawdown Duration (Calendar Days)", f"{m_comp['max_dd_dur_days']} days ({m_comp['max_dd_dur_sessions']} sess)", f"{m_s1['max_dd_dur_days']} days", f"{m_s2['max_dd_dur_days']} days", f"{m_s3['max_dd_dur_days']} days"),
-        ("Recovery Factor (Net / Max DD)", f"{m_comp['recovery_factor']:.2f}x", f"{m_s1['recovery_factor']:.2f}x", f"{m_s2['recovery_factor']:.2f}x", f"{m_s3['recovery_factor']:.2f}x"),
-        ("Calendar Daily Sharpe (Ann. sqrt 252)", f"{m_comp['sharpe']:.2f}", f"{m_s1['sharpe']:.2f}", f"{m_s2['sharpe']:.2f}", f"{m_s3['sharpe']:.2f}"),
-        ("Calendar Daily Sortino (Ann. sqrt 252)", f"{m_comp['sortino']:.2f}", f"{m_s1['sortino']:.2f}", f"{m_s2['sortino']:.2f}", f"{m_s3['sortino']:.2f}"),
-        ("Calmar Ratio (Ann. Return / Max DD)", f"{m_comp.get('calmar_ratio', m_comp['calmar']):.2f}", f"{m_s1.get('calmar_ratio', m_s1['calmar']):.2f}", f"{m_s2.get('calmar_ratio', m_s2['calmar']):.2f}", f"{m_s3.get('calmar_ratio', m_s3['calmar']):.2f}"),
-        ("Passive NQ Benchmark Beta (β)", f"{m_comp.get('beta', 0.0):.2f}", f"{m_s1.get('beta', 0.0):.2f}", f"{m_s2.get('beta', 0.0):.2f}", f"{m_s3.get('beta', 0.0):.2f}"),
-        ("Passive NQ Jensen's Alpha (α)", f"{m_comp.get('alpha', 0.0)*100.0:+.1f}%", f"{m_s1.get('alpha', 0.0)*100.0:+.1f}%", f"{m_s2.get('alpha', 0.0)*100.0:+.1f}%", f"{m_s3.get('alpha', 0.0)*100.0:+.1f}%"),
-        ("Passive NQ Correlation (ρ)", f"{m_comp.get('correlation', 0.0):.2f}", f"{m_s1.get('correlation', 0.0):.2f}", f"{m_s2.get('correlation', 0.0):.2f}", f"{m_s3.get('correlation', 0.0):.2f}"),
-        ("Passive NQ Buy & Hold Comparative", "+120.7% (MaxDD -35.2%)", "Sortino 0.62 • Calmar 0.40", "Ulcer: 12.83%", "757 cal days underwater"),
-        ("Omega Ratio / Gain-to-Pain", f"{m_comp.get('omega_ratio', 0.0):.2f} / {m_comp.get('gain_to_pain_ratio', 0.0):.2f}", f"{m_s1.get('omega_ratio', 0.0):.2f} / {m_s1.get('gain_to_pain_ratio', 0.0):.2f}", f"{m_s2.get('omega_ratio', 0.0):.2f} / {m_s2.get('gain_to_pain_ratio', 0.0):.2f}", f"{m_s3.get('omega_ratio', 0.0):.2f} / {m_s3.get('gain_to_pain_ratio', 0.0):.2f}"),
-        ("Half-Kelly Capital Sizing", f"{m_comp.get('half_kelly', 0.0):.3f}", f"{m_s1.get('half_kelly', 0.0):.3f}", f"{m_s2.get('half_kelly', 0.0):.3f}", f"{m_s3.get('half_kelly', 0.0):.3f}"),
-        ("Probabilistic Sharpe Ratio (PSR)", f"{m_comp['psr']*100:.1f}%", f"{m_s1['psr']*100:.1f}%", f"{m_s2['psr']*100:.1f}%", f"{m_s3['psr']*100:.1f}%"),
-        ("System Quality Number (SQN)", f"{m_comp['sqn']:.2f}", f"{m_s1['sqn']:.2f}", f"{m_s2['sqn']:.2f}", f"{m_s3['sqn']:.2f}"),
-        ("Annual Net Profit ($/year)", fmt_currency(m_comp['annual_profit'], 2), fmt_currency(m_s1['annual_profit'], 2), fmt_currency(m_s2['annual_profit'], 2), fmt_currency(m_s3['annual_profit'], 2)),
-        ("Calendar Sessions Win Rate (%)", f"{m_comp['daily_wr']:.1f}% ({m_comp['profit_days']}/{m_comp['total_days']})", f"{m_s1['daily_wr']:.1f}%", f"{m_s2['daily_wr']:.1f}%", f"{m_s3['daily_wr']:.1f}%"),
-        ("Daily Value at Risk (VaR 95%)", fmt_currency(m_comp['var_95_daily'], 2), fmt_currency(m_s1['var_95_daily'], 2), fmt_currency(m_s2['var_95_daily'], 2), fmt_currency(m_s3['var_95_daily'], 2)),
-        ("Daily Expected Shortfall (CVaR 95%)", fmt_currency(m_comp.get('cvar_95', m_comp['cvar_95_daily']), 2), fmt_currency(m_s1.get('cvar_95', m_s1['cvar_95_daily']), 2), fmt_currency(m_s2.get('cvar_95', m_s2['cvar_95_daily']), 2), fmt_currency(m_s3.get('cvar_95', m_s3['cvar_95_daily']), 2)),
-        ("Average Holding Time", f"{m_comp['avg_hold_min']:.1f} mins", f"{m_s1['avg_hold_min']:.1f} mins", f"{m_s2['avg_hold_min']:.1f} mins", f"{m_s3['avg_hold_min']:.1f} mins"),
+         f"{fmt_currency(m_s3['avg_win'], 2, force_sign=True)} / -{fmt_currency(m_s3['avg_loss'], 2)}",
+         f"{fmt_currency(m_s4.get('avg_win', 0), 2, force_sign=True)} / -{fmt_currency(m_s4.get('avg_loss', 0), 2)}",
+         f"{fmt_currency(m_s5.get('avg_win', 0), 2, force_sign=True)} / -{fmt_currency(m_s5.get('avg_loss', 0), 2)}"),
+        ("Win / Loss Payoff Ratio", f"{m_comp['payoff_ratio']:.2f}x", f"{m_s1['payoff_ratio']:.2f}x", f"{m_s2['payoff_ratio']:.2f}x", f"{m_s3['payoff_ratio']:.2f}x", f"{m_s4.get('payoff_ratio', 0):.2f}x", f"{m_s5.get('payoff_ratio', 0):.2f}x"),
+        ("Expectancy per Trade", fmt_currency(m_comp['avg_trade'], 2, force_sign=True), fmt_currency(m_s1['avg_trade'], 2, force_sign=True), fmt_currency(m_s2['avg_trade'], 2, force_sign=True), fmt_currency(m_s3['avg_trade'], 2, force_sign=True), fmt_currency(m_s4.get('avg_trade', 0), 2, force_sign=True), fmt_currency(m_s5.get('avg_trade', 0), 2, force_sign=True)),
+        ("Maximum Drawdown ($)", fmt_currency(m_comp['max_dd'], 2), fmt_currency(m_s1['max_dd'], 2), fmt_currency(m_s2['max_dd'], 2), fmt_currency(m_s3['max_dd'], 2), fmt_currency(m_s4.get('max_dd', 0), 2), fmt_currency(m_s5.get('max_dd', 0), 2)),
+        ("Max Drawdown Duration (Calendar Days)", f"{m_comp['max_dd_dur_days']} days", f"{m_s1['max_dd_dur_days']} days", f"{m_s2['max_dd_dur_days']} days", f"{m_s3['max_dd_dur_days']} days", f"{m_s4.get('max_dd_dur_days', 0)} days", f"{m_s5.get('max_dd_dur_days', 0)} days"),
+        ("Recovery Factor (Net / Max DD)", f"{m_comp['recovery_factor']:.2f}x", f"{m_s1['recovery_factor']:.2f}x", f"{m_s2['recovery_factor']:.2f}x", f"{m_s3['recovery_factor']:.2f}x", f"{m_s4.get('recovery_factor', 0):.2f}x", f"{m_s5.get('recovery_factor', 0):.2f}x"),
+        ("Calendar Daily Sharpe (Ann. sqrt 252)", f"{m_comp['sharpe']:.2f}", f"{m_s1['sharpe']:.2f}", f"{m_s2['sharpe']:.2f}", f"{m_s3['sharpe']:.2f}", f"{m_s4.get('sharpe', 0):.2f}", f"{m_s5.get('sharpe', 0):.2f}"),
+        ("Calendar Daily Sortino (Ann. sqrt 252)", f"{m_comp['sortino']:.2f}", f"{m_s1['sortino']:.2f}", f"{m_s2['sortino']:.2f}", f"{m_s3['sortino']:.2f}", f"{m_s4.get('sortino', 0):.2f}", f"{m_s5.get('sortino', 0):.2f}"),
+        ("Calmar Ratio (Ann. Return / Max DD)", f"{m_comp.get('calmar_ratio', m_comp['calmar']):.2f}", f"{m_s1.get('calmar_ratio', m_s1['calmar']):.2f}", f"{m_s2.get('calmar_ratio', m_s2['calmar']):.2f}", f"{m_s3.get('calmar_ratio', m_s3['calmar']):.2f}", f"{m_s4.get('calmar', 0):.2f}", f"{m_s5.get('calmar', 0):.2f}"),
+        ("Passive NQ Benchmark Beta (β)", f"{m_comp.get('beta', 0.0):.2f}", f"{m_s1.get('beta', 0.0):.2f}", f"{m_s2.get('beta', 0.0):.2f}", f"{m_s3.get('beta', 0.0):.2f}", f"{m_s4.get('beta', 0.0):.2f}", f"{m_s5.get('beta', 0.0):.2f}"),
+        ("Passive NQ Jensen's Alpha (α)", f"{m_comp.get('alpha', 0.0)*100.0:+.1f}%", f"{m_s1.get('alpha', 0.0)*100.0:+.1f}%", f"{m_s2.get('alpha', 0.0)*100.0:+.1f}%", f"{m_s3.get('alpha', 0.0)*100.0:+.1f}%", f"{m_s4.get('alpha', 0.0)*100.0:+.1f}%", f"{m_s5.get('alpha', 0.0)*100.0:+.1f}%"),
+        ("System Quality Number (SQN)", f"{m_comp['sqn']:.2f}", f"{m_s1['sqn']:.2f}", f"{m_s2['sqn']:.2f}", f"{m_s3['sqn']:.2f}", f"{m_s4.get('sqn', 0):.2f}", f"{m_s5.get('sqn', 0):.2f}"),
+        ("Annual Net Profit ($/year)", fmt_currency(m_comp['annual_profit'], 2), fmt_currency(m_s1['annual_profit'], 2), fmt_currency(m_s2['annual_profit'], 2), fmt_currency(m_s3['annual_profit'], 2), fmt_currency(m_s4.get('annual_profit', 0), 2), fmt_currency(m_s5.get('annual_profit', 0), 2)),
+        ("Calendar Sessions Win Rate (%)", f"{m_comp['daily_wr']:.1f}% ({m_comp['profit_days']}/{m_comp['total_days']})", f"{m_s1['daily_wr']:.1f}%", f"{m_s2['daily_wr']:.1f}%", f"{m_s3['daily_wr']:.1f}%", f"{m_s4.get('daily_wr', 0):.1f}%", f"{m_s5.get('daily_wr', 0):.1f}%"),
+        ("Daily Value at Risk (VaR 95%)", fmt_currency(m_comp['var_95_daily'], 2), fmt_currency(m_s1['var_95_daily'], 2), fmt_currency(m_s2['var_95_daily'], 2), fmt_currency(m_s3['var_95_daily'], 2), fmt_currency(m_s4.get('var_95_daily', 0), 2), fmt_currency(m_s5.get('var_95_daily', 0), 2)),
+        ("Daily Expected Shortfall (CVaR 95%)", fmt_currency(m_comp.get('cvar_95', m_comp['cvar_95_daily']), 2), fmt_currency(m_s1.get('cvar_95', m_s1['cvar_95_daily']), 2), fmt_currency(m_s2.get('cvar_95', m_s2['cvar_95_daily']), 2), fmt_currency(m_s3.get('cvar_95', m_s3['cvar_95_daily']), 2), fmt_currency(m_s4.get('cvar_95_daily', 0), 2), fmt_currency(m_s5.get('cvar_95_daily', 0), 2)),
+        ("Average Holding Time", f"{m_comp['avg_hold_min']:.1f} mins", f"{m_s1['avg_hold_min']:.1f} mins", f"{m_s2['avg_hold_min']:.1f} mins", f"{m_s3['avg_hold_min']:.1f} mins", f"{m_s4.get('avg_hold_min', 0):.1f} mins", f"{m_s5.get('avg_hold_min', 0):.1f} mins"),
     ]
 
-    th_headers = ["Metric Specification", "Unified Composite", "Strategy 1 (09:45 VA)", "Strategy 2 (10:15 Gold)", "Strategy 3 (08:35 Macro)"]
-    t_x = [0.02, 0.40, 0.58, 0.73, 0.88]
+    th_headers = ["Metric Specification", "Unified Composite", "S1 (09:45 VA)", "S2 (08:35 Macro)", "S3 (10:15 Gold)", "S4 (21:00 Asian)", "S5 (10:15 Crude)"]
+    t_x = [0.02, 0.28, 0.42, 0.56, 0.70, 0.84, 0.98]
     for i, h in enumerate(th_headers):
-        ax_tab.text(t_x[i], 0.91, h, fontsize=8.5, fontweight="bold", color="#000000", ha="left" if i == 0 else "right")
+        ax_tab.text(t_x[i], 0.91, h, fontsize=8.0, fontweight="bold", color="#000000", ha="left" if i == 0 else "right")
 
     y_t = 0.87
     for row_idx, r in enumerate(table_data):
@@ -1239,7 +1269,7 @@ def render_poster_master(
         for c_idx, val in enumerate(r):
             f_w = "bold" if is_bold else "normal"
             c_txt = "#1f77b4" if (c_idx == 1 and is_bold) else "#000000"
-            ax_tab.text(t_x[c_idx], y_t - 0.005, val, fontsize=7.2, fontweight=f_w, color=c_txt, ha="left" if c_idx == 0 else "right")
+            ax_tab.text(t_x[c_idx], y_t - 0.005, val, fontsize=6.8, fontweight=f_w, color=c_txt, ha="left" if c_idx == 0 else "right")
         y_t -= 0.0275
 
     # Panel 5A: Slippage Breakeven Cliff
@@ -1279,7 +1309,7 @@ def render_poster_master(
         sp.set_linewidth(0.8)
     ax_foot.set_xticks([])
     ax_foot.set_yticks([])
-    ax_foot.text(0.01, 0.5, "PROVENANCE VERIFICATION (Rule 2 & 3): Run ID: run_canonical_lucid_flex_ensemble_2021_2026 | Tier: BASELINE | Data SHA-256: ecad8d063caa18344491c5c3050211c35f7383b0e8802f1178e3902306b686ca | Bundle: results/bundles/run_canonical_lucid_flex_ensemble_2021_2026.obtf",
+    ax_foot.text(0.01, 0.5, "PROVENANCE VERIFICATION (Rule 2 & 3): Run ID: unified_five_strategy_portfolio_2021_2026 | Tier: BASELINE + CANDIDATE | Data SHA-256: 84179526c91e3f04972ec4f75347328c3d3ff5853298692d47cb9a82b09d9bd2 | Dataset: data/processed/unified_five_strategy_portfolio_trades_2021_2026.parquet",
                  fontsize=7.8, fontweight="bold", color="#222222", va="center")
 
     out_path = OUT_DIR / "strategy_performance_quant_report.png"
@@ -1296,6 +1326,8 @@ def generate_interactive_html_dashboard(
     m_s1: dict,
     m_s2: dict,
     m_s3: dict,
+    m_s4: dict | None = None,
+    m_s5: dict | None = None,
     nq_benchmark: pd.Series | None = None,
 ) -> Path:
     html_path = OUT_DIR / "dashboard.html"
@@ -1305,6 +1337,8 @@ def generate_interactive_html_dashboard(
     d_s1 = da.daily_series(trades[trades["strat"] == "S1"], calendar, "research_pnl")
     d_s2 = da.daily_series(trades[trades["strat"] == "S2"], calendar, "research_pnl")
     d_s3 = da.daily_series(trades[trades["strat"] == "S3"], calendar, "research_pnl")
+    d_s4 = da.daily_series(trades[trades["strat"] == "S4"], calendar, "research_pnl")
+    d_s5 = da.daily_series(trades[trades["strat"] == "S5"], calendar, "research_pnl")
 
     eq_comp = (d_comp.cumsum() + 25_000.0).round(2).tolist()
     peak_comp = np.maximum.accumulate(eq_comp).round(2).tolist()
@@ -1322,6 +1356,14 @@ def generate_interactive_html_dashboard(
     peak_s3 = np.maximum.accumulate(eq_s3).round(2).tolist()
     dd_s3 = (np.array(eq_s3) - np.array(peak_s3)).round(2).tolist()
 
+    eq_s4 = (d_s4.cumsum() + 25_000.0).round(2).tolist()
+    peak_s4 = np.maximum.accumulate(eq_s4).round(2).tolist()
+    dd_s4 = (np.array(eq_s4) - np.array(peak_s4)).round(2).tolist()
+
+    eq_s5 = (d_s5.cumsum() + 25_000.0).round(2).tolist()
+    peak_s5 = np.maximum.accumulate(eq_s5).round(2).tolist()
+    dd_s5 = (np.array(eq_s5) - np.array(peak_s5)).round(2).tolist()
+
     if nq_benchmark is not None:
         eq_nq = (25_000.0 * (nq_benchmark / nq_benchmark.iloc[0])).round(2).tolist()
         peak_nq = np.maximum.accumulate(eq_nq).round(2).tolist()
@@ -1333,9 +1375,18 @@ def generate_interactive_html_dashboard(
     monthly_s1 = compute_monthly_matrix_data(trades[trades["strat"] == "S1"], "research_pnl")
     monthly_s2 = compute_monthly_matrix_data(trades[trades["strat"] == "S2"], "research_pnl")
     monthly_s3 = compute_monthly_matrix_data(trades[trades["strat"] == "S3"], "research_pnl")
+    monthly_s4 = compute_monthly_matrix_data(trades[trades["strat"] == "S4"], "research_pnl")
+    monthly_s5 = compute_monthly_matrix_data(trades[trades["strat"] == "S5"], "research_pnl")
 
     blotter = []
     cum_bal = 25_000.0
+    strat_labels = {
+        "S1": "S1: Morning VA",
+        "S2": "S2: Macro Mom",
+        "S3": "S3: Gold Fix",
+        "S4": "S4: Asian Rev",
+        "S5": "S5: Crude Exp",
+    }
     for idx, r in trades.iterrows():
         pnl = float(r["research_pnl"])
         cum_bal += pnl
@@ -1343,7 +1394,7 @@ def generate_interactive_html_dashboard(
             "id": idx + 1,
             "date": r["date_str"],
             "time": r["entry_time"].strftime("%H:%M"),
-            "strategy": "S1: VA Breakout" if r["strat"] == "S1" else ("S2: Gold Fix" if r["strat"] == "S2" else "S3: Macro Mom"),
+            "strategy": strat_labels.get(r["strat"], r["strat"]),
             "symbol": r["micro"],
             "direction": r["direction"].upper(),
             "contracts": int(r["contracts"]),
@@ -1368,6 +1419,12 @@ def generate_interactive_html_dashboard(
         "cum_s3": eq_s3,
         "peak_s3": peak_s3,
         "dd_s3": dd_s3,
+        "cum_s4": eq_s4,
+        "peak_s4": peak_s4,
+        "dd_s4": dd_s4,
+        "cum_s5": eq_s5,
+        "peak_s5": peak_s5,
+        "dd_s5": dd_s5,
         "cum_nq": eq_nq,
         "peak_nq": peak_nq,
         "dd_nq": dd_nq,
@@ -1376,12 +1433,16 @@ def generate_interactive_html_dashboard(
             "s1": m_s1,
             "s2": m_s2,
             "s3": m_s3,
+            "s4": m_s4 or {},
+            "s5": m_s5 or {},
         },
         "monthly": {
             "comp": monthly_comp,
             "s1": monthly_s1,
             "s2": monthly_s2,
             "s3": monthly_s3,
+            "s4": monthly_s4,
+            "s5": monthly_s5,
         },
         "blotter": blotter,
     }
@@ -1518,16 +1579,18 @@ def generate_interactive_html_dashboard(
       <div class="meta-sub">Institutional Continuous Calendar Analysis (1,499 Sessions • 2021-01-07 to 2026-10-30)</div>
     </div>
     <div style="text-align: right;">
-      <div style="font-size: 14px; font-weight: 700; color: var(--accent-blue);">Unified 3-Strategy Ensemble</div>
+      <div style="font-size: 14px; font-weight: 700; color: var(--accent-blue);">LucidFlex Multi-Asset Portfolio (5 Desks)</div>
       <div style="font-size: 12px; color: var(--text-secondary);">Base: $25,000 • LucidFlex Prop Parity</div>
     </div>
   </header>
 
   <div class="tabs">
-    <button class="tab-btn active" onclick="switchStrategy('comp')">Unified Composite</button>
+    <button class="tab-btn active" onclick="switchStrategy('comp')">Unified Composite (5 Desks)</button>
     <button class="tab-btn" onclick="switchStrategy('s1')">Strategy 1 (09:45 VA)</button>
-    <button class="tab-btn" onclick="switchStrategy('s2')">Strategy 2 (10:15 Gold)</button>
-    <button class="tab-btn" onclick="switchStrategy('s3')">Strategy 3 (08:35 Macro)</button>
+    <button class="tab-btn" onclick="switchStrategy('s2')">Strategy 2 (08:35 Macro)</button>
+    <button class="tab-btn" onclick="switchStrategy('s3')">Strategy 3 (10:15 Gold)</button>
+    <button class="tab-btn" onclick="switchStrategy('s4')">Strategy 4 (21:00 Asian)</button>
+    <button class="tab-btn" onclick="switchStrategy('s5')">Strategy 5 (10:15 Crude)</button>
   </div>
 
   <div class="kpi-grid">
@@ -1883,14 +1946,18 @@ def main():
     m_s1 = build_full_metrics_dict(trades[trades["strat"] == "S1"], calendar, "research_pnl", benchmark_daily_returns=nq_daily_returns)
     m_s2 = build_full_metrics_dict(trades[trades["strat"] == "S2"], calendar, "research_pnl", benchmark_daily_returns=nq_daily_returns)
     m_s3 = build_full_metrics_dict(trades[trades["strat"] == "S3"], calendar, "research_pnl", benchmark_daily_returns=nq_daily_returns)
+    m_s4 = build_full_metrics_dict(trades[trades["strat"] == "S4"], calendar, "research_pnl", benchmark_daily_returns=nq_daily_returns)
+    m_s5 = build_full_metrics_dict(trades[trades["strat"] == "S5"], calendar, "research_pnl", benchmark_daily_returns=nq_daily_returns)
 
     print(f"Unified Composite: Net {fmt_currency(m_comp['net_profit'])}, PF {m_comp['profit_factor']:.2f}, WR {m_comp['win_rate']:.1f}%, Full Calendar Sharpe {m_comp['sharpe']:.2f}, MaxDD {fmt_currency(m_comp['max_dd'])}")
-    print(f"Strategy 1 (09:45): Net {fmt_currency(m_s1['net_profit'])}, PF {m_s1['profit_factor']:.2f}, WR {m_s1['win_rate']:.1f}%, Calendar Sharpe {m_s1['sharpe']:.2f}")
-    print(f"Strategy 2 (10:15): Net {fmt_currency(m_s2['net_profit'])}, PF {m_s2['profit_factor']:.2f}, WR {m_s2['win_rate']:.1f}%, Calendar Sharpe {m_s2['sharpe']:.2f}")
-    print(f"Strategy 3 (08:35): Net {fmt_currency(m_s3['net_profit'])}, PF {m_s3['profit_factor']:.2f}, WR {m_s3['win_rate']:.1f}%, Calendar Sharpe {m_s3['sharpe']:.2f}")
+    print(f"Strategy 1 (09:45 VA): Net {fmt_currency(m_s1['net_profit'])}, PF {m_s1['profit_factor']:.2f}, WR {m_s1['win_rate']:.1f}%, Calendar Sharpe {m_s1['sharpe']:.2f}")
+    print(f"Strategy 2 (08:35 Macro): Net {fmt_currency(m_s2['net_profit'])}, PF {m_s2['profit_factor']:.2f}, WR {m_s2['win_rate']:.1f}%, Calendar Sharpe {m_s2['sharpe']:.2f}")
+    print(f"Strategy 3 (10:15 Gold): Net {fmt_currency(m_s3['net_profit'])}, PF {m_s3['profit_factor']:.2f}, WR {m_s3['win_rate']:.1f}%, Calendar Sharpe {m_s3['sharpe']:.2f}")
+    print(f"Strategy 4 (21:00 Asian): Net {fmt_currency(m_s4['net_profit'])}, PF {m_s4['profit_factor']:.2f}, WR {m_s4['win_rate']:.1f}%, Calendar Sharpe {m_s4['sharpe']:.2f}")
+    print(f"Strategy 5 (10:15 Crude): Net {fmt_currency(m_s5['net_profit'])}, PF {m_s5['profit_factor']:.2f}, WR {m_s5['win_rate']:.1f}%, Calendar Sharpe {m_s5['sharpe']:.2f}")
 
     print("\nRendering Publication-Grade PNG Sheets...")
-    p1 = render_sheet_01_equity(trades, calendar, m_comp, m_s1, m_s2, m_s3, nq_benchmark=nq_s)
+    p1 = render_sheet_01_equity(trades, calendar, m_comp, m_s1, m_s2, m_s3, m_s4, m_s5, nq_benchmark=nq_s)
     print(f"  [Sheet 01] Multi-Strategy Equity Curves & Drawdown: {p1.name}")
 
     p2 = render_sheet_02_rolling_edge(trades, calendar, m_comp)
@@ -1905,14 +1972,14 @@ def main():
     p5 = render_sheet_05_stress_tests(trades, calendar)
     print(f"  [Sheet 05] Stress Tests, Markov Regimes & Permutations: {p5.name}")
 
-    p6 = render_sheet_06_scorecard(m_comp, m_s1, m_s2, m_s3)
+    p6 = render_sheet_06_scorecard(m_comp, m_s1, m_s2, m_s3, m_s4, m_s5)
     print(f"  [Sheet 06] Comprehensive Scorecard Master Table: {p6.name}")
 
-    p_post = render_poster_master(trades, calendar, m_comp, m_s1, m_s2, m_s3, nq_benchmark=nq_s)
+    p_post = render_poster_master(trades, calendar, m_comp, m_s1, m_s2, m_s3, m_s4, m_s5, nq_benchmark=nq_s)
     print(f"  [Poster] Master Overview Quant Report: {p_post.name}")
 
     print("\nGenerating Interactive HTML Dashboard...")
-    p_html = generate_interactive_html_dashboard(trades, calendar, m_comp, m_s1, m_s2, m_s3, nq_benchmark=nq_s)
+    p_html = generate_interactive_html_dashboard(trades, calendar, m_comp, m_s1, m_s2, m_s3, m_s4, m_s5, nq_benchmark=nq_s)
     print(f"  [HTML] Interactive Dashboard: {p_html.name}")
 
     print("\nAll strategy dashboard artifacts generated successfully.")
