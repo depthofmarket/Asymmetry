@@ -61,15 +61,16 @@ To bridge the gap between high-level Python econometric research and real-time e
    - Mandatory 12:30 ET session flatten and EIA Wednesday inventory report filter.
 
 ### Safe CPPI & Dynamic Account Sizing Resolution (`resolveContracts`)
-All three Java studies integrate native dynamic contract resolution pulling real-time account equity (`cash + realizedPnL + unrealizedPnL`) directly from the MotiveWave `OrderContext`:
-- **Balance & Floor Calculation**: High-water mark trailing floor ($hwm - \$1,000$, locked at $\$25,100$ when $hwm \ge \$26,100$).
+All five Java studies integrate native dynamic contract resolution pulling real-time account equity (`cash + realizedPnL + unrealizedPnL`) directly from the MotiveWave `OrderContext`, while strictly enforcing the canonical daemon recommendation as an unbreakable ceiling:
+- **Canonical Daemon Risk Recommendation Ceiling**: The executable contract count is capped by `riskState.recommendedMicros`. Upstream risk decisions, pair-split allocations, or emergency de-escalations can never be inflated by local study sizing tiers.
+- **Upstream Risk Budget Ceiling**: Sizing honors `fallbackContracts` as a hard upper bound: `maxAllowed = Math.min(riskState.recommendedMicros, fallbackContracts)`.
+- **Balance & Floor Calculation**: High-water mark trailing floor ($hwm - \$1,000$, locked permanently at $\$25,100$ when $hwm \ge \$26,100$).
 - **Trailing Cushion**: $\text{cushion} = \text{balance} - \text{floor}$.
-- **Finish-Line Shield**: If net profit $\ge +\$1,150.00$, lock to **1 micro** to guarantee passing evaluation.
-- **Floor Buffer De-lever**: If trailing cushion $<\$400.00$, de-lever to **1 micro** (infant mortality avoidance).
-- **Compounding Tier 3**: If net profit $\ge +\$550.00$, size **4 micros**.
-- **Compounding Tier 2**: If net profit $\ge +\$200.00$, size **3 micros**.
-- **Base Tier 1**: Size **2 micros**.
-- **Daily Loss Circuit Breaker**: Hard-coded soft stop updated to **-\$600.00** daily PnL threshold.
+- **Finish-Line Shield**: If net profit $\ge +\$1,150.00$ or `riskState.finishLineShield == true`, lock to **1 micro** to guarantee passing evaluation.
+- **Floor Buffer De-lever**: If trailing cushion $<\$400.00$ or `riskState.emergencyDelever == true`, de-lever to **1 micro** (infant mortality avoidance).
+- **GARCH Volatility Halving**: If `riskState.garchDecileHalving == true`, constrain sizing to **1 micro**.
+- **Daily Loss Circuit Breaker**: Canonical daily soft stop at **-\$600.00** daily PnL threshold (`DAILY_SOFT_STOP_DOLLARS`).
+- **Safe Deactivation Protocol**: On strategy deactivation (`onDeactivate`), if position is flat (`ctx.getPosition() == 0`), pending orders are cancelled; if a live position remains open, working protective stop orders are preserved to eliminate naked position risk.
 
 ### Real-Time Alert & File Export Protocol
 - Each Java study formats triggered trades, order lifecycle events, and bracket orders into structured alert lines written to a local export directory (`results/forward_test/motivewave_alerts.log`).

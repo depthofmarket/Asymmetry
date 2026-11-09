@@ -252,6 +252,17 @@ public class LucidMorningVABreakoutStudy extends Study {
         return Paths.get(userHome, "trading_strategy", "nq-scalper-backtest", "results", "forward_test", CANONICAL_STATE_FILENAME).toFile();
     }
 
+    private static File getDailyLockFile(String strategyId, LocalDate today) {
+        try {
+            File stateFile = resolveCanonicalStateFile();
+            File dir = (stateFile != null && stateFile.getParentFile() != null) ? stateFile.getParentFile() : new File("results/forward_test");
+            if (!dir.exists()) dir.mkdirs();
+            return new File(dir, "." + strategyId + "_" + today + ".lock");
+        } catch (Exception e) {
+            return new File("results/forward_test", "." + strategyId + "_" + today + ".lock");
+        }
+    }
+
     public static DaemonRiskState loadDaemonRiskState() {
         DaemonRiskState state = new DaemonRiskState();
         try {
@@ -366,11 +377,25 @@ public class LucidMorningVABreakoutStudy extends Study {
             state.trailingCushion = state.balance - state.trailingFloor;
 
             String statusStr = extractJsonString(raw, "status");
+            if (statusStr == null || (!"ACTIVE".equalsIgnoreCase(statusStr)
+                    && !"PASSED".equalsIgnoreCase(statusStr)
+                    && !"DAILY_HALTED".equalsIgnoreCase(statusStr)
+                    && !"TRAILED_OUT".equalsIgnoreCase(statusStr))) {
+                state.verified = false;
+                state.verificationError = "UNKNOWN_ACCOUNT_STATUS:" + statusStr;
+                lastAccountStateError = state.verificationError;
+                return state;
+            }
+
             state.circuitBreakerHit = extractJsonBoolean(raw, "circuit_breaker_hit", false)
                 || state.currentDatePnl <= -600.0
                 || state.balance <= state.trailingFloor
                 || "DAILY_HALTED".equalsIgnoreCase(statusStr)
-                || "TRAILED_OUT".equalsIgnoreCase(statusStr);
+                || "TRAILED_OUT".equalsIgnoreCase(statusStr)
+                || "PASSED".equalsIgnoreCase(statusStr);
+            if ("PASSED".equalsIgnoreCase(statusStr) || "DAILY_HALTED".equalsIgnoreCase(statusStr) || "TRAILED_OUT".equalsIgnoreCase(statusStr)) {
+                state.recommendedMicros = 0;
+            }
             state.emergencyDelever = extractJsonBoolean(raw, "emergency_delever", false)
                 || extractJsonBoolean(raw, "defensive_delever", false)
                 || state.trailingCushion < 400.0;
@@ -379,7 +404,7 @@ public class LucidMorningVABreakoutStudy extends Study {
             state.garchDecileHalving = extractJsonBoolean(raw, "garch_decile_halving", false);
 
             if (state.trailingCushion < 400.0 || state.emergencyDelever || state.finishLineShield || state.garchDecileHalving) {
-                state.recommendedMicros = 1;
+                state.recommendedMicros = Math.min(state.recommendedMicros > 0 ? state.recommendedMicros : 1, 1);
             }
 
             state.verified = true;
@@ -536,6 +561,9 @@ public class LucidMorningVABreakoutStudy extends Study {
             if (riskState == null || !riskState.verified || riskState.circuitBreakerHit) {
                 return 0;
             }
+            if (riskState.recommendedMicros <= 0) {
+                return 0;
+            }
             persistedPeakBalance = Math.max(persistedPeakBalance, Math.max(riskState.peakBalance, balance));
 
             double floor = Math.max(24000.00, persistedPeakBalance - 1000.00);
@@ -544,14 +572,32 @@ public class LucidMorningVABreakoutStudy extends Study {
             }
             persistedTrailingFloor = Math.max(persistedTrailingFloor, Math.max(riskState.trailingFloor, floor));
 
+            if (balance <= persistedTrailingFloor) {
+                return 0;
+            }
+
             double profit = balance - 25000.00;
             double cushion = balance - persistedTrailingFloor;
 
+            // Enforce daemon risk recommendation as hard upper bound and honor fallbackContracts
+            int maxAllowed = riskState.recommendedMicros;
+            if (fallbackContracts > 0) {
+                maxAllowed = Math.min(maxAllowed, fallbackContracts);
+            } else if (fallbackContracts <= 0) {
+                return 0;
+            }
+            if (maxAllowed <= 0) {
+                return 0;
+            }
+
+            // Honor de-leveraging flags, finish-line shield, and low cushion
+            if (riskState.emergencyDelever || riskState.finishLineShield || riskState.garchDecileHalving) {
+                maxAllowed = Math.min(maxAllowed, 1);
+            }
             if (profit >= 1150.00) return 1;
             if (cushion < 400.00) return 1;
-            if (profit >= 550.00) return 4;
-            if (profit >= 200.00) return 3;
-            return 2;
+
+            return Math.min(maxAllowed, 10);
         } catch (Exception ignored) {
             return 0;
         }
@@ -1288,8 +1334,10 @@ public class LucidMorningVABreakoutStudy extends Study {
         long now = ctx.getCurrentTime();
         LocalDate today = Instant.ofEpochMilli(now).atZone(NY_ZONE).toLocalDate();
 
-        // Strict Single-Trade-Per-Day Enforcement (IAF Cooldown Lock)
-        if (DAILY_SUBMITTED_DATES.contains(today)) {
+        // Strict Single-Trade-Per-Day Enforcement with Persistent Disk Lock (IAF Cooldown Lock)
+        File lockFile = getDailyLockFile("morning_va_breakout_s1", today);
+        if (DAILY_SUBMITTED_DATES.contains(today) || (lockFile != null && lockFile.exists())) {
+            DAILY_SUBMITTED_DATES.add(today);
             logExecutionEvent("ORDER_BLOCKED_SESSION_COOLDOWN", "LucidMorningVABreakout",
                 ctx.getInstrument() != null ? ctx.getInstrument().getSymbol() : "UNKNOWN",
                 "BLOCKED", 0.0, 0.0, 0.0, 0,
@@ -1338,6 +1386,9 @@ public class LucidMorningVABreakoutStudy extends Study {
 
         // Lock session cooldown immediately to guarantee non-repainting single execution
         DAILY_SUBMITTED_DATES.add(today);
+        if (lockFile != null) {
+            try { lockFile.createNewFile(); } catch (Exception ignored) {}
+        }
         trade.orderSubmitted = true;
         trade.entryOrderId = entry != null ? entry.getOrderId() : null;
 
@@ -1357,8 +1408,10 @@ public class LucidMorningVABreakoutStudy extends Study {
             order.getAction().toString(), order.getAvgFillPrice(), 0.0, 0.0, order.getQuantity(),
             "Order filled: id=" + order.getOrderId() + " pos=" + ctx.getPosition());
 
+        boolean isTrackedEntry = (trade != null) && ((trade.entryOrderId != null && trade.entryOrderId.equals(order.getOrderId())) || (trade.orderSubmitted && !trade.entryFilled));
+
         // Case A: Entry order filled -> Submit linked Stop Loss & Profit Target brackets to CQG
-        if (ctx.getPosition() != 0 && trade != null && !trade.bracketsSubmitted) {
+        if (ctx.getPosition() != 0 && trade != null && !trade.bracketsSubmitted && isTrackedEntry) {
             trade.entryFilled = true;
             int contracts = Math.abs(ctx.getPosition());
             float stopPrice = ctx.getInstrument().round((float) trade.stopPrice);
@@ -1376,6 +1429,16 @@ public class LucidMorningVABreakoutStudy extends Study {
                 exitAction.toString(), 0.0, stopPrice, targetPrice, contracts,
                 "Attached Stop (" + stopPrice + ") and Target (" + targetPrice + ") submitted to broker.");
         }
+        // Case A.2: Partial fill update on existing position
+        else if (ctx.getPosition() != 0 && trade != null && trade.bracketsSubmitted && isTrackedEntry) {
+            int contracts = Math.abs(ctx.getPosition());
+            if (trade.slOrderId != null) {
+                // Bracket quantities will be managed in broker
+                logExecutionEvent("PARTIAL_FILL_SYNC", "LucidMorningVABreakout", ctx.getInstrument().getSymbol(),
+                    order.getAction().toString(), order.getAvgFillPrice(), 0.0, 0.0, contracts,
+                    "Partial entry fill synchronized to pos=" + contracts);
+            }
+        }
         // Case B: Stop Loss or Profit Target filled -> Position flattened
         else if (ctx.getPosition() == 0) {
             ctx.cancelOrders();
@@ -1388,6 +1451,13 @@ public class LucidMorningVABreakoutStudy extends Study {
     @Override
     public void onOrderRejected(OrderContext ctx, Order order) {
         if (order == null) return;
+        long now = ctx != null ? ctx.getCurrentTime() : System.currentTimeMillis();
+        LocalDate today = Instant.ofEpochMilli(now).atZone(NY_ZONE).toLocalDate();
+        ActiveTrade trade = tradesByDate.get(today);
+        if (trade != null && trade.entryOrderId != null && trade.entryOrderId.equals(order.getOrderId())) {
+            trade.orderSubmitted = false;
+            trade.closed = true;
+        }
         logExecutionEvent("ORDER_REJECTED", "LucidMorningVABreakout",
             ctx != null ? ctx.getInstrument().getSymbol() : "UNKNOWN",
             order.getAction().toString(), 0.0, 0.0, 0.0, order.getQuantity(),
@@ -1414,7 +1484,14 @@ public class LucidMorningVABreakoutStudy extends Study {
     public void onDeactivate(OrderContext ctx) {
         setState(Enums$StrategyState.INACTIVE);
         if (ctx != null) {
-            ctx.cancelOrders();
+            if (ctx.getPosition() == 0) {
+                ctx.cancelOrders();
+            } else {
+                logExecutionEvent("STRATEGY_DEACTIVATED_POSITION_REMAINS_OPEN", "LucidMorningVABreakout",
+                    ctx.getInstrument() != null ? ctx.getInstrument().getSymbol() : "MNQ",
+                    "FLAT", 0.0, 0.0, 0.0, 0,
+                    "Position open (" + ctx.getPosition() + "); protective orders preserved to prevent naked position exposure.");
+            }
         }
         logExecutionEvent("STRATEGY_DEACTIVATED", "LucidMorningVABreakout",
             ctx != null ? ctx.getInstrument().getSymbol() : "MNQ",

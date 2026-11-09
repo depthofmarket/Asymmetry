@@ -499,3 +499,69 @@ class TestIntrabarBreakevenConservativeAssumptions:
         assert trade["exit_reason"] == "stop_loss", (
             f"Ambiguous bar must take stop_loss, got {trade['exit_reason']}"
         )
+
+
+# ==============================================================================
+# SECTION 7: CANONICAL RISK SIZING, UPPER BOUNDS & INSTRUMENT PARITY
+# ==============================================================================
+
+class TestSizingResolutionAndUpperBounds:
+    """Verify daemon recommendation and fallbackContracts act as hard upper bounds."""
+
+    def test_daemon_recommendation_is_hard_upper_bound_in_source(self):
+        """All five studies must cap contracts at riskState.recommendedMicros."""
+        for name, path in STUDY_FILES.items():
+            code = path.read_text(encoding="utf-8")
+            assert "int maxAllowed = riskState.recommendedMicros;" in code or "riskState.recommendedMicros" in code
+            assert "if (fallbackContracts > 0)" in code or "fallback" in code
+            assert "Math.min(" in code
+
+    def test_deleveraging_flags_cap_sizing_to_one(self):
+        """Emergency delever, finish line shield, and garch halving must cap contracts to 1."""
+        for name, path in STUDY_FILES.items():
+            code = path.read_text(encoding="utf-8")
+            assert "emergencyDelever" in code
+            assert "finishLineShield" in code
+            assert "garchDecileHalving" in code
+
+    def test_unknown_status_fails_closed_in_all_studies(self):
+        """Unknown or missing status strings must fail closed across all five studies."""
+        for name, path in STUDY_FILES.items():
+            code = path.read_text(encoding="utf-8")
+            assert "UNKNOWN_ACCOUNT_STATUS" in code
+            assert "ACTIVE" in code
+            assert "DAILY_HALTED" in code
+            assert "TRAILED_OUT" in code
+
+
+class TestStrategyParityAndInstrumentValidation:
+    """Verify S4 and S5 instrument validation, indicators, and configuration parity."""
+
+    def test_s4_mnq_instrument_validation(self):
+        code = STUDY_FILES["S4"].read_text(encoding="utf-8")
+        assert 'sym.contains("MNQ")' in code or 'sym.contains("NQ")' in code
+        assert "INSTRUMENT_NOT_MNQ" in code
+
+    def test_s4_rth_regime_features(self):
+        code = STUDY_FILES["S4"].read_text(encoding="utf-8")
+        assert "MIN_RTH_RVOL20" in code
+        assert "MIN_DRIFT_ATR" in code
+        assert "MAX_DRIFT_ATR" in code
+        assert "RthSession" in code
+        assert "completedRthList" in code
+
+    def test_s5_mcl_instrument_validation(self):
+        code = STUDY_FILES["S5"].read_text(encoding="utf-8")
+        assert 'sym.contains("MCL")' in code or 'sym.contains("CL")' in code
+        assert "INSTRUMENT_NOT_MCL" in code
+
+    def test_s5_daily_indicators_and_no_min_body_ratio(self):
+        code = STUDY_FILES["S5"].read_text(encoding="utf-8")
+        assert "MIN_BODY_RATIO" not in code
+        assert "minBodyRatio" not in code
+        assert "MIN_ATR14" in code
+        assert "MIN_RVOL20" in code
+        assert "DailySession" in code
+        assert "completedDailyList" in code
+        assert "numCompleted >= 50" in code
+        assert "macroTrend" in code

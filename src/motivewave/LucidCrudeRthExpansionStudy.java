@@ -44,8 +44,10 @@ import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -104,7 +106,8 @@ public class LucidCrudeRthExpansionStudy extends Study {
     // --- Setting Keys ---
     public static final String MIN_BOX_RANGE = "minBoxRange";
     public static final String MAX_BOX_RANGE = "maxBoxRange";
-    public static final String MIN_BODY_RATIO = "minBodyRatio";
+    public static final String MIN_ATR14 = "minAtr14";
+    public static final String MIN_RVOL20 = "minRvol20";
     public static final String STOP_DOLLARS = "stopDollars";
     public static final String TARGET_DOLLARS = "targetDollars";
     public static final String BREAKEVEN_TRIGGER_R = "breakevenTriggerR";
@@ -145,6 +148,8 @@ public class LucidCrudeRthExpansionStudy extends Study {
     private final Map<LocalDate, OpeningBox> boxMap = new HashMap<>();
     private final Map<LocalDate, ActiveTrade> tradeMap = new HashMap<>();
     private final Set<LocalDate> processedDays = new HashSet<>();
+    private final Map<LocalDate, DailySession> dailySessions = new HashMap<>();
+    private final List<DailySession> completedDailyList = new ArrayList<>();
 
     // Explicit user opt-in tracking across reloads/upgrades
     private boolean userExplicitlyAuthorizedAutoTrade = false;
@@ -234,6 +239,17 @@ public class LucidCrudeRthExpansionStudy extends Study {
         }
         String userHome = System.getProperty("user.home", ".");
         return Paths.get(userHome, "trading_strategy", "nq-scalper-backtest", "results", "forward_test", CANONICAL_STATE_FILENAME).toFile();
+    }
+
+    private File getDailyLockFile(String strategyId, LocalDate today) {
+        try {
+            File stateFile = resolveCanonicalStateFile();
+            File dir = (stateFile != null && stateFile.getParentFile() != null) ? stateFile.getParentFile() : new File("results/forward_test");
+            if (!dir.exists()) dir.mkdirs();
+            return new File(dir, "." + strategyId + "_" + today + ".lock");
+        } catch (Exception e) {
+            return new File("results/forward_test", "." + strategyId + "_" + today + ".lock");
+        }
     }
 
     protected DaemonRiskState loadDaemonRiskState() {
@@ -350,17 +366,35 @@ public class LucidCrudeRthExpansionStudy extends Study {
             state.trailingCushion = state.balance - state.trailingFloor;
 
             String statusStr = extractJsonString(raw, "status");
+            if (statusStr == null || (!"ACTIVE".equalsIgnoreCase(statusStr)
+                    && !"PASSED".equalsIgnoreCase(statusStr)
+                    && !"DAILY_HALTED".equalsIgnoreCase(statusStr)
+                    && !"TRAILED_OUT".equalsIgnoreCase(statusStr))) {
+                state.verified = false;
+                state.verificationError = "UNKNOWN_ACCOUNT_STATUS:" + statusStr;
+                lastAccountStateError = state.verificationError;
+                return state;
+            }
+
             state.circuitBreakerHit = extractJsonBoolean(raw, "circuit_breaker_hit", false)
-                || state.currentDatePnl <= -500.0
+                || state.currentDatePnl <= -600.0
                 || state.balance <= state.trailingFloor
                 || "DAILY_HALTED".equalsIgnoreCase(statusStr)
-                || "TRAILED_OUT".equalsIgnoreCase(statusStr);
+                || "TRAILED_OUT".equalsIgnoreCase(statusStr)
+                || "PASSED".equalsIgnoreCase(statusStr);
+            if ("PASSED".equalsIgnoreCase(statusStr) || "DAILY_HALTED".equalsIgnoreCase(statusStr) || "TRAILED_OUT".equalsIgnoreCase(statusStr)) {
+                state.recommendedMicros = 0;
+            }
             state.emergencyDelever = extractJsonBoolean(raw, "emergency_delever", false)
                 || extractJsonBoolean(raw, "defensive_delever", false)
-                || state.trailingCushion < 500.0;
+                || state.trailingCushion < 400.0;
             state.finishLineShield = extractJsonBoolean(raw, "finish_line_shield", false)
                 || (state.balance - 25000.0 >= 1150.0);
             state.garchDecileHalving = extractJsonBoolean(raw, "garch_decile_halving", false);
+
+            if (state.trailingCushion < 400.0 || state.emergencyDelever || state.finishLineShield || state.garchDecileHalving) {
+                state.recommendedMicros = Math.min(state.recommendedMicros > 0 ? state.recommendedMicros : 1, 1);
+            }
 
             state.verified = true;
             state.verificationError = "";
@@ -525,6 +559,16 @@ public class LucidCrudeRthExpansionStudy extends Study {
         return userExplicitlyAuthorizedAutoTrade;
     }
 
+    private static class DailySession {
+        LocalDate date;
+        double open = Double.NaN;
+        double high = Double.NEGATIVE_INFINITY;
+        double low = Double.POSITIVE_INFINITY;
+        double close = Double.NaN;
+        double volume = 0.0;
+        boolean completed = false;
+    }
+
     private static class OpeningBox {
         double high = -Double.MAX_VALUE;
         double low = Double.MAX_VALUE;
@@ -573,7 +617,8 @@ public class LucidCrudeRthExpansionStudy extends Study {
         var grpBox = tab.addGroup("Crude Oil RTH 09:30–10:14 Consolidation Box (MCL)");
         grpBox.addRow(new DoubleDescriptor(MIN_BOX_RANGE, "Min 09:30–10:14 Box Range ($/bbl)", 0.30, 0.05, 1.50, 0.05));
         grpBox.addRow(new DoubleDescriptor(MAX_BOX_RANGE, "Max 09:30–10:14 Box Range ($/bbl)", 1.20, 0.30, 3.00, 0.05));
-        grpBox.addRow(new DoubleDescriptor(MIN_BODY_RATIO, "Min Breakout Candle Body Ratio", 0.35, 0.10, 0.80, 0.05));
+        grpBox.addRow(new DoubleDescriptor(MIN_ATR14, "Min Prior Daily ATR(14) ($/bbl)", 2.00, 0.50, 10.00, 0.25));
+        grpBox.addRow(new DoubleDescriptor(MIN_RVOL20, "Min Prior Daily RVOL(20)", 1.25, 0.10, 5.00, 0.05));
         grpBox.addRow(new DoubleDescriptor(STOP_DOLLARS, "Initial Stop Distance ($/bbl)", 0.45, 0.10, 1.50, 0.05));
         grpBox.addRow(new DoubleDescriptor(TARGET_DOLLARS, "Profit Target Distance ($/bbl)", 0.90, 0.20, 3.00, 0.05));
         grpBox.addRow(new DoubleDescriptor(BREAKEVEN_TRIGGER_R, "Breakeven Trigger (+R)", 1.0, 0.5, 2.0, 0.1));
@@ -656,12 +701,22 @@ public class LucidCrudeRthExpansionStudy extends Study {
         boxMap.clear();
         tradeMap.clear();
         processedDays.clear();
+        dailySessions.clear();
+        completedDailyList.clear();
     }
 
     @Override
     protected void calculate(int index, DataContext ctx) {
         DataSeries series = ctx.getDataSeries();
-        if (series == null || index < 50) return;
+        if (series == null || index < 0) return;
+
+        Instrument chartInst = ctx.getInstrument();
+        if (chartInst != null) {
+            String sym = chartInst.getSymbol() != null ? chartInst.getSymbol().toUpperCase() : "";
+            if (!sym.contains("MCL") && !sym.contains("CL")) {
+                return;
+            }
+        }
 
         // Requirement 4: Never evaluate or confirm signals on an unfinished bar
         if (!series.isBarComplete(index)) {
@@ -679,6 +734,75 @@ public class LucidCrudeRthExpansionStudy extends Study {
         double h = series.getHigh(index);
         double l = series.getLow(index);
         double c = series.getClose(index);
+        double v = series.getVolume(index);
+
+        // Update DailySession for today
+        DailySession sess = dailySessions.computeIfAbsent(today, k -> {
+            DailySession s = new DailySession();
+            s.date = k;
+            return s;
+        });
+        if (Double.isNaN(sess.open)) sess.open = o;
+        if (h > sess.high) sess.high = h;
+        if (l < sess.low) sess.low = l;
+        sess.close = c;
+        if (v > 0) sess.volume += v;
+
+        // Finalize any previous unfinalized sessions
+        for (Map.Entry<LocalDate, DailySession> entry : dailySessions.entrySet()) {
+            if (entry.getKey().isBefore(today)) {
+                DailySession prevSess = entry.getValue();
+                if (!prevSess.completed) {
+                    prevSess.completed = true;
+                    if (!completedDailyList.contains(prevSess)) {
+                        completedDailyList.add(prevSess);
+                    }
+                }
+            }
+        }
+
+        // Calculate prior completed daily indicators (ATR14, RVOL20, SMA20, SMA50)
+        double atr14 = Double.NaN;
+        double rvol20 = Double.NaN;
+        double sma20 = Double.NaN;
+        double sma50 = Double.NaN;
+        int macroTrend = 0;
+
+        int numCompleted = completedDailyList.size();
+        if (numCompleted >= 50) {
+            // 1. ATR14 over last 14 completed daily sessions
+            double sumTr = 0.0;
+            for (int i = numCompleted - 14; i < numCompleted; i++) {
+                DailySession s = completedDailyList.get(i);
+                sumTr += (s.high - s.low);
+            }
+            atr14 = sumTr / 14.0;
+
+            // 2. RVOL20: prior completed session volume / 20-session rolling volume mean
+            double sumVol20 = 0.0;
+            for (int i = numCompleted - 20; i < numCompleted; i++) {
+                DailySession s = completedDailyList.get(i);
+                sumVol20 += s.volume;
+            }
+            double vol20Mean = sumVol20 / 20.0;
+            double priorVol = completedDailyList.get(numCompleted - 1).volume;
+            rvol20 = priorVol / Math.max(1.0, vol20Mean);
+
+            // 3. SMA20 & SMA50 of daily close over completed sessions
+            double sumClose20 = 0.0;
+            for (int i = numCompleted - 20; i < numCompleted; i++) {
+                sumClose20 += completedDailyList.get(i).close;
+            }
+            sma20 = sumClose20 / 20.0;
+
+            double sumClose50 = 0.0;
+            for (int i = numCompleted - 50; i < numCompleted; i++) {
+                sumClose50 += completedDailyList.get(i).close;
+            }
+            sma50 = sumClose50 / 50.0;
+
+            macroTrend = (sma20 > sma50) ? 1 : -1;
+        }
 
         // 1. Accumulate 09:30–10:14 ET Opening Box strictly on completed bars
         boolean inConsolidationBox = (hour == 9 && min >= 30) || (hour == 10 && min <= 14);
@@ -712,6 +836,11 @@ public class LucidCrudeRthExpansionStudy extends Study {
                 return;
             }
 
+            if (box.barCount < 35) {
+                processedDays.add(today);
+                return;
+            }
+
             double boxRange = box.high - box.low;
             double minRange = getSettings().getDouble(MIN_BOX_RANGE, 0.30);
             double maxRange = getSettings().getDouble(MAX_BOX_RANGE, 1.20);
@@ -719,20 +848,30 @@ public class LucidCrudeRthExpansionStudy extends Study {
             if (boxRange < minRange || boxRange > maxRange) {
                 processedDays.add(today);
             } else {
-                double barRange = h - l;
-                double body = Math.abs(c - o);
-                double bodyRatio = (barRange > 0) ? (body / barRange) : 0.0;
-                double minBodyRatio = getSettings().getDouble(MIN_BODY_RATIO, 0.35);
+                // Warmup & Regime Gates
+                if (numCompleted < 50 || Double.isNaN(atr14) || Double.isNaN(rvol20) || Double.isNaN(sma50)) {
+                    return; // Indicators not warmed up yet
+                }
+
+                double minAtr = getSettings().getDouble(MIN_ATR14, 2.00);
+                double minRvol = getSettings().getDouble(MIN_RVOL20, 1.25);
+                if (atr14 < minAtr || rvol20 < minRvol) {
+                    processedDays.add(today);
+                    return;
+                }
 
                 double stopDollars = getSettings().getDouble(STOP_DOLLARS, 0.45);
                 double targetDollars = getSettings().getDouble(TARGET_DOLLARS, 0.90);
                 long entryOpportunityTime = (barEndTime > barTime) ? barEndTime : (barTime + 60_000L);
                 long sessionFlattenTime = nyBar.withHour(12).withMinute(30).withSecond(0).withNano(0).toInstant().toEpochMilli();
 
-                if (c > box.high && bodyRatio >= minBodyRatio) {
+                // Long breakout: close > box.high and macroTrend == 1 (SMA20 > SMA50)
+                if (c > box.high && macroTrend == 1) {
                     processedDays.add(today);
                     triggerSignal(index, ctx, series, today, box, true, c, c - stopDollars, c + targetDollars, stopDollars, targetDollars, barTime, entryOpportunityTime, sessionFlattenTime);
-                } else if (c < box.low && bodyRatio >= minBodyRatio) {
+                }
+                // Short breakout: close < box.low and macroTrend == -1 (SMA20 <= SMA50)
+                else if (c < box.low && macroTrend == -1) {
                     processedDays.add(today);
                     triggerSignal(index, ctx, series, today, box, false, c, c + stopDollars, c - targetDollars, stopDollars, targetDollars, barTime, entryOpportunityTime, sessionFlattenTime);
                 }
@@ -1024,20 +1163,40 @@ public class LucidCrudeRthExpansionStudy extends Study {
     }
 
     @Override
+    public void onDeactivate(OrderContext ctx) {
+        setState(Enums$StrategyState.INACTIVE);
+        if (ctx != null) {
+            if (ctx.getPosition() == 0) {
+                ctx.cancelOrders();
+            } else {
+                logExecutionToCsv("STRATEGY_DEACTIVATED_POSITION_REMAINS_OPEN", "NONE",
+                    Math.abs(ctx.getPosition()), 0.0, Double.NaN, 0.0, 0.0, 0.0,
+                    "Position open (" + ctx.getPosition() + "); protective orders preserved.");
+            }
+        }
+        logExecutionToCsv("STRATEGY_DEACTIVATED", "NONE", 0, 0.0, Double.NaN, 0.0, 0.0, 0.0, "Strategy deactivated by user");
+    }
+
+    @Override
     public void onOrderModified(OrderContext ctx, Order order) {
         if (ctx == null || order == null) return;
         for (ActiveTrade trade : tradeMap.values()) {
             if (trade.closed) continue;
             if (order == trade.slOrder || (trade.slOrderId != null && !trade.slOrderId.isEmpty() && trade.slOrderId.equals(order.getOrderId()))) {
                 Float modStop = order.getStopPrice() != null ? order.getStopPrice() : order.getAdjStopPrice();
-                if (modStop != null && Float.isFinite(modStop)) {
-                    trade.stopPrice = modStop.doubleValue();
-                } else if (!Double.isNaN(trade.pendingStopPrice)) {
-                    trade.stopPrice = trade.pendingStopPrice;
+                double newPrice = (modStop != null && Float.isFinite(modStop)) ? modStop.doubleValue() : (Double.isNaN(trade.pendingStopPrice) ? trade.stopPrice : trade.pendingStopPrice);
+                double tickSize = ctx.getInstrument() != null ? ctx.getInstrument().getTickSize() : 0.01;
+                boolean matchesPending = !Double.isNaN(trade.pendingStopPrice) && Math.abs(newPrice - trade.pendingStopPrice) <= (tickSize + 1e-4);
+                if (trade.breakevenModifySubmitted && matchesPending) {
+                    trade.stopPrice = newPrice;
+                    trade.breakevenApplied = true;
+                    trade.breakevenModifySubmitted = false;
+                    logExecutionToCsv("BREAKEVEN_RATCHET_CONFIRMED", trade.isLong ? "SELL_STOP" : "BUY_STOP", Math.abs(ctx.getPosition()), trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, "BROKER_STOP_MODIFIED");
+                } else {
+                    trade.stopPrice = newPrice;
+                    trade.breakevenModifySubmitted = false;
+                    logExecutionToCsv("STOP_ORDER_MODIFIED_EXTERNAL", trade.isLong ? "SELL_STOP" : "BUY_STOP", Math.abs(ctx.getPosition()), trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, "MOD_PRICE=" + newPrice);
                 }
-                trade.breakevenApplied = true;
-                trade.breakevenModifySubmitted = false;
-                logExecutionToCsv("BREAKEVEN_RATCHET_CONFIRMED", trade.isLong ? "SELL_STOP" : "BUY_STOP", Math.abs(ctx.getPosition()), trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, "BROKER_STOP_MODIFIED");
                 break;
             }
         }
@@ -1048,8 +1207,15 @@ public class LucidCrudeRthExpansionStudy extends Study {
         if (ctx == null || order == null) return;
         for (ActiveTrade trade : tradeMap.values()) {
             if (trade.closed) continue;
-            if (order == trade.slOrder || (trade.slOrderId != null && !trade.slOrderId.isEmpty() && trade.slOrderId.equals(order.getOrderId()))) {
-                applyProtectiveFailurePolicy(ctx, trade, "ON_ORDER_REJECTED:" + order.getOrderId());
+            if (order == trade.entryOrder || (trade.entryOrderId != null && !trade.entryOrderId.isEmpty() && trade.entryOrderId.equals(order.getOrderId()))) {
+                trade.entryOrder = null;
+                trade.closed = true;
+                logExecutionToCsv("ENTRY_ORDER_REJECTED", trade.isLong ? "BUY" : "SELL", trade.requestedQty, trade.theoreticalEntryPrice, Double.NaN, 0.0, trade.stopPrice, trade.targetPrice, "ENTRY_REJECTED:" + order.getOrderId());
+                break;
+            }
+            if (order == trade.slOrder || (trade.slOrderId != null && !trade.slOrderId.isEmpty() && trade.slOrderId.equals(order.getOrderId()))
+                    || order == trade.tpOrder || (trade.tpOrderId != null && !trade.tpOrderId.isEmpty() && trade.tpOrderId.equals(order.getOrderId()))) {
+                applyProtectiveFailurePolicy(ctx, trade, "ON_BRACKET_REJECTED:" + order.getOrderId());
                 break;
             }
         }
@@ -1074,9 +1240,23 @@ public class LucidCrudeRthExpansionStudy extends Study {
         Instrument inst = ctx.getInstrument();
         if (inst == null) return;
 
+        String sym = inst.getSymbol() != null ? inst.getSymbol().toUpperCase() : "";
+        if (!sym.contains("MCL") && !sym.contains("CL")) {
+            logExecutionToCsv("ORDER_BLOCKED_UNAUTHORIZED_INSTRUMENT", trade.isLong ? "BUY" : "SELL", 0, trade.theoreticalEntryPrice, Double.NaN, 0.0, trade.stopPrice, trade.targetPrice, "INSTRUMENT_NOT_MCL:" + sym);
+            return;
+        }
+
+        long now = ctx.getCurrentTime();
+        LocalDate today = Instant.ofEpochMilli(now).atZone(NY_ZONE).toLocalDate();
+        File lockFile = getDailyLockFile("crude_rth_expansion_s5", today);
+        if (lockFile != null && lockFile.exists()) {
+            logExecutionToCsv("ORDER_BLOCKED_SESSION_COOLDOWN", trade.isLong ? "BUY" : "SELL", 0, trade.theoreticalEntryPrice, Double.NaN, 0.0, trade.stopPrice, trade.targetPrice, "DAILY_LOCK_ACTIVE:" + today);
+            return;
+        }
+
         int contracts = resolveContracts(ctx, dataCtx);
         if (contracts <= 0) {
-            logExecutionToCsv("ORDER_BLOCKED_UNVERIFIED_ACCOUNT", trade.isLong ? "BUY" : "SELL", 0, trade.theoreticalEntryPrice, Double.NaN, 0.0, trade.stopPrice, trade.targetPrice, lastAccountStateError);
+            logExecutionToCsv("ORDER_BLOCKED_UNVERIFIED_ACCOUNT", trade.isLong ? "BUY" : "SELL", 0, trade.theoreticalEntryPrice, Double.NaN, 0.0, trade.stopPrice, trade.targetPrice, lastAccountStateError != null && !lastAccountStateError.isEmpty() ? lastAccountStateError : "Fail-closed sizing returned 0");
             return;
         }
 
@@ -1089,6 +1269,10 @@ public class LucidCrudeRthExpansionStudy extends Study {
         trade.requestedQty = contracts;
         ctx.submitOrders(entryOrder);
         trade.entryOrderId = entryOrder.getOrderId() != null ? entryOrder.getOrderId() : orderRef;
+
+        if (lockFile != null) {
+            try { lockFile.createNewFile(); } catch (Exception ignored) {}
+        }
 
         logExecutionToCsv("ENTRY_SUBMITTED", entryAction.name(), contracts, trade.theoreticalEntryPrice, Double.NaN, 0.0, trade.stopPrice, trade.targetPrice, orderRef);
     }
@@ -1123,6 +1307,10 @@ public class LucidCrudeRthExpansionStudy extends Study {
             }
 
             // 2. Entry order fill (full or partial): anchor stop and target from actual average fill price
+            boolean isTrackedEntry = (order == trade.entryOrder)
+                || (trade.entryOrderId != null && !trade.entryOrderId.isEmpty() && trade.entryOrderId.equals(order.getOrderId()));
+            if (!isTrackedEntry) continue;
+
             int posQty = Math.abs(ctx.getPosition());
             if (posQty <= 0) continue;
 
@@ -1188,65 +1376,66 @@ public class LucidCrudeRthExpansionStudy extends Study {
         }
     }
 
-    protected int resolveContracts(OrderContext ctx, DataContext dataCtx) {
+    protected int resolveContracts(OrderContext ctx, int fallbackContracts) {
         if (ctx == null) return 0;
         try {
-            // 1. Load & Verify Canonical Account State (Mandatory Fail-Closed Gate)
+            double cash = ctx.getCashBalance();
+            double real = ctx.getRealizedPnL();
+            double unreal = ctx.getUnrealizedPnL();
+            double balance = cash + real + unreal;
+            if (!Double.isFinite(balance) || balance <= 10000.0) {
+                return 0;
+            }
+
             DaemonRiskState riskState = loadDaemonRiskState();
-            if (riskState == null || !riskState.verified) {
+            if (riskState == null || !riskState.verified || riskState.circuitBreakerHit) {
                 return 0;
             }
-            if (riskState.circuitBreakerHit) {
+            if (riskState.recommendedMicros <= 0) {
                 return 0;
             }
-
-            // 2. Query Broker Account Balance (Fail-Closed if unverified)
-            double balance = Double.NaN;
-            try {
-                double cash = ctx.getCashBalance();
-                double real = ctx.getRealizedPnL();
-                double unreal = ctx.getUnrealizedPnL();
-                balance = cash + real + unreal;
-            } catch (Exception ignored) {}
-
-            if (!Double.isFinite(balance) || balance <= 10000.0) {
-                balance = riskState.balance;
-            }
-            if (!Double.isFinite(balance) || balance <= 10000.0) {
-                return 0;
-            }
-
-            // 3. Monotonic High-Water Mark & Permanent $25,100 Floor Lock
             persistedPeakBalance = Math.max(persistedPeakBalance, Math.max(riskState.peakBalance, balance));
+
             double floor = Math.max(24000.00, persistedPeakBalance - 1000.00);
             if (persistedPeakBalance >= 26100.00 || riskState.trailingFloor >= 25100.00) {
                 floor = 25100.00;
             }
             persistedTrailingFloor = Math.max(persistedTrailingFloor, Math.max(riskState.trailingFloor, floor));
 
-            // 4. Cushion Protection
+            if (balance <= persistedTrailingFloor) {
+                return 0;
+            }
+
             double profit = balance - 25000.00;
             double cushion = balance - persistedTrailingFloor;
-            if (cushion <= 0.0) return 0;
+
+            // Enforce daemon risk recommendation as hard upper bound and honor fallbackContracts
+            int maxAllowed = riskState.recommendedMicros;
+            if (fallbackContracts > 0) {
+                maxAllowed = Math.min(maxAllowed, fallbackContracts);
+            } else if (fallbackContracts <= 0) {
+                return 0;
+            }
+            if (maxAllowed <= 0) {
+                return 0;
+            }
+
+            // Honor de-leveraging flags, finish-line shield, and low cushion
+            if (riskState.emergencyDelever || riskState.finishLineShield || riskState.garchDecileHalving) {
+                maxAllowed = Math.min(maxAllowed, 1);
+            }
             if (profit >= 1150.00) return 1;
             if (cushion < 400.00) return 1;
-            if (riskState.finishLineShield || riskState.emergencyDelever || riskState.garchDecileHalving || cushion < 500.0) {
-                return 1;
-            }
 
-            if (!getSettings().getBoolean(ENABLE_RATCHET_SIZING, true)) {
-                return Math.max(1, Math.min(10, getSettings().getInteger(BASE_CONTRACTS, 2)));
-            }
-
-            int brokerTierMicros;
-            if (profit >= 550.00) brokerTierMicros = 4;
-            else if (profit >= 200.00) brokerTierMicros = 3;
-            else brokerTierMicros = 2;
-
-            return Math.max(1, Math.min(brokerTierMicros, riskState.recommendedMicros));
-        } catch (Exception ignored) {
+            return Math.min(maxAllowed, 10);
+        } catch (Exception e) {
             return 0;
         }
+    }
+
+    protected int resolveContracts(OrderContext ctx, DataContext dataCtx) {
+        int fallback = getSettings().getInteger(BASE_CONTRACTS, 2);
+        return resolveContracts(ctx, fallback);
     }
 
     private void logExecutionToCsv(

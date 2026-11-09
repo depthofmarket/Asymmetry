@@ -489,20 +489,31 @@ def verify_and_load_account_state(
     effective_cushion = round(balance - effective_floor, 2)
     current_date_pnl = parsed_num["current_date_pnl"]
 
+    status_str = str(data.get("status", "ACTIVE")).upper()
+    if status_str not in ("ACTIVE", "PASSED", "DAILY_HALTED", "TRAILED_OUT"):
+        result["error"] = f"UNKNOWN_ACCOUNT_STATUS: '{status_str}'"
+        result["diagnostic_event"] = f"ORDER_BLOCKED_UNVERIFIED_ACCOUNT ({result['error']})"
+        return result
+
     circuit_breaker_hit = (
         bool(data.get("circuit_breaker_hit", False))
-        or current_date_pnl <= -500.0
         or current_date_pnl <= DAILY_SOFT_STOP_DOLLARS
         or balance <= effective_floor
-        or str(data.get("status", "ACTIVE")) in ("DAILY_HALTED", "TRAILED_OUT")
+        or status_str in ("DAILY_HALTED", "TRAILED_OUT", "PASSED")
     )
+    if status_str in ("DAILY_HALTED", "TRAILED_OUT", "PASSED"):
+        raw_micros = 0
+
     emergency_delever = (
         bool(data.get("emergency_delever", False))
         or bool(data.get("defensive_delever", False))
-        or effective_cushion < 500.0
+        or effective_cushion < 400.0
     )
     finish_line_shield = bool(data.get("finish_line_shield", False)) or (balance - STARTING_CAPITAL >= 1150.0)
     garch_decile_halving = bool(data.get("garch_decile_halving", False))
+
+    if effective_cushion < 400.0 or emergency_delever or finish_line_shield or garch_decile_halving:
+        raw_micros = min(raw_micros if raw_micros > 0 else 1, 1)
 
     result.update({
         "verified": True,

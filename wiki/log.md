@@ -10,6 +10,19 @@ This is an append-only, chronological journal recording all agent actions, docum
 
 ---
 
+## [2026-11-09 18:35:00 UTC] [gemini] [UPDATE] | Final MotiveWave Risk Sizing, Parity & CI Portability Remediation
+- **Pages Modified**:
+  - `wiki/execution/motivewave-integration.md` (documented daemon risk ceiling, fallbackContracts cap, de-leveraging flags, safe deactivation, S4/S5 parity)
+  - `wiki/hot.md` (refreshed execution integrity status and verification milestones)
+  - `wiki/log.md` (journal entry appended)
+- **Summary**: Resolved all MotiveWave execution-integrity and strategy-parity items:
+  1. S1–S3 Risk Sizing: Enforced canonical daemon risk recommendation (`riskState.recommendedMicros`) as a hard upper bound, capped by `fallbackContracts`, and enforced de-leveraging flags (`emergency_delever`, `finish_line_shield`, `garch_decile_halving`).
+  2. S4 Strategy Parity: Point-in-time US RTH ATR14 & RVOL20 calculations on completed sessions (>= 20 session warmup), opening range (6-45 pts), drift bounds (0.15-0.85 ATR), min RVOL20 (0.85), MNQ/NQ instrument gating, persistent daily lock file, tracked entry in onOrderFilled, breakeven verification in onOrderModified, reject handling in onOrderRejected, and safe deactivation.
+  3. S5 Strategy Parity: Eradicated uncanonical `MIN_BODY_RATIO` filter, implemented prior completed daily indicators (ATR14 >= 2.0, RVOL20 >= 1.25, SMA20/SMA50 macro-trend gating), 50-session completed warmup, MCL/CL instrument gating, persistent daily lock file, tracked entry, breakeven verification, reject handling, and safe deactivation.
+  4. Unified Risk State & CI Reconciliations: Reconciled daily soft stop to -$600.0 (`DAILY_SOFT_STOP_DOLLARS`) and cushion gate to < 400.0 in `backtest/demo_parity_engine.py`, made `test_motivewave_risk_governance_json_schema` portable via fallback schema fixture in `tests/test_operational_readiness.py`, and documented MotiveWave macOS SDK vs headless CI boundaries in `.github/workflows/ci.yml`.
+  5. Regression Tests: Added 7 new tests to `tests/test_execution_integrity_and_governance.py` (29/29 passed).
+- **Verification**: Clean JDK 25 compilation on all 5 studies; packaged `build/LucidPropEnsemble.jar`; full test suite passed: 864 passed, 86 skipped, 2 subtests passed in 228.08s; `scripts/verify_wiki_integrity.py` 15/15 checks passed.
+
 ## [2026-11-09 16:45:00 UTC] [gemini] [UPDATE] | Critical Execution Integrity, Risk State Parity & CI Portability Overhaul
 - **Pages Modified**:
   - `wiki/execution/motivewave-integration.md` (documented Candidate tier governance, unified demo_parity_state.json interface, in-place broker stop modification, signal bar completion, and actual fill price anchoring)

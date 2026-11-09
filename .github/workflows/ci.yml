@@ -6,6 +6,13 @@ on:
   pull_request:
     branches: [ main, master ]
 
+# Note on MotiveWave Java SDK vs Headless CI Boundaries:
+# MotiveWave desktop libraries (/Applications/MotiveWave.app/Contents/Java/*)
+# and local JDK 25 (tools/jdk25) are local macOS desktop dependencies used for
+# compiling custom studies into build/LucidPropEnsemble.jar.
+# In headless Ubuntu CI, the automated pytest suite runs comprehensive AST, schema,
+# Python parity models, and risk invariant checks without requiring local GUI jars.
+
 jobs:
   wiki-integrity:
     name: Wiki Integrity & Governance Check
