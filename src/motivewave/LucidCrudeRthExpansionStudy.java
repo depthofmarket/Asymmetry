@@ -103,7 +103,42 @@ public class LucidCrudeRthExpansionStudy extends Study {
     public static final String FORWARD_TEST_DIR_SETTING = "forwardTestDir";
     public static final long DEFAULT_MAX_STATE_AGE_MS = 86_400_000L; // 24 hours
 
+    public static boolean isAcceptedMclSymbol(String rawSymbol) {
+        if (rawSymbol == null || rawSymbol.trim().isEmpty()) {
+            return false;
+        }
+        String s = rawSymbol.trim().toUpperCase();
+        int colonIdx = s.lastIndexOf(':');
+        if (colonIdx >= 0 && colonIdx < s.length() - 1) {
+            s = s.substring(colonIdx + 1);
+        }
+        int slashIdx = s.lastIndexOf('/');
+        if (slashIdx >= 0 && slashIdx < s.length() - 1) {
+            s = s.substring(slashIdx + 1);
+        }
+        if (!s.startsWith("MCL")) {
+            return false;
+        }
+        if (s.length() == 3) {
+            return true;
+        }
+        char nextChar = s.charAt(3);
+        if (nextChar == '#' || nextChar == '.' || nextChar == '_' || nextChar == '-' || nextChar == ' ' || nextChar == '/') {
+            return true;
+        }
+        String remainder = s.substring(3);
+        if (remainder.matches("^[FGHJKMNQUVXZ]\\d{1,4}([._\\s#-].*)?$")) {
+            return true;
+        }
+        if (remainder.matches("^\\d{2,4}([._\\s#-].*)?$")) {
+            return true;
+        }
+        return false;
+    }
+
     // --- Setting Keys ---
+    public static final String MIN_CONSOLIDATION_BARS = "minConsolidationBars";
+    public static final String MIN_TRADE_BARS = "minTradeBars";
     public static final String MIN_BOX_RANGE = "minBoxRange";
     public static final String MAX_BOX_RANGE = "maxBoxRange";
     public static final String MIN_ATR14 = "minAtr14";
@@ -574,6 +609,7 @@ public class LucidCrudeRthExpansionStudy extends Study {
         double low = Double.MAX_VALUE;
         double open0930 = Double.NaN;
         int barCount = 0;
+        int tradeBarCount = 0;
         long lastBarTime = -1L;
         boolean complete = false;
     }
@@ -596,6 +632,7 @@ public class LucidCrudeRthExpansionStudy extends Study {
         public long entryTime;
         public long maxExitTime;
         public boolean closed = false;
+        public boolean flattenSubmitted = false;
         public boolean breakevenTriggered = false;
         public boolean breakevenModifySubmitted = false;
         public boolean breakevenApplied = false;
@@ -615,6 +652,8 @@ public class LucidCrudeRthExpansionStudy extends Study {
         SettingTab tab = sd.addTab("Strategy 5 Parameters");
 
         var grpBox = tab.addGroup("Crude Oil RTH 09:30–10:14 Consolidation Box (MCL)");
+        grpBox.addRow(new IntegerDescriptor(MIN_CONSOLIDATION_BARS, "Min Consolidation Window Bars (09:30–10:14)", 35, 10, 45, 1));
+        grpBox.addRow(new IntegerDescriptor(MIN_TRADE_BARS, "Min Trade Window Bars (10:15–12:30)", 30, 10, 136, 1));
         grpBox.addRow(new DoubleDescriptor(MIN_BOX_RANGE, "Min 09:30–10:14 Box Range ($/bbl)", 0.30, 0.05, 1.50, 0.05));
         grpBox.addRow(new DoubleDescriptor(MAX_BOX_RANGE, "Max 09:30–10:14 Box Range ($/bbl)", 1.20, 0.30, 3.00, 0.05));
         grpBox.addRow(new DoubleDescriptor(MIN_ATR14, "Min Prior Daily ATR(14) ($/bbl)", 2.00, 0.50, 10.00, 0.25));
@@ -711,11 +750,8 @@ public class LucidCrudeRthExpansionStudy extends Study {
         if (series == null || index < 0) return;
 
         Instrument chartInst = ctx.getInstrument();
-        if (chartInst != null) {
-            String sym = chartInst.getSymbol() != null ? chartInst.getSymbol().toUpperCase() : "";
-            if (!sym.contains("MCL") && !sym.contains("CL")) {
-                return;
-            }
+        if (chartInst == null || !isAcceptedMclSymbol(chartInst.getSymbol())) {
+            return;
         }
 
         // Requirement 4: Never evaluate or confirm signals on an unfinished bar
@@ -828,6 +864,11 @@ public class LucidCrudeRthExpansionStudy extends Study {
             series.setDouble(index, Values.BOX_LOW, box.low);
         }
 
+        boolean inTradeWindow = (hour == 10 && min >= 15) || hour == 11 || (hour == 12 && min <= 30);
+        if (inTradeWindow && box != null) {
+            box.tradeBarCount++;
+        }
+
         // 2. Evaluate Breakout Signal strictly on completed bars in 10:15–11:15 ET Entry Window
         boolean inEntryWindow = (hour == 10 && min >= 15) || (hour == 11 && min <= 15);
         if (inEntryWindow && series.isBarComplete(index) && box != null && box.complete && !processedDays.contains(today)) {
@@ -836,9 +877,20 @@ public class LucidCrudeRthExpansionStudy extends Study {
                 return;
             }
 
-            if (box.barCount < 35) {
+            int minConsBars = getSettings().getInteger(MIN_CONSOLIDATION_BARS, 35);
+            int minTradeBars = getSettings().getInteger(MIN_TRADE_BARS, 30);
+
+            if (box.barCount < minConsBars) {
                 processedDays.add(today);
                 return;
+            }
+
+            if (series.size() - 1 > index) {
+                int totalTradeBars = countTradeBarsInSeries(series, index, today);
+                if (totalTradeBars < minTradeBars) {
+                    processedDays.add(today);
+                    return;
+                }
             }
 
             double boxRange = box.high - box.low;
@@ -890,7 +942,9 @@ public class LucidCrudeRthExpansionStudy extends Study {
             boolean hitTarget = trade.isLong ? (h >= trade.targetPrice) : (l <= trade.targetPrice);
 
             if (hitStop || hitTarget || (hour == 12 && min >= 30) || barTime >= trade.maxExitTime) {
-                trade.closed = true;
+                if (series.size() - 1 > index) {
+                    trade.closed = true;
+                }
                 if (!hitStop && !hitTarget && ((hour == 12 && min >= 30) || barTime >= trade.maxExitTime)) {
                     ctx.signal(index, Signals.EXIT_TIME_1230, "S5 Mandatory Time Flatten (12:30 ET)", c);
                 }
@@ -1000,6 +1054,28 @@ public class LucidCrudeRthExpansionStudy extends Study {
         }
     }
 
+    private int countTradeBarsInSeries(DataSeries series, int currentIndex, LocalDate today) {
+        int count = 0;
+        int start = currentIndex;
+        while (start > 0) {
+            long t = series.getStartTime(start - 1);
+            if (!Instant.ofEpochMilli(t).atZone(NY_ZONE).toLocalDate().equals(today)) break;
+            start--;
+        }
+        for (int i = start; i < series.size(); i++) {
+            long t = series.getStartTime(i);
+            ZonedDateTime zdt = Instant.ofEpochMilli(t).atZone(NY_ZONE);
+            if (!zdt.toLocalDate().equals(today)) break;
+            int h = zdt.getHour();
+            int mn = zdt.getMinute();
+            int m = h * 60 + mn;
+            if (m >= 615 && m <= 750) { // 10:15 to 12:30 ET
+                count++;
+            }
+        }
+        return count;
+    }
+
     @Override
     public void onSignal(OrderContext ctx, Object signal) {
         if (ctx == null) return;
@@ -1013,15 +1089,20 @@ public class LucidCrudeRthExpansionStudy extends Study {
         long barTime = series.getStartTime(lastIdx);
         LocalDate today = Instant.ofEpochMilli(barTime).atZone(NY_ZONE).toLocalDate();
         ActiveTrade trade = tradeMap.get(today);
-        if (trade == null || trade.closed) return;
+        if (trade == null) return;
 
         if (signal == Signals.BUY_CRUDE_EXPANSION || signal == Signals.SELL_CRUDE_EXPANSION) {
+            if (trade.closed) return;
             executeAutoTradeIfArmed(ctx, dataCtx, trade);
         } else if (signal == Signals.EXIT_TIME_1230 && ctx.getPosition() != 0) {
-            ctx.cancelOrders();
-            ctx.closeAtMarket();
-            trade.closed = true;
-            logExecutionToCsv("TIME_EXIT_1230", trade.isLong ? "SELL" : "BUY", Math.abs(ctx.getPosition()), trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, "FLATTENED_AT_1230_ET");
+            if (!trade.flattenSubmitted) {
+                trade.flattenSubmitted = true;
+                if (trade.tpOrder != null && trade.tpOrder.isActive()) {
+                    ctx.cancelOrders(trade.tpOrder);
+                }
+                ctx.closeAtMarket();
+                logExecutionToCsv("TIME_EXIT_1230_SUBMITTED", trade.isLong ? "SELL" : "BUY", Math.abs(ctx.getPosition()), trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, "FLATTEN_SUBMITTED_AT_1230_ET");
+            }
         }
     }
 
@@ -1038,6 +1119,15 @@ public class LucidCrudeRthExpansionStudy extends Study {
         ZonedDateTime nyBar = Instant.ofEpochMilli(barTime).atZone(NY_ZONE);
         LocalDate today = nyBar.toLocalDate();
         ActiveTrade trade = tradeMap.get(today);
+
+        // Reconcile restart state: if position exists at broker on restart, ensure daily lock exists
+        if (ctx.getPosition() != 0) {
+            File lockFile = getDailyLockFile("crude_rth_expansion_s5", today);
+            if (lockFile != null && !lockFile.exists()) {
+                try { lockFile.createNewFile(); } catch (Exception ignored) {}
+            }
+        }
+
         if (trade == null) return;
 
         // 1. Keep protective bracket quantities synchronized with actual position
@@ -1058,11 +1148,19 @@ public class LucidCrudeRthExpansionStudy extends Study {
         // 3. Enforce 12:30 ET time flatten
         if ((nyBar.getHour() == 12 && nyBar.getMinute() >= 30) || barTime >= trade.maxExitTime) {
             if (ctx.getPosition() != 0) {
-                int posQty = Math.abs(ctx.getPosition());
-                ctx.cancelOrders();
-                ctx.closeAtMarket();
+                if (!trade.flattenSubmitted) {
+                    trade.flattenSubmitted = true;
+                    int posQty = Math.abs(ctx.getPosition());
+                    if (trade.tpOrder != null && trade.tpOrder.isActive()) {
+                        ctx.cancelOrders(trade.tpOrder);
+                    }
+                    ctx.closeAtMarket();
+                    // Do not mark trade.closed = true until broker confirms position flat
+                    logExecutionToCsv("TIME_EXIT_1230_SUBMITTED", trade.isLong ? "SELL" : "BUY", posQty, trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, "ON_BAR_CLOSE_FLATTEN_SUBMITTED");
+                }
+            } else {
+                trade.flattenSubmitted = false;
                 trade.closed = true;
-                logExecutionToCsv("TIME_EXIT_1230", trade.isLong ? "SELL" : "BUY", posQty, trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, "ON_BAR_CLOSE_FLATTEN");
             }
         }
     }
@@ -1151,11 +1249,15 @@ public class LucidCrudeRthExpansionStudy extends Study {
 
         boolean stopStillActive = (trade.slOrder != null && trade.slOrder.isActive() && !trade.slOrder.isCancelled() && !trade.slOrder.isFilled());
         if (!stopStillActive && ctx != null && ctx.getPosition() != 0) {
-            int posQty = Math.abs(ctx.getPosition());
-            ctx.cancelOrders();
-            ctx.closeAtMarket();
-            trade.closed = true;
-            logExecutionToCsv("PROTECTIVE_STOP_FAILURE_EMERGENCY_FLATTEN", trade.isLong ? "SELL" : "BUY", posQty, trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, reason);
+            if (!trade.flattenSubmitted) {
+                trade.flattenSubmitted = true;
+                int posQty = Math.abs(ctx.getPosition());
+                if (trade.tpOrder != null && trade.tpOrder.isActive()) {
+                    ctx.cancelOrders(trade.tpOrder);
+                }
+                ctx.closeAtMarket();
+                logExecutionToCsv("PROTECTIVE_STOP_FAILURE_EMERGENCY_FLATTEN_SUBMITTED", trade.isLong ? "SELL" : "BUY", posQty, trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, reason);
+            }
         } else {
             // Original working stop remains active at original stopPrice; do NOT pretend tighter stop is active
             logExecutionToCsv("BREAKEVEN_MODIFICATION_FAILED_ORIGINAL_STOP_RETAINED", trade.isLong ? "LONG" : "SHORT", Math.abs(ctx != null ? ctx.getPosition() : trade.filledQty), trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, reason);
@@ -1175,6 +1277,18 @@ public class LucidCrudeRthExpansionStudy extends Study {
             }
         }
         logExecutionToCsv("STRATEGY_DEACTIVATED", "NONE", 0, 0.0, Double.NaN, 0.0, 0.0, 0.0, "Strategy deactivated by user");
+    }
+
+    @Override
+    public void onPositionClosed(OrderContext ctx) {
+        if (ctx != null) {
+            ctx.cancelOrders();
+        }
+        for (ActiveTrade trade : tradeMap.values()) {
+            trade.flattenSubmitted = false;
+            trade.closed = true;
+        }
+        logExecutionToCsv("POSITION_CLOSED_CONFIRMED", "FLAT", 0, 0.0, Double.NaN, 0.0, 0.0, 0.0, "BROKER_POSITION_FLAT");
     }
 
     @Override
@@ -1207,6 +1321,10 @@ public class LucidCrudeRthExpansionStudy extends Study {
         if (ctx == null || order == null) return;
         for (ActiveTrade trade : tradeMap.values()) {
             if (trade.closed) continue;
+            if (trade.flattenSubmitted) {
+                trade.flattenSubmitted = false;
+                logExecutionToCsv("FLATTEN_ORDER_REJECTED", trade.isLong ? "SELL" : "BUY", Math.abs(ctx.getPosition()), trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, "FLATTEN_REJECTED:" + order.getOrderId());
+            }
             if (order == trade.entryOrder || (trade.entryOrderId != null && !trade.entryOrderId.isEmpty() && trade.entryOrderId.equals(order.getOrderId()))) {
                 trade.entryOrder = null;
                 trade.closed = true;
@@ -1238,20 +1356,24 @@ public class LucidCrudeRthExpansionStudy extends Study {
         if (!isCandidateAutoTradeAuthorized()) return;
         if (ctx.getPosition() != 0 || trade.bracketsSubmitted || trade.entryOrder != null) return;
         Instrument inst = ctx.getInstrument();
-        if (inst == null) return;
-
-        String sym = inst.getSymbol() != null ? inst.getSymbol().toUpperCase() : "";
-        if (!sym.contains("MCL") && !sym.contains("CL")) {
-            logExecutionToCsv("ORDER_BLOCKED_UNAUTHORIZED_INSTRUMENT", trade.isLong ? "BUY" : "SELL", 0, trade.theoreticalEntryPrice, Double.NaN, 0.0, trade.stopPrice, trade.targetPrice, "INSTRUMENT_NOT_MCL:" + sym);
+        if (inst == null || !isAcceptedMclSymbol(inst.getSymbol())) {
+            logExecutionToCsv("ORDER_BLOCKED_UNAUTHORIZED_INSTRUMENT", trade.isLong ? "BUY" : "SELL", 0, trade.theoreticalEntryPrice, Double.NaN, 0.0, trade.stopPrice, trade.targetPrice, "INSTRUMENT_NOT_MCL:" + (inst != null ? inst.getSymbol() : "null"));
             return;
         }
 
         long now = ctx.getCurrentTime();
         LocalDate today = Instant.ofEpochMilli(now).atZone(NY_ZONE).toLocalDate();
         File lockFile = getDailyLockFile("crude_rth_expansion_s5", today);
-        if (lockFile != null && lockFile.exists()) {
-            logExecutionToCsv("ORDER_BLOCKED_SESSION_COOLDOWN", trade.isLong ? "BUY" : "SELL", 0, trade.theoreticalEntryPrice, Double.NaN, 0.0, trade.stopPrice, trade.targetPrice, "DAILY_LOCK_ACTIVE:" + today);
-            return;
+        if (lockFile != null) {
+            try {
+                if (!lockFile.createNewFile()) {
+                    logExecutionToCsv("ORDER_BLOCKED_SESSION_COOLDOWN", trade.isLong ? "BUY" : "SELL", 0, trade.theoreticalEntryPrice, Double.NaN, 0.0, trade.stopPrice, trade.targetPrice, "DAILY_LOCK_ACTIVE:" + today);
+                    return;
+                }
+            } catch (Exception e) {
+                logExecutionToCsv("ORDER_BLOCKED_SESSION_COOLDOWN", trade.isLong ? "BUY" : "SELL", 0, trade.theoreticalEntryPrice, Double.NaN, 0.0, trade.stopPrice, trade.targetPrice, "LOCK_CREATION_FAILED:" + e.getMessage());
+                return;
+            }
         }
 
         int contracts = resolveContracts(ctx, dataCtx);
@@ -1270,10 +1392,6 @@ public class LucidCrudeRthExpansionStudy extends Study {
         ctx.submitOrders(entryOrder);
         trade.entryOrderId = entryOrder.getOrderId() != null ? entryOrder.getOrderId() : orderRef;
 
-        if (lockFile != null) {
-            try { lockFile.createNewFile(); } catch (Exception ignored) {}
-        }
-
         logExecutionToCsv("ENTRY_SUBMITTED", entryAction.name(), contracts, trade.theoreticalEntryPrice, Double.NaN, 0.0, trade.stopPrice, trade.targetPrice, orderRef);
     }
 
@@ -1286,23 +1404,21 @@ public class LucidCrudeRthExpansionStudy extends Study {
         for (ActiveTrade trade : tradeMap.values()) {
             if (trade.closed) continue;
 
-            // 1. Check if protective stop or target leg filled
+            // 1. Check if position reached zero (protective stop, target leg, or flatten market fill)
+            if (ctx.getPosition() == 0) {
+                ctx.cancelOrders();
+                trade.flattenSubmitted = false;
+                trade.closed = true;
+                String exitTag = (order == trade.slOrder)
+                    ? (trade.breakevenApplied ? "EXIT_BREAKEVEN_STOP" : "EXIT_STOP_LOSS")
+                    : ((order == trade.tpOrder) ? "EXIT_PROFIT_TARGET" : "EXIT_POSITION_FLAT");
+                logExecutionToCsv(exitTag, trade.isLong ? "SELL" : "BUY", order.getFilled(), trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, "EXIT_FILL=" + order.getAvgFillPrice());
+                return;
+            }
+
+            // 1b. Check if protective stop or target leg filled partially
             if (order == trade.slOrder || order == trade.tpOrder) {
-                int remPos = Math.abs(ctx.getPosition());
-                if (remPos == 0) {
-                    if (order == trade.slOrder && trade.tpOrder != null && trade.tpOrder.isActive()) {
-                        ctx.cancelOrders(trade.tpOrder);
-                    } else if (order == trade.tpOrder && trade.slOrder != null && trade.slOrder.isActive()) {
-                        ctx.cancelOrders(trade.slOrder);
-                    }
-                    trade.closed = true;
-                    String exitTag = (order == trade.slOrder)
-                        ? (trade.breakevenApplied ? "EXIT_BREAKEVEN_STOP" : "EXIT_STOP_LOSS")
-                        : "EXIT_PROFIT_TARGET";
-                    logExecutionToCsv(exitTag, trade.isLong ? "SELL" : "BUY", order.getFilled(), trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, "EXIT_FILL=" + order.getAvgFillPrice());
-                } else {
-                    verifyAndSyncBracketQuantities(ctx, trade);
-                }
+                verifyAndSyncBracketQuantities(ctx, trade);
                 return;
             }
 

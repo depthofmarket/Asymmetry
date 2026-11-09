@@ -61,6 +61,7 @@ TRAILING_FLOOR_LOCK = 25_100.0
 PEAK_FOR_FLOOR_LOCK = 26_100.0
 MAX_FIRM_MICROS = 10
 MAX_FIRM_MINIS = 1
+DEFENSIVE_DELEVER_CUSHION_DOLLARS = 400.0
 
 
 @dataclass(frozen=True)
@@ -274,18 +275,18 @@ def compute_ratchet_sizing(
     - Base: 2 Micros (Profit < $300)
     - Tier 2: 3 Micros ($300 <= Profit < $600)
     - Tier 3: 4 Micros (Profit >= $600)
-    - Cushion < $500: Emergency de-lever to 1 Micro
+    - Cushion < $400: Emergency de-lever to 1 Micro (DEFENSIVE_DELEVER_CUSHION_DOLLARS)
     - Finish-Line Shield (Profit >= $1,150): De-lever to 1 Micro
     - GARCH Vol < 0.898% (bottom decile): Halve contracts to 1 Micro
     """
     finish_line_shield = profit >= 1150.0
-    defensive_delever = cushion < 500.0
+    defensive_delever = cushion < DEFENSIVE_DELEVER_CUSHION_DOLLARS
     garch_decile_halving = (garch_vol is not None) and (garch_vol < 0.898)
 
     if finish_line_shield:
         return 1, "Finish-Line Shield: Target Protection (1 Micro)", True, defensive_delever, garch_decile_halving
     if defensive_delever:
-        return 1, "Defensive Cushion De-lever: Cushion < $500 (1 Micro)", False, True, garch_decile_halving
+        return 1, f"Defensive Cushion De-lever: Cushion < ${int(DEFENSIVE_DELEVER_CUSHION_DOLLARS)} (1 Micro)", False, True, garch_decile_halving
     if garch_decile_halving:
         return 1, "GARCH Vol Decile Halving: Low Vol < 0.898% (1 Micro)", False, False, True
 
@@ -354,6 +355,8 @@ def verify_and_load_account_state(
 
     if state_path is not None:
         target = Path(state_path)
+        if target.is_dir():
+            target = target / CANONICAL_STATE_FILENAME
     else:
         base_dir = resolve_forward_test_dir(forward_test_dir)
         target = base_dir / CANONICAL_STATE_FILENAME
@@ -489,7 +492,16 @@ def verify_and_load_account_state(
     effective_cushion = round(balance - effective_floor, 2)
     current_date_pnl = parsed_num["current_date_pnl"]
 
-    status_str = str(data.get("status", "ACTIVE")).upper()
+    if "status" not in data or data["status"] is None:
+        result["error"] = "MISSING_ACCOUNT_STATUS: 'status' field is required in account state"
+        result["diagnostic_event"] = f"ORDER_BLOCKED_UNVERIFIED_ACCOUNT ({result['error']})"
+        return result
+    raw_status = data["status"]
+    if not isinstance(raw_status, str):
+        result["error"] = f"INVALID_ACCOUNT_STATUS_TYPE: expected str, got {type(raw_status).__name__}"
+        result["diagnostic_event"] = f"ORDER_BLOCKED_UNVERIFIED_ACCOUNT ({result['error']})"
+        return result
+    status_str = raw_status.strip().upper()
     if status_str not in ("ACTIVE", "PASSED", "DAILY_HALTED", "TRAILED_OUT"):
         result["error"] = f"UNKNOWN_ACCOUNT_STATUS: '{status_str}'"
         result["diagnostic_event"] = f"ORDER_BLOCKED_UNVERIFIED_ACCOUNT ({result['error']})"
@@ -507,12 +519,12 @@ def verify_and_load_account_state(
     emergency_delever = (
         bool(data.get("emergency_delever", False))
         or bool(data.get("defensive_delever", False))
-        or effective_cushion < 400.0
+        or effective_cushion < DEFENSIVE_DELEVER_CUSHION_DOLLARS
     )
     finish_line_shield = bool(data.get("finish_line_shield", False)) or (balance - STARTING_CAPITAL >= 1150.0)
     garch_decile_halving = bool(data.get("garch_decile_halving", False))
 
-    if effective_cushion < 400.0 or emergency_delever or finish_line_shield or garch_decile_halving:
+    if effective_cushion < DEFENSIVE_DELEVER_CUSHION_DOLLARS or emergency_delever or finish_line_shield or garch_decile_halving:
         raw_micros = min(raw_micros if raw_micros > 0 else 1, 1)
 
     result.update({

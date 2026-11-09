@@ -191,16 +191,16 @@ class TestDynamicDrawdownDeEscalation:
         assert st3.recommended_micros == 3
         assert "Tier 2" in st3.recommended_tier
 
-        # Trade 4: Additional Loss -$300 -> profit drops below $200 and cushion < $500 -> MUST DE-ESCALATE TO 1 MICRO DEFENSIVE
+        # Trade 4: Additional Loss -> profit drops below $200 and cushion < $400 -> MUST DE-ESCALATE TO 1 MICRO DEFENSIVE
         t4 = TradeFillRecord(
             date="2026-10-31", symbol="MNQ", direction="SHORT", contracts=3,
             theo_entry_price=20500.00, actual_entry_fill=20500.00,
             theo_stop_price=20550.00, theo_target_price=20400.00,
-            exit_type="STOP_LOSS", actual_exit_fill=20551.00,
+            exit_type="STOP_LOSS", actual_exit_fill=20570.00,
         )
         st4 = journal.record_trade(t4)
         assert st4.profit < 200.0
-        assert st4.trailing_cushion < 500.0
+        assert st4.trailing_cushion < 400.0
         assert st4.recommended_micros == 1
         assert st4.defensive_delever is True
         assert "Cushion De-lever" in st4.recommended_tier

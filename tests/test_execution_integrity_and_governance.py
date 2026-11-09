@@ -30,6 +30,8 @@ import pytest
 
 from backtest.demo_parity_engine import (
     CANONICAL_STATE_FILENAME,
+    DEFENSIVE_DELEVER_CUSHION_DOLLARS,
+    compute_ratchet_sizing,
     verify_and_load_account_state,
 )
 from strategies.asian_evening_reversion_s4 import (
@@ -164,6 +166,7 @@ class TestUnifiedAccountRiskStateInterface:
             "circuit_breaker_hit": False,
             "emergency_delever": False,
             "intraday_soft_stop": -600.0,
+            "status": "ACTIVE",
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }), encoding="utf-8")
 
@@ -241,6 +244,7 @@ class TestUnifiedAccountRiskStateInterface:
             "circuit_breaker_hit": False,
             "emergency_delever": False,
             "intraday_soft_stop": -600.0,
+            "status": "ACTIVE",
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }), encoding="utf-8")
 
@@ -539,8 +543,11 @@ class TestStrategyParityAndInstrumentValidation:
 
     def test_s4_mnq_instrument_validation(self):
         code = STUDY_FILES["S4"].read_text(encoding="utf-8")
-        assert 'sym.contains("MNQ")' in code or 'sym.contains("NQ")' in code
+        assert "isAcceptedMnqSymbol" in code
         assert "INSTRUMENT_NOT_MNQ" in code
+        # Broad substring acceptance of full-size NQ must NOT be present
+        assert '!sym.contains("MNQ") && !sym.equals("NQ")' not in code
+        assert '!sym.contains("MNQ") && !sym.contains("NQ")' not in code
 
     def test_s4_rth_regime_features(self):
         code = STUDY_FILES["S4"].read_text(encoding="utf-8")
@@ -552,8 +559,10 @@ class TestStrategyParityAndInstrumentValidation:
 
     def test_s5_mcl_instrument_validation(self):
         code = STUDY_FILES["S5"].read_text(encoding="utf-8")
-        assert 'sym.contains("MCL")' in code or 'sym.contains("CL")' in code
+        assert "isAcceptedMclSymbol" in code
         assert "INSTRUMENT_NOT_MCL" in code
+        # Broad substring acceptance of full-size CL must NOT be present
+        assert '!sym.contains("MCL") && !sym.contains("CL")' not in code
 
     def test_s5_daily_indicators_and_no_min_body_ratio(self):
         code = STUDY_FILES["S5"].read_text(encoding="utf-8")
@@ -565,3 +574,371 @@ class TestStrategyParityAndInstrumentValidation:
         assert "completedDailyList" in code
         assert "numCompleted >= 50" in code
         assert "macroTrend" in code
+
+
+# ==============================================================================
+# SECTION 8: EXACT MICRO INSTRUMENT VALIDATION & ROOT PARSING
+# ==============================================================================
+
+class TestExactMicroInstrumentValidation:
+    """Requirement: S4 accepts only MNQ; S5 accepts only MCL. Reject full-size NQ and CL."""
+
+    @staticmethod
+    def _is_accepted_mnq(raw: str | None) -> bool:
+        if not raw or not raw.strip():
+            return False
+        s = raw.strip().upper()
+        if ":" in s:
+            s = s.split(":")[-1]
+        if "/" in s:
+            s = s.split("/")[-1]
+        if not s.startswith("MNQ"):
+            return False
+        if len(s) == 3:
+            return True
+        next_char = s[3]
+        if next_char in ("#", ".", "_", "-", " ", "/"):
+            return True
+        import re
+        remainder = s[3:]
+        if re.match(r"^[FGHJKMNQUVXZ]\d{1,4}([._\s#-].*)?$", remainder):
+            return True
+        if re.match(r"^\d{2,4}([._\s#-].*)?$", remainder):
+            return True
+        return False
+
+    @staticmethod
+    def _is_accepted_mcl(raw: str | None) -> bool:
+        if not raw or not raw.strip():
+            return False
+        s = raw.strip().upper()
+        if ":" in s:
+            s = s.split(":")[-1]
+        if "/" in s:
+            s = s.split("/")[-1]
+        if not s.startswith("MCL"):
+            return False
+        if len(s) == 3:
+            return True
+        next_char = s[3]
+        if next_char in ("#", ".", "_", "-", " ", "/"):
+            return True
+        import re
+        remainder = s[3:]
+        if re.match(r"^[FGHJKMNQUVXZ]\d{1,4}([._\s#-].*)?$", remainder):
+            return True
+        if re.match(r"^\d{2,4}([._\s#-].*)?$", remainder):
+            return True
+        return False
+
+    def test_s4_mnq_accepted_symbol_formats(self):
+        """MNQ root contracts must be accepted across all MotiveWave/CQG formats."""
+        valid_symbols = [
+            "MNQ",
+            "MNQH25",
+            "MNQM25",
+            "MNQU2025",
+            "MNQZ5",
+            "MNQ 03-25",
+            "MNQ.CME",
+            "CME:MNQ",
+            "CME:MNQH25",
+            "MNQ#",
+            "MNQ_CONT",
+            "MNQZ26.CQG",
+            "CME/MNQH25",
+        ]
+        for sym in valid_symbols:
+            assert self._is_accepted_mnq(sym) is True, f"Expected {sym} to be accepted by S4"
+
+    def test_s4_nq_full_size_rejected(self):
+        """Full-size NQ contracts must be rejected fail-closed by S4."""
+        rejected_symbols = [
+            "NQ",
+            "NQH25",
+            "NQM25",
+            "NQ 03-25",
+            "CME:NQ",
+            "CME:NQH25",
+            "NQ#",
+            "NQ.CME",
+            "NQZ26.CQG",
+            "SOMEMNQ",
+            "MNQEXTRA",
+            "",
+            None,
+        ]
+        for sym in rejected_symbols:
+            assert self._is_accepted_mnq(sym) is False, f"Expected {sym} to be rejected by S4"
+
+    def test_s5_mcl_accepted_symbol_formats(self):
+        """MCL root contracts must be accepted across all MotiveWave/CQG formats."""
+        valid_symbols = [
+            "MCL",
+            "MCLH25",
+            "MCLJ25",
+            "MCL 03-25",
+            "MCL.NYMEX",
+            "NYMEX:MCL",
+            "NYMEX:MCLH25",
+            "MCL#",
+            "MCL_CONT",
+            "MCLZ26.CQG",
+            "NYMEX/MCLJ25",
+        ]
+        for sym in valid_symbols:
+            assert self._is_accepted_mcl(sym) is True, f"Expected {sym} to be accepted by S5"
+
+    def test_s5_cl_full_size_rejected(self):
+        """Full-size CL and QM contracts must be rejected fail-closed by S5."""
+        rejected_symbols = [
+            "CL",
+            "CLH25",
+            "CLJ25",
+            "CL 03-25",
+            "NYMEX:CL",
+            "NYMEX:CLH25",
+            "CL#",
+            "CL.NYMEX",
+            "QM",
+            "QMH25",
+            "SOMEMCL",
+            "MCLEXTRA",
+            "",
+            None,
+        ]
+        for sym in rejected_symbols:
+            assert self._is_accepted_mcl(sym) is False, f"Expected {sym} to be rejected by S5"
+
+
+# ==============================================================================
+# SECTION 9: CONFIRMED FLAT STATE & ORDER LIFECYCLE (S4 & S5)
+# ==============================================================================
+
+class TestConfirmedFlatStateForS4AndS5:
+    """Requirement: Never set trade.closed = true merely because closeAtMarket() was called."""
+
+    def test_on_position_closed_implemented_in_s4_and_s5(self):
+        """Both S4 and S5 must implement onPositionClosed(OrderContext ctx)."""
+        for key in ["S4", "S5"]:
+            code = STUDY_FILES[key].read_text(encoding="utf-8")
+            assert "public void onPositionClosed(OrderContext ctx)" in code, (
+                f"{key} must implement onPositionClosed(OrderContext ctx)"
+            )
+            assert "POSITION_CLOSED_CONFIRMED" in code, (
+                f"{key} must log POSITION_CLOSED_CONFIRMED event"
+            )
+
+    def test_flatten_submitted_flag_exists(self):
+        """ActiveTrade in S4 and S5 must track flattenSubmitted."""
+        for key in ["S4", "S5"]:
+            code = STUDY_FILES[key].read_text(encoding="utf-8")
+            assert "public boolean flattenSubmitted = false;" in code, (
+                f"{key} ActiveTrade must declare public boolean flattenSubmitted = false;"
+            )
+
+    def test_close_at_market_does_not_prematurely_mark_closed(self):
+        """closeAtMarket() must not be immediately followed by trade.closed = true."""
+        for key in ["S4", "S5"]:
+            code = STUDY_FILES[key].read_text(encoding="utf-8")
+            # Must set trade.flattenSubmitted = true when closeAtMarket() is issued
+            assert "trade.flattenSubmitted = true;" in code
+            # Reject pattern: ctx.closeAtMarket(); trade.closed = true;
+            assert "ctx.closeAtMarket();\n            trade.closed = true;" not in code
+            assert "ctx.closeAtMarket();\n                trade.closed = true;" not in code
+
+    def test_protective_stop_retained_during_flatten(self):
+        """When flatten is submitted, protective stop must NOT be cancelled prematurely."""
+        for key in ["S4", "S5"]:
+            code = STUDY_FILES[key].read_text(encoding="utf-8")
+            # It must cancel only tpOrder if active, preserving slOrder
+            assert "ctx.cancelOrders(trade.tpOrder);" in code
+
+
+# ==============================================================================
+# SECTION 10: S1-S3 ORDER IDENTITY & BRACKET ANCHORING INTEGRITY
+# ==============================================================================
+
+class TestS1S3OrderIdentityAndPartialFillIntegrity:
+    """Requirement: S1-S3 strict order identity matching, fill anchoring, and protective reject."""
+
+    def test_permissive_fill_matching_removed_from_s1_s2_s3(self):
+        """Permissive entry-fill fallback || (trade.orderSubmitted && !trade.entryFilled) must be absent."""
+        for key in ["S1", "S2", "S3"]:
+            code = STUDY_FILES[key].read_text(encoding="utf-8")
+            assert "|| (trade.orderSubmitted && !trade.entryFilled)" not in code, (
+                f"{key} must NOT contain permissive entry-fill matching fallback"
+            )
+
+    def test_fill_price_anchors_bracket_orders_in_s1_s2_s3(self):
+        """Bracket stop and target prices must be anchored to actual entry average fill price."""
+        for key in ["S1", "S2", "S3"]:
+            code = STUDY_FILES[key].read_text(encoding="utf-8")
+            assert "order.getAvgFillPrice()" in code, (
+                f"{key} must read order.getAvgFillPrice()"
+            )
+            assert "anchored to fill=" in code, (
+                f"{key} must log brackets anchored to fill"
+            )
+
+    def test_partial_fill_synchronization_in_s1_s2_s3(self):
+        """Subsequent partial fills must adjust working bracket quantities in-place."""
+        for key in ["S1", "S2", "S3"]:
+            code = STUDY_FILES[key].read_text(encoding="utf-8")
+            assert "setAdjQuantity(contracts)" in code, (
+                f"{key} must adjust bracket quantity to contracts on partial fill"
+            )
+            assert "trade.attachedBracketQty = contracts;" in code, (
+                f"{key} must track attachedBracketQty"
+            )
+
+    def test_protective_stop_rejection_triggers_emergency_flatten_in_s1_s2_s3(self):
+        """Rejection of protective stop order while position open must execute emergency flatten."""
+        for key in ["S1", "S2", "S3"]:
+            code = STUDY_FILES[key].read_text(encoding="utf-8")
+            assert "PROTECTIVE_STOP_REJECTED_EMERGENCY_FLATTEN" in code, (
+                f"{key} must handle protective stop rejection with emergency flatten"
+            )
+            assert "PROTECTIVE_STOP_CANCELLED_EMERGENCY_FLATTEN" in code, (
+                f"{key} must handle unexpected protective stop cancellation with emergency flatten"
+            )
+
+
+# ==============================================================================
+# SECTION 11: PYTHON RISK STATE STATUS VALIDATION & CUSHION CONSISTENCY
+# ==============================================================================
+
+class TestAccountStateStatusAndCushionConsistency:
+    """Requirement: verify_and_load_account_state rejects missing status; cushion aligned to $400."""
+
+    @pytest.fixture
+    def state_dir(self, tmp_path):
+        d = tmp_path / "forward_test"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def _write_state(self, state_dir: Path, data: dict):
+        state_file = state_dir / CANONICAL_STATE_FILENAME
+        state_file.write_text(json.dumps(data), encoding="utf-8")
+        return state_dir
+
+    def test_missing_status_field_fails_closed(self, state_dir):
+        """Account state missing 'status' field must be rejected fail-closed."""
+        data = {
+            "balance": 25500.0,
+            "peak_balance": 25500.0,
+            "trailing_floor": 24500.0,
+            "trailing_cushion": 1000.0,
+            "current_date_pnl": 0.0,
+            "recommended_micros": 2,
+            "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+        self._write_state(state_dir, data)
+        res = verify_and_load_account_state(state_dir)
+        assert res["verified"] is False
+        assert "MISSING_ACCOUNT_STATUS" in res["error"]
+        assert "ORDER_BLOCKED_UNVERIFIED_ACCOUNT" in res["diagnostic_event"]
+
+    def test_invalid_status_type_fails_closed(self, state_dir):
+        """Account state with non-string 'status' must be rejected fail-closed."""
+        data = {
+            "balance": 25500.0,
+            "peak_balance": 25500.0,
+            "trailing_floor": 24500.0,
+            "trailing_cushion": 1000.0,
+            "current_date_pnl": 0.0,
+            "recommended_micros": 2,
+            "status": 12345,
+            "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+        self._write_state(state_dir, data)
+        res = verify_and_load_account_state(state_dir)
+        assert res["verified"] is False
+        assert "INVALID_ACCOUNT_STATUS_TYPE" in res["error"]
+
+    def test_unknown_status_fails_closed(self, state_dir):
+        """Account state with unrecognized status must be rejected fail-closed."""
+        data = {
+            "balance": 25500.0,
+            "peak_balance": 25500.0,
+            "trailing_floor": 24500.0,
+            "trailing_cushion": 1000.0,
+            "current_date_pnl": 0.0,
+            "recommended_micros": 2,
+            "status": "INVALID_RANDOM_STATUS",
+            "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+        self._write_state(state_dir, data)
+        res = verify_and_load_account_state(state_dir)
+        assert res["verified"] is False
+        assert "UNKNOWN_ACCOUNT_STATUS" in res["error"]
+
+    def test_valid_statuses_succeed(self, state_dir):
+        """Valid account statuses must succeed verification."""
+        for valid_status in ("ACTIVE", "PASSED", "DAILY_HALTED", "TRAILED_OUT"):
+            data = {
+                "balance": 25500.0,
+                "peak_balance": 25500.0,
+                "trailing_floor": 24500.0,
+                "trailing_cushion": 1000.0,
+                "current_date_pnl": 0.0,
+                "recommended_micros": 2,
+                "status": valid_status,
+                "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }
+            self._write_state(state_dir, data)
+            res = verify_and_load_account_state(state_dir)
+            assert res["verified"] is True, f"Expected {valid_status} to verify, got error: {res['error']}"
+
+    def test_canonical_cushion_constant_and_ratchet_boundaries(self):
+        """DEFENSIVE_DELEVER_CUSHION_DOLLARS must be 400.0 and compute_ratchet_sizing must obey boundaries."""
+        assert DEFENSIVE_DELEVER_CUSHION_DOLLARS == 400.0
+
+        # Boundary test: cushion < 400.0 triggers defensive delever to 1 micro
+        m, tier, shield, delever, garch = compute_ratchet_sizing(profit=650.0, cushion=399.0)
+        assert m == 1
+        assert delever is True
+        assert "Defensive Cushion De-lever: Cushion < $400" in tier
+
+        # Boundary test: cushion == 400.0 does NOT trigger defensive delever (allows normal Tier 3: 4 micros)
+        m, tier, shield, delever, garch = compute_ratchet_sizing(profit=650.0, cushion=400.0)
+        assert m == 4
+        assert delever is False
+        assert "Tier 3: Target Sprint" in tier
+
+        # Boundary test: cushion == 401.0 allows normal Tier 3: 4 micros
+        m, tier, shield, delever, garch = compute_ratchet_sizing(profit=650.0, cushion=401.0)
+        assert m == 4
+        assert delever is False
+
+        # Boundary test: cushion == 499.0 allows normal Tier 3: 4 micros (previous 500 threshold eliminated)
+        m, tier, shield, delever, garch = compute_ratchet_sizing(profit=650.0, cushion=499.0)
+        assert m == 4
+        assert delever is False
+
+        # Tier 2 expansion with cushion >= 400.0
+        m, tier, shield, delever, garch = compute_ratchet_sizing(profit=350.0, cushion=400.0)
+        assert m == 3
+        assert delever is False
+
+        # Tier 1 base with cushion >= 400.0
+        m, tier, shield, delever, garch = compute_ratchet_sizing(profit=100.0, cushion=400.0)
+        assert m == 2
+        assert delever is False
+
+
+# ==============================================================================
+# SECTION 12: S5 TRADE-WINDOW COMPLETENESS
+# ==============================================================================
+
+class TestS5TradeWindowCompleteness:
+    """Requirement: S5 enforces minimum 30 trade bars matching Python."""
+
+    def test_s5_trade_window_constants_and_descriptors(self):
+        code = STUDY_FILES["S5"].read_text(encoding="utf-8")
+        assert "MIN_CONSOLIDATION_BARS" in code
+        assert "MIN_TRADE_BARS" in code
+        assert "minConsolidationBars" in code
+        assert "minTradeBars" in code
+        assert "countTradeBarsInSeries" in code
+        assert "totalTradeBars < minTradeBars" in code

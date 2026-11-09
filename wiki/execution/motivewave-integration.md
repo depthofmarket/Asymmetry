@@ -72,6 +72,33 @@ All five Java studies integrate native dynamic contract resolution pulling real-
 - **Daily Loss Circuit Breaker**: Canonical daily soft stop at **-\$600.00** daily PnL threshold (`DAILY_SOFT_STOP_DOLLARS`).
 - **Safe Deactivation Protocol**: On strategy deactivation (`onDeactivate`), if position is flat (`ctx.getPosition() == 0`), pending orders are cancelled; if a live position remains open, working protective stop orders are preserved to eliminate naked position risk.
 
+### Exact Micro Instrument Validation (S4 & S5)
+Candidate strategies must strictly reject full-size contracts that share root substrings:
+- **`isAcceptedMnqSymbol(rawSymbol)`**: Strips exchange/broker prefixes (`CME:`, `NYMEX:`, `CME/`), verifies root starts with `MNQ`, followed by valid delimiter or month-year token (e.g. `MNQ`, `MNQH25`, `MNQ 03-25`, `MNQ.CME`, `MNQ#`). Rejects full-size `NQ`, `NQH25`, `CME:NQ`, and unrecognized symbols.
+- **`isAcceptedMclSymbol(rawSymbol)`**: Verifies root starts with `MCL`, rejecting full-size `CL`, `CLH25`, `NYMEX:CL`, `QM`, and ambiguous symbols.
+- **Fail-Closed Gate**: Instrument validation is executed in both `calculate()` and `executeAutoTradeIfArmed()`, preventing chart signals or order submissions on wrong instruments.
+
+### Confirmed Flat State Lifecycle & Order Management
+To eliminate phantom trade closures and unprotected positions:
+- **No Premature Closed State**: Emitting `closeAtMarket()` or scheduled time flattens sets `trade.flattenSubmitted = true` and cancels limit `tpOrder`, but preserves protective `slOrder` and **never** sets `trade.closed = true`.
+- **`onPositionClosed(OrderContext ctx)`**: Official MotiveWave callback invoked when platform position reaches zero. Cancels residual working orders, resets `flattenSubmitted = false`, and transitions `trade.closed = true`.
+- **Replay vs Live Calculation**: `calculate()` marks `trade.closed = true` strictly on historical replay bars (`series.size() - 1 > index`). Live bars rely on `onPositionClosed` or confirmed `onOrderFilled` (`ctx.getPosition() == 0`).
+- **Emergency Stop-Out Protection**: In `onOrderRejected` and `onOrderCancelled`, if a protective stop order (`trade.slOrderId`) is rejected or cancelled while an open position exists (`ctx.getPosition() != 0`), an emergency market flatten (`ctx.closeAtMarket()`) is triggered immediately.
+
+### S1–S3 Order Identity & Fill-Anchored Brackets
+Baseline studies (S1, S2, S3) enforce strict order attribution:
+- **Strict Order ID Matching**: Removed loose boolean order matching; `onOrderFilled` verifies `trade.entryOrderId.equals(order.getOrderId())`.
+- **Fill-Anchored Bracket Pricing**: Initial stop and target prices are calculated from actual execution fill (`order.getAvgFillPrice()`), eliminating slippage-induced bracket skew.
+- **Partial Fill Quantity Synchronization**: Dynamically updates working bracket order quantities (`slOrder.setAdjQuantity()`, `tpOrder.setAdjQuantity()`) to match partial fills.
+
+### Cross-Process Atomic Daily Locks
+- **File-Based Lock**: Prior to order submission, studies atomically create a lock file (`results/forward_test/.locks/<study>_<symbol>_<date>.lock`) via `lockFile.createNewFile()`. If the file exists, execution aborts.
+- **Restart Recovery**: On study reload, if `ctx.getPosition() != 0`, the daily set `DAILY_SUBMITTED_DATES` and filesystem lock file are reconstituted to prevent double-entry.
+
+### Account State Verification & Canonical Cushion Constant
+- **Fail-Closed Status Validation**: Account state must include a valid `status` string (`ACTIVE`, `PASSED`, `DAILY_HALTED`, `TRAILED_OUT`). Missing, malformed, or unknown statuses fail closed with `ORDER_BLOCKED_UNVERIFIED_ACCOUNT`.
+- **Canonical Cushion Floor**: Unified `DEFENSIVE_DELEVER_CUSHION_DOLLARS = 400.0` across Python parity engine and Java studies. If trailing cushion falls below $400.00, contract sizing de-escalates to 1 micro.
+
 ### Real-Time Alert & File Export Protocol
 - Each Java study formats triggered trades, order lifecycle events, and bracket orders into structured alert lines written to a local export directory (`results/forward_test/motivewave_alerts.log`).
 - Alerts include: `TIMESTAMP`, `STUDY_ID`, `SYMBOL`, `ACTION`, `PRICE`, `STOP_LOSS`, `TAKE_PROFIT`, `CONTRACTS`, `REASON`.

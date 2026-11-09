@@ -104,6 +104,39 @@ public class LucidAsianEveningReversionStudy extends Study {
     public static final String FORWARD_TEST_DIR_SETTING = "forwardTestDir";
     public static final long DEFAULT_MAX_STATE_AGE_MS = 86_400_000L; // 24 hours
 
+    public static boolean isAcceptedMnqSymbol(String rawSymbol) {
+        if (rawSymbol == null || rawSymbol.trim().isEmpty()) {
+            return false;
+        }
+        String s = rawSymbol.trim().toUpperCase();
+        int colonIdx = s.lastIndexOf(':');
+        if (colonIdx >= 0 && colonIdx < s.length() - 1) {
+            s = s.substring(colonIdx + 1);
+        }
+        int slashIdx = s.lastIndexOf('/');
+        if (slashIdx >= 0 && slashIdx < s.length() - 1) {
+            s = s.substring(slashIdx + 1);
+        }
+        if (!s.startsWith("MNQ")) {
+            return false;
+        }
+        if (s.length() == 3) {
+            return true;
+        }
+        char nextChar = s.charAt(3);
+        if (nextChar == '#' || nextChar == '.' || nextChar == '_' || nextChar == '-' || nextChar == ' ' || nextChar == '/') {
+            return true;
+        }
+        String remainder = s.substring(3);
+        if (remainder.matches("^[FGHJKMNQUVXZ]\\d{1,4}([._\\s#-].*)?$")) {
+            return true;
+        }
+        if (remainder.matches("^\\d{2,4}([._\\s#-].*)?$")) {
+            return true;
+        }
+        return false;
+    }
+
     // --- Setting Keys ---
     public static final String MIN_OR15_RANGE = "minOr15Range";
     public static final String MAX_OR15_RANGE = "maxOr15Range";
@@ -687,6 +720,7 @@ public class LucidAsianEveningReversionStudy extends Study {
         public long entryTime;
         public long maxExitTime;
         public boolean closed = false;
+        public boolean flattenSubmitted = false;
         public boolean breakevenTriggered = false;
         public boolean breakevenModifySubmitted = false;
         public boolean breakevenApplied = false;
@@ -838,11 +872,8 @@ public class LucidAsianEveningReversionStudy extends Study {
         double v = Math.max(1.0, series.getVolume(index));
 
         Instrument chartInst = ctx.getInstrument();
-        if (chartInst != null) {
-            String sym = chartInst.getSymbol().toUpperCase();
-            if (!sym.contains("MNQ") && !sym.equals("NQ")) {
-                return;
-            }
+        if (chartInst == null || !isAcceptedMnqSymbol(chartInst.getSymbol())) {
+            return;
         }
 
         adxState.update1mCompletedBar(barTime, h, l, c, min);
@@ -993,7 +1024,9 @@ public class LucidAsianEveningReversionStudy extends Study {
             boolean hitTarget = trade.isLong ? (h >= trade.targetPrice) : (l <= trade.targetPrice);
 
             if (hitStop || hitTarget || (hour == 23 && min == 0) || barTime >= trade.maxExitTime) {
-                trade.closed = true;
+                if (series.size() - 1 > index) {
+                    trade.closed = true;
+                }
                 if (!hitStop && !hitTarget && ((hour == 23 && min == 0) || barTime >= trade.maxExitTime)) {
                     ctx.signal(index, Signals.EXIT_TIME_2300, "S4 Mandatory Time Flatten (23:00 ET)", c);
                 }
@@ -1104,15 +1137,20 @@ public class LucidAsianEveningReversionStudy extends Study {
         long barTime = series.getStartTime(lastIdx);
         LocalDate today = Instant.ofEpochMilli(barTime).atZone(NY_ZONE).toLocalDate();
         ActiveTrade trade = tradeMap.get(today);
-        if (trade == null || trade.closed) return;
+        if (trade == null) return;
 
         if (signal == Signals.BUY_ASIAN_REVERSION || signal == Signals.SELL_ASIAN_REVERSION) {
+            if (trade.closed) return;
             executeAutoTradeIfArmed(ctx, dataCtx, trade);
         } else if (signal == Signals.EXIT_TIME_2300 && ctx.getPosition() != 0) {
-            ctx.cancelOrders();
-            ctx.closeAtMarket();
-            trade.closed = true;
-            logExecutionToCsv("TIME_EXIT_2300", trade.isLong ? "SELL" : "BUY", Math.abs(ctx.getPosition()), trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, "FLATTENED_AT_2300_ET");
+            if (!trade.flattenSubmitted) {
+                trade.flattenSubmitted = true;
+                if (trade.tpOrder != null && trade.tpOrder.isActive()) {
+                    ctx.cancelOrders(trade.tpOrder);
+                }
+                ctx.closeAtMarket();
+                logExecutionToCsv("TIME_EXIT_2300_SUBMITTED", trade.isLong ? "SELL" : "BUY", Math.abs(ctx.getPosition()), trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, "FLATTEN_SUBMITTED_AT_2300_ET");
+            }
         }
     }
 
@@ -1129,6 +1167,15 @@ public class LucidAsianEveningReversionStudy extends Study {
         ZonedDateTime nyBar = Instant.ofEpochMilli(barTime).atZone(NY_ZONE);
         LocalDate today = nyBar.toLocalDate();
         ActiveTrade trade = tradeMap.get(today);
+
+        // Reconcile restart state: if position exists at broker on restart, ensure daily lock exists
+        if (ctx.getPosition() != 0) {
+            File lockFile = getDailyLockFile("asian_evening_reversion_s4", today);
+            if (lockFile != null && !lockFile.exists()) {
+                try { lockFile.createNewFile(); } catch (Exception ignored) {}
+            }
+        }
+
         if (trade == null) return;
 
         // 1. Keep protective bracket quantities synchronized with actual position
@@ -1149,12 +1196,18 @@ public class LucidAsianEveningReversionStudy extends Study {
         // 3. Enforce 23:00 ET time flatten
         if ((nyBar.getHour() == 23 && nyBar.getMinute() >= 0) || barTime >= trade.maxExitTime) {
             if (ctx.getPosition() != 0) {
-                int posQty = Math.abs(ctx.getPosition());
-                ctx.cancelOrders();
-                ctx.closeAtMarket();
-                // Do not mark trade.closed = true until broker confirms position flat
-                logExecutionToCsv("TIME_EXIT_2300_SUBMITTED", trade.isLong ? "SELL" : "BUY", posQty, trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, "ON_BAR_CLOSE_FLATTEN_SUBMITTED");
+                if (!trade.flattenSubmitted) {
+                    trade.flattenSubmitted = true;
+                    int posQty = Math.abs(ctx.getPosition());
+                    if (trade.tpOrder != null && trade.tpOrder.isActive()) {
+                        ctx.cancelOrders(trade.tpOrder);
+                    }
+                    ctx.closeAtMarket();
+                    // Do not mark trade.closed = true until broker confirms position flat
+                    logExecutionToCsv("TIME_EXIT_2300_SUBMITTED", trade.isLong ? "SELL" : "BUY", posQty, trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, "ON_BAR_CLOSE_FLATTEN_SUBMITTED");
+                }
             } else {
+                trade.flattenSubmitted = false;
                 trade.closed = true;
             }
         }
@@ -1244,11 +1297,15 @@ public class LucidAsianEveningReversionStudy extends Study {
 
         boolean stopStillActive = (trade.slOrder != null && trade.slOrder.isActive() && !trade.slOrder.isCancelled() && !trade.slOrder.isFilled());
         if (!stopStillActive && ctx != null && ctx.getPosition() != 0) {
-            int posQty = Math.abs(ctx.getPosition());
-            ctx.cancelOrders();
-            ctx.closeAtMarket();
-            trade.closed = true;
-            logExecutionToCsv("PROTECTIVE_STOP_FAILURE_EMERGENCY_FLATTEN", trade.isLong ? "SELL" : "BUY", posQty, trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, reason);
+            if (!trade.flattenSubmitted) {
+                trade.flattenSubmitted = true;
+                int posQty = Math.abs(ctx.getPosition());
+                if (trade.tpOrder != null && trade.tpOrder.isActive()) {
+                    ctx.cancelOrders(trade.tpOrder);
+                }
+                ctx.closeAtMarket();
+                logExecutionToCsv("PROTECTIVE_STOP_FAILURE_EMERGENCY_FLATTEN_SUBMITTED", trade.isLong ? "SELL" : "BUY", posQty, trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, reason);
+            }
         } else {
             // Original working stop remains active at original stopPrice; do NOT pretend tighter stop is active
             logExecutionToCsv("BREAKEVEN_MODIFICATION_FAILED_ORIGINAL_STOP_RETAINED", trade.isLong ? "LONG" : "SHORT", Math.abs(ctx != null ? ctx.getPosition() : trade.filledQty), trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, reason);
@@ -1268,6 +1325,18 @@ public class LucidAsianEveningReversionStudy extends Study {
             }
         }
         logExecutionToCsv("STRATEGY_DEACTIVATED", "NONE", 0, 0.0, Double.NaN, 0.0, 0.0, 0.0, "Strategy deactivated by user");
+    }
+
+    @Override
+    public void onPositionClosed(OrderContext ctx) {
+        if (ctx != null) {
+            ctx.cancelOrders();
+        }
+        for (ActiveTrade trade : tradeMap.values()) {
+            trade.flattenSubmitted = false;
+            trade.closed = true;
+        }
+        logExecutionToCsv("POSITION_CLOSED_CONFIRMED", "FLAT", 0, 0.0, Double.NaN, 0.0, 0.0, 0.0, "BROKER_POSITION_FLAT");
     }
 
     @Override
@@ -1300,6 +1369,10 @@ public class LucidAsianEveningReversionStudy extends Study {
         if (ctx == null || order == null) return;
         for (ActiveTrade trade : tradeMap.values()) {
             if (trade.closed) continue;
+            if (trade.flattenSubmitted) {
+                trade.flattenSubmitted = false;
+                logExecutionToCsv("FLATTEN_ORDER_REJECTED", trade.isLong ? "SELL" : "BUY", Math.abs(ctx.getPosition()), trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, "FLATTEN_REJECTED:" + order.getOrderId());
+            }
             if (order == trade.entryOrder || (trade.entryOrderId != null && !trade.entryOrderId.isEmpty() && trade.entryOrderId.equals(order.getOrderId()))) {
                 trade.entryOrder = null;
                 trade.closed = true;
@@ -1331,20 +1404,24 @@ public class LucidAsianEveningReversionStudy extends Study {
         if (!isCandidateAutoTradeAuthorized()) return;
         if (ctx.getPosition() != 0 || trade.bracketsSubmitted || trade.entryOrder != null) return;
         Instrument inst = ctx.getInstrument();
-        if (inst == null) return;
-
-        String sym = inst.getSymbol() != null ? inst.getSymbol().toUpperCase() : "";
-        if (!sym.contains("MNQ") && !sym.contains("NQ")) {
-            logExecutionToCsv("ORDER_BLOCKED_UNAUTHORIZED_INSTRUMENT", trade.isLong ? "BUY" : "SELL", 0, trade.theoreticalEntryPrice, Double.NaN, 0.0, trade.stopPrice, trade.targetPrice, "INSTRUMENT_NOT_MNQ:" + sym);
+        if (inst == null || !isAcceptedMnqSymbol(inst.getSymbol())) {
+            logExecutionToCsv("ORDER_BLOCKED_UNAUTHORIZED_INSTRUMENT", trade.isLong ? "BUY" : "SELL", 0, trade.theoreticalEntryPrice, Double.NaN, 0.0, trade.stopPrice, trade.targetPrice, "INSTRUMENT_NOT_MNQ:" + (inst != null ? inst.getSymbol() : "null"));
             return;
         }
 
         long now = ctx.getCurrentTime();
         LocalDate today = Instant.ofEpochMilli(now).atZone(NY_ZONE).toLocalDate();
         File lockFile = getDailyLockFile("asian_evening_reversion_s4", today);
-        if (lockFile != null && lockFile.exists()) {
-            logExecutionToCsv("ORDER_BLOCKED_SESSION_COOLDOWN", trade.isLong ? "BUY" : "SELL", 0, trade.theoreticalEntryPrice, Double.NaN, 0.0, trade.stopPrice, trade.targetPrice, "DAILY_LOCK_ACTIVE:" + today);
-            return;
+        if (lockFile != null) {
+            try {
+                if (!lockFile.createNewFile()) {
+                    logExecutionToCsv("ORDER_BLOCKED_SESSION_COOLDOWN", trade.isLong ? "BUY" : "SELL", 0, trade.theoreticalEntryPrice, Double.NaN, 0.0, trade.stopPrice, trade.targetPrice, "DAILY_LOCK_ACTIVE:" + today);
+                    return;
+                }
+            } catch (Exception e) {
+                logExecutionToCsv("ORDER_BLOCKED_SESSION_COOLDOWN", trade.isLong ? "BUY" : "SELL", 0, trade.theoreticalEntryPrice, Double.NaN, 0.0, trade.stopPrice, trade.targetPrice, "LOCK_CREATION_FAILED:" + e.getMessage());
+                return;
+            }
         }
 
         int contracts = resolveContracts(ctx, dataCtx);
@@ -1363,10 +1440,6 @@ public class LucidAsianEveningReversionStudy extends Study {
         ctx.submitOrders(entryOrder);
         trade.entryOrderId = entryOrder.getOrderId() != null ? entryOrder.getOrderId() : orderRef;
 
-        if (lockFile != null) {
-            try { lockFile.createNewFile(); } catch (Exception ignored) {}
-        }
-
         logExecutionToCsv("ENTRY_SUBMITTED", entryAction.name(), contracts, trade.theoreticalEntryPrice, Double.NaN, 0.0, trade.stopPrice, trade.targetPrice, orderRef);
     }
 
@@ -1379,23 +1452,21 @@ public class LucidAsianEveningReversionStudy extends Study {
         for (ActiveTrade trade : tradeMap.values()) {
             if (trade.closed) continue;
 
-            // 1. Check if protective stop or target leg filled
+            // 1. Check if position reached zero (protective stop, target leg, or flatten market fill)
+            if (ctx.getPosition() == 0) {
+                ctx.cancelOrders();
+                trade.flattenSubmitted = false;
+                trade.closed = true;
+                String exitTag = (order == trade.slOrder)
+                    ? (trade.breakevenApplied ? "EXIT_BREAKEVEN_STOP" : "EXIT_STOP_LOSS")
+                    : ((order == trade.tpOrder) ? "EXIT_PROFIT_TARGET" : "EXIT_POSITION_FLAT");
+                logExecutionToCsv(exitTag, trade.isLong ? "SELL" : "BUY", order.getFilled(), trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, "EXIT_FILL=" + order.getAvgFillPrice());
+                return;
+            }
+
+            // 1b. Check if protective stop or target leg filled partially
             if (order == trade.slOrder || order == trade.tpOrder) {
-                int remPos = Math.abs(ctx.getPosition());
-                if (remPos == 0) {
-                    if (order == trade.slOrder && trade.tpOrder != null && trade.tpOrder.isActive()) {
-                        ctx.cancelOrders(trade.tpOrder);
-                    } else if (order == trade.tpOrder && trade.slOrder != null && trade.slOrder.isActive()) {
-                        ctx.cancelOrders(trade.slOrder);
-                    }
-                    trade.closed = true;
-                    String exitTag = (order == trade.slOrder)
-                        ? (trade.breakevenApplied ? "EXIT_BREAKEVEN_STOP" : "EXIT_STOP_LOSS")
-                        : "EXIT_PROFIT_TARGET";
-                    logExecutionToCsv(exitTag, trade.isLong ? "SELL" : "BUY", order.getFilled(), trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, "EXIT_FILL=" + order.getAvgFillPrice());
-                } else {
-                    verifyAndSyncBracketQuantities(ctx, trade);
-                }
+                verifyAndSyncBracketQuantities(ctx, trade);
                 return;
             }
 

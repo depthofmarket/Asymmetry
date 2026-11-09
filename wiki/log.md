@@ -10,6 +10,19 @@ This is an append-only, chronological journal recording all agent actions, docum
 
 ---
 
+## [2026-11-09 20:35:00 UTC] [gemini] [UPDATE] | Final Execution Safety, Exact Micro Validation & Lifecycle Integrity
+- **Pages Modified**:
+  - `wiki/execution/motivewave-integration.md` (documented exact micro instrument validators, confirmed flat state machine, fill-anchored bracket order management, and atomic lock recovery)
+  - `wiki/hot.md` (updated execution integrity status and milestones)
+  - `wiki/log.md` (appended journal entry)
+- **Summary**: Implemented the remaining execution-safety and risk-state integrity corrections:
+  1. Exact Micro Instrument Validation: S4 (`isAcceptedMnqSymbol`) and S5 (`isAcceptedMclSymbol`) reject full-size NQ and CL contracts across all MotiveWave/CQG representations (`CME:`, `NYMEX:`, `H25`, `03-25`, `#`, `.CME`), enforcing fail-closed gating in both `calculate()` and `executeAutoTradeIfArmed()`.
+  2. Confirmed Flat State Lifecycle: Fixed S4/S5 trade closure state machine by adding `flattenSubmitted` flag to prevent premature `trade.closed = true` on `closeAtMarket()`. Position closures are finalized strictly upon broker zero-position confirmation in `onPositionClosed()` or `onOrderFilled()`, ensuring protective stops remain active until flat.
+  3. S1–S3 Order Identity & Fill-Anchored Brackets: Removed loose boolean matching in `onOrderFilled()`, strictly matching `trade.entryOrderId.equals(order.getOrderId())`. Anchored bracket prices to actual execution fill (`getAvgFillPrice()`), dynamically synchronized working bracket sizes on partial fills (`setAdjQuantity()`), and added emergency market flatten if protective stops are cancelled or rejected while position is open.
+  4. Cross-Process Atomic Daily Locks: Enforced atomic filesystem lock creation (`results/forward_test/.locks/<study>_<symbol>_<date>.lock`) via `createNewFile()`, with restart recovery detecting open positions in `onBarClose()` to prevent duplicate entries.
+  5. Account State Status & Canonical Cushion: Enforced mandatory `status` validation (`ACTIVE`, `PASSED`, `DAILY_HALTED`, `TRAILED_OUT`) with fail-closed rejection of missing or unknown status. Aligned canonical de-escalation cushion constant `DEFENSIVE_DELEVER_CUSHION_DOLLARS = 400.0` across Python engine and Java studies.
+- **Verification**: Clean JDK 25 compilation on all 5 studies into `build/libs/asymmetry-motivewave.jar`; all 47 execution integrity tests passing in `tests/test_execution_integrity_and_governance.py`; all MotiveWave and full test suites passing.
+
 ## [2026-11-09 18:35:00 UTC] [gemini] [UPDATE] | Final MotiveWave Risk Sizing, Parity & CI Portability Remediation
 - **Pages Modified**:
   - `wiki/execution/motivewave-integration.md` (documented daemon risk ceiling, fallbackContracts cap, de-leveraging flags, safe deactivation, S4/S5 parity)
