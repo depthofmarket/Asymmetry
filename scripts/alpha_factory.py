@@ -62,6 +62,7 @@ def get_baseline_trial_count(store: Optional[ProvenanceStore] = None) -> int:
     try:
         ps = store if store is not None else default_store
         runs = ps.list_runs(include_candidates=True, limit=100000)
+        runs = [run for run in runs if getattr(run, "methodology", "") != "insample_java_chart_tracker"]
         n_prov = len(runs)
     except Exception:
         n_prov = 0

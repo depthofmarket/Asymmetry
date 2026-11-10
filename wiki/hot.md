@@ -63,10 +63,10 @@ S1–S3 rows below are chart-tracker marks from the current Java `calculate` met
 | S1 MNQ chart | 322 | $5,783.50 | $0 | $0 | $5,783.50 | 1.2508 | -$2,871.00 | `225ff4beaaf1219e469ca6806a96903c38728c203392b480c955918a88c42c74` |
 | S1 MES chart | 243 | $4,648.75 | $0 | $0 | $4,648.75 | 1.5683 | -$1,247.50 | `700f6bdaa0e1f3b5ceca6ac5cc19e8472ecd8b1da5ae70b68b402a2877b02165` |
 | S2 08:35 MNQ chart | 103 | $2,055.00 | $0 | $0 | $2,055.00 | 1.3503 | -$1,001.50 | `69972843c77a90ffb42ec700582e5ad1cc9b26bc8bda6ac8c34c991ab33a03b5` |
-| S3 MGC chart | 58 | $104.20 | $0 | $0 | $104.20 | 1.5019 | -$87.60 | `7513674f2caf87e5d3c4ea48bad38c4eca0d22292a951e2bdbb38c01e14343d9` |
+| S3 MGC chart | 58 | $1,042.00 | $0 | $0 | $1,042.00 | 1.5019 | -$876.00 | `7ce2c68148f2b25b34a19993fc478ef1604b8829008e8d4aa09827457b15f570` |
 | S5 current simulator | 60 | $847.00 | $210.00 | $139.00 | $637.00 | 1.6248 | $261.50 | `d631fb014e553dacf57f457723526697c4b508328c6ec2b8c84b6968f92203e2` |
 
-The rejected S2 10:00 window cannot submit live orders. Saved settings cannot enable it. The 08:35 path is unchanged. Mapping and non-equivalences are in `docs/study_chart_replay_mapping.md`. The MotiveWave studies were not compiled against the SDK in this session. The gate class was compiled with `tools/jdk25` and its behavioral test passed.
+The rejected S2 10:00 window cannot submit live orders. Saved settings cannot enable it. The 08:35 path is unchanged. Mapping and non-equivalences are in `docs/study_chart_replay_mapping.md`. S3 MGC dollars use $10 per 1.00 price move. The earlier $104.20 chart row used $1 per point and stays in the store with its original metrics; its tier is quarantined to `CANDIDATE`. Chart-tracker rows are gross diagnostics and are excluded from default production baseline listings.
 
 ## Active Tasks & Work in Progress
 

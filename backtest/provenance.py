@@ -36,6 +36,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 RESULTS_DIR = REPO_ROOT / "results"
 DB_PATH = RESULTS_DIR / "backtest_provenance.db"
 JSONL_PATH = RESULTS_DIR / "backtest_provenance.jsonl"
+CHART_TRACKER_METHODOLOGY = "insample_java_chart_tracker"
 
 
 @dataclass
@@ -668,6 +669,46 @@ class ProvenanceStore:
             notes=row["notes"] or "",
         )
 
+    def quarantine_chart_tracker_baseline(self, run_id: str) -> bool:
+        """Move one gross chart-tracker row from BASELINE to CANDIDATE.
+
+        Trade count, net profit, git commit, and data hash stay as stored.
+        The previous tier is appended to the notes. Other rows are not touched.
+        """
+        existing = self.get_run(run_id)
+        if existing is None or existing.methodology != CHART_TRACKER_METHODOLOGY:
+            return False
+        if existing.strategy_tier != StrategyTier.BASELINE.value:
+            return False
+        snapshot = (existing.total_trades, existing.net_profit, existing.git_commit, existing.data_hash)
+        note = (
+            (existing.notes or "").rstrip()
+            + "\nQUARANTINE: strategy_tier BASELINE -> CANDIDATE. "
+            + "Gross chart-tracker diagnostic. Metrics, git commit, and data hash were not changed."
+        )
+        with self._get_connection() as conn:
+            updated = conn.execute(
+                """
+                UPDATE backtest_runs
+                SET strategy_tier = ?, notes = ?
+                WHERE run_id = ? AND methodology = ? AND strategy_tier = 'BASELINE'
+                """,
+                (StrategyTier.CANDIDATE.value, note, run_id, CHART_TRACKER_METHODOLOGY),
+            ).rowcount
+        if updated != 1:
+            raise RuntimeError(f"Chart-tracker quarantine did not update exactly one row: {run_id}")
+        after = self.get_run(run_id)
+        if (
+            after is None
+            or after.strategy_tier != StrategyTier.CANDIDATE.value
+            or after.total_trades != snapshot[0]
+            or after.net_profit != snapshot[1]
+            or after.git_commit != snapshot[2]
+            or after.data_hash != snapshot[3]
+        ):
+            raise RuntimeError(f"Chart-tracker quarantine changed stored metrics: {run_id}")
+        return True
+
     def get_run(self, run_id: str) -> Optional[ProvenanceRecord]:
         with self._get_connection() as conn:
             row = conn.execute("SELECT * FROM backtest_runs WHERE run_id = ?", (run_id,)).fetchone()
@@ -695,10 +736,15 @@ class ProvenanceStore:
                     timestamp DESC
                 LIMIT 1
             """
+            diagnostic_clause = ""
+            diagnostic_params: tuple = ()
+            if not include_candidates:
+                diagnostic_clause = " AND methodology != ?"
+                diagnostic_params = (CHART_TRACKER_METHODOLOGY,)
             if strategy_id:
                 row = conn.execute(
-                    f"SELECT * FROM backtest_runs WHERE strategy_id = ? {order_by_clause}",
-                    (strategy_id.strip(),),
+                    f"SELECT * FROM backtest_runs WHERE strategy_id = ?{diagnostic_clause} {order_by_clause}",
+                    (strategy_id.strip(), *diagnostic_params),
                 ).fetchone()
             else:
                 if include_candidates:
@@ -707,7 +753,8 @@ class ProvenanceStore:
                     ).fetchone()
                 else:
                     row = conn.execute(
-                        f"SELECT * FROM backtest_runs WHERE strategy_tier IN ('BASELINE', 'FORWARD_DEMO') {order_by_clause}"
+                        f"SELECT * FROM backtest_runs WHERE strategy_tier IN ('BASELINE', 'FORWARD_DEMO'){diagnostic_clause} {order_by_clause}",
+                        diagnostic_params,
                     ).fetchone()
 
             if not row:
@@ -743,6 +790,9 @@ class ProvenanceStore:
         elif not include_candidates:
             # Default quarantine: exclude CANDIDATE and REJECTED runs from production reports
             conditions.append("strategy_tier IN ('BASELINE', 'FORWARD_DEMO')")
+        if not include_candidates:
+            conditions.append("methodology != ?")
+            params_list.append(CHART_TRACKER_METHODOLOGY)
 
         where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         query = f"SELECT * FROM backtest_runs {where_clause} ORDER BY timestamp DESC LIMIT ?"

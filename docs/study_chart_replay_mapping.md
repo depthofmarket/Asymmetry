@@ -14,6 +14,7 @@ The replay in `backtest/study_chart_replay.py` follows the current `calculate` m
 | S2 default high-vol gate is off. Stops are half the 08:30–08:34 range, clamped to 20–50 points. Flatten is entry plus 50 minutes | Same |
 | S2 10:00 Tier-2 window | Not replayed. Live submission is fail-closed in `MacroTenAmOrderGate` |
 | S3 long only at the first 10:15 bar. Fix window 10:00–10:14, London high 03:00–08:19, IB60 08:20–09:19, prior COMEX value area 08:20–13:30 | `replay_gold_fix` with the study defaults, including the 0.1125% return and 0.70 close location |
+| S3 dollars | MGC is $10 per 1.00 price move. GC is $100. An unrecognized symbol is not valued as MGC. Order quantity does not use this multiplier |
 | Chart quantity when daemon state is unverified | 2 contracts. Live `resolveContracts` returns 0 without a verified state file, so these rows are chart marks, not broker orders |
 | Chart dollars | `points * point value * 2`. Commission and slippage are 0 because the Java chart formula does not deduct them |
 | Equal-volume POC | Lowest price. Java `HashMap` iteration does not define this tie |
@@ -23,6 +24,6 @@ The replay in `backtest/study_chart_replay.py` follows the current `calculate` m
 | S1 pair split | Descriptor default is false, so the unverified chart quantity stays at 2. The code fallback of true applies only when the setting key is absent |
 | Missing account file | Circuit breaker is not hit and chart quantity is 2. Live order submission still returns 0 contracts |
 
-The price files are timezone-naive and are read as ET wall time. Each file has one symbol and no roll calendar. CL gaps are left in place. Bars on or after 2025-01-01 are not loaded.
+The price files are timezone-naive and are read as ET wall time. Each file has one symbol and no roll calendar. CL gaps are left in place. Retrieval uses a Parquet time predicate ending at the next midnight after `--end`. Each local file has a row group whose time range crosses 2025-01-01, so predicate pushdown does not prove those row-group bytes are unread. Every row returned to the replay is still earlier than that cutoff.
 
 `python scripts/regenerate_insample_study_trades.py` prints the in-sample trade count, gross P&L, commission, slippage, net P&L, profit factor, drawdown, slice hash, parameter hash, trade-list hash, and full git SHA. `--record` inserts new provenance ids. It does not update `run_canonical_s5_crude_rth_expansion_2021_2026`.

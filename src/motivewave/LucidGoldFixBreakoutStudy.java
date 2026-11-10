@@ -850,10 +850,28 @@ public class LucidGoldFixBreakoutStudy extends Study {
 
                 boolean isLong = (fixRetPct >= minRet) && (fixCloseLoc >= minLongLoc) && vaPass && lonPass && ibPass;
 
-                String sym = (series.getInstrument() != null) ? series.getInstrument().getSymbol().toUpperCase() : "GC";
-                boolean isFullGC = sym.equals("GC") && !sym.contains("MGC");
-                double ptVal = isFullGC ? 10.00 : 1.00; // $1.00 per point on MGC ($0.10 per 0.10 tick)
-                String microSym = isFullGC ? "GC" : "MGC";
+                com.motivewave.platform.sdk.common.Instrument goldInst = series.getInstrument();
+                double ptVal = GoldContractValue.confirmedPointValue(
+                    goldInst != null ? goldInst.getSymbol() : null,
+                    goldInst != null ? goldInst.getExchangeSymbol() : null,
+                    goldInst != null ? goldInst.getUnderlying() : null,
+                    goldInst != null ? goldInst.getPointValue() : Double.NaN);
+                if (Double.isNaN(ptVal)) {
+                    String reported = goldInst != null ? goldInst.getSymbol() : "null";
+                    Coordinate coord = new Coordinate(barStartTime, high);
+                    MarkerInfo info = new MarkerInfo(Enums$MarkerType.CIRCLE, Enums$Size.MEDIUM, new Color(220, 20, 60), Color.WHITE, Color.PINK, true);
+                    Marker marker = new Marker(coord, Enums$Position.TOP, info);
+                    marker.setTextValue("NO TRADE: unsupported gold symbol " + reported);
+                    addFigure(marker);
+                    return;
+                }
+                String microSym = GoldContractValue.contractRoot(goldInst.getSymbol());
+                if (microSym == null) {
+                    microSym = GoldContractValue.contractRoot(goldInst.getExchangeSymbol());
+                }
+                if (microSym == null) {
+                    microSym = GoldContractValue.contractRoot(goldInst.getUnderlying());
+                }
 
                 if (isLong) {
                     double stopPts = Math.min(maxStopPts, Math.max(minStopPts, fixRange));
@@ -1166,6 +1184,20 @@ public class LucidGoldFixBreakoutStudy extends Study {
 
         ActiveTrade trade = tradesByDate.get(today);
         if (trade == null || trade.orderSubmitted || trade.closed) return;
+
+        com.motivewave.platform.sdk.common.Instrument orderInst = ctx.getInstrument();
+        double orderPointValue = GoldContractValue.confirmedPointValue(
+            orderInst != null ? orderInst.getSymbol() : null,
+            orderInst != null ? orderInst.getExchangeSymbol() : null,
+            orderInst != null ? orderInst.getUnderlying() : null,
+            orderInst != null ? orderInst.getPointValue() : Double.NaN);
+        if (Double.isNaN(orderPointValue)) {
+            logExecutionEvent("ORDER_BLOCKED_UNSUPPORTED_SYMBOL", "LucidGoldFixBreakout",
+                orderInst != null ? orderInst.getSymbol() : "UNKNOWN",
+                "BLOCKED", 0.0, 0.0, 0.0, 0,
+                "Symbol is not a verified GC or MGC root, or its point value disagrees. Order entry blocked.");
+            return;
+        }
 
         int contracts = resolveContracts(ctx, trade.contracts);
         if (contracts <= 0) {

@@ -27,8 +27,10 @@ from backtest.provenance import ProvenanceStore, default_store
 from backtest.study_chart_replay import (
     OOS_START,
     ReplaySpec,
+    exclusive_end,
     frozen_parameters,
-    load_insample_bars,
+    load_bars_through,
+    overlapping_cutoff_row_groups,
     replay_gold_fix,
     replay_macro_0835,
     replay_morning_va,
@@ -75,18 +77,14 @@ def reject_oos_end(end: str) -> None:
         )
 
 
-def s5_bars() -> pd.DataFrame:
-    frame = pd.read_parquet(DATA["cl"], columns=["time", "open", "high", "low", "close", "volume"])
-    frame["time"] = pd.to_datetime(frame["time"])
-    frame = frame.loc[frame["time"] < OOS_START].sort_values("time").reset_index(drop=True)
-    if frame.empty or frame["time"].max() >= OOS_START:
-        raise SystemExit("S5 in-sample slice is empty or contains a protected bar.")
-    return frame
+def s5_bars(end: str) -> pd.DataFrame:
+    reject_oos_end(end)
+    return load_bars_through(DATA["cl"], end)
 
 
 def s5_frame(end: str) -> tuple[pd.DataFrame, dict, pd.DataFrame]:
     reject_oos_end(end)
-    bars = s5_bars()
+    bars = s5_bars(end)
     strategy = CrudeRthExpansionS5(params=CrudeRthExpansionParams())
     trades, metrics = strategy.backtest(
         data=bars,
@@ -94,8 +92,11 @@ def s5_frame(end: str) -> tuple[pd.DataFrame, dict, pd.DataFrame]:
         end_date=end,
     )
     if not trades.empty:
-        if pd.to_datetime(trades["entry_time"]).max() >= OOS_START:
-            raise SystemExit("S5 backtest emitted a protected-period entry.")
+        upper = exclusive_end(end)
+        entries = pd.to_datetime(trades["entry_time"])
+        exits = pd.to_datetime(trades["exit_time"])
+        if entries.max() >= upper or exits.max() >= upper or entries.max() >= OOS_START:
+            raise SystemExit("S5 backtest emitted a trade outside the requested window.")
     return trades, metrics, bars
 
 
@@ -130,19 +131,25 @@ def record_new_run(store: ProvenanceStore, run_id: str, **kwargs) -> None:
         raise SystemExit("Historical S5 provenance changed. This command must not do that.")
 
 
-def replay_charts() -> list[dict]:
-    bars = {key: load_insample_bars(path) for key, path in DATA.items() if key != "cl"}
+def replay_charts(end: str) -> list[dict]:
+    reject_oos_end(end)
+    bars = {key: load_bars_through(path, end) for key, path in DATA.items() if key != "cl"}
+    report_end = pd.Timestamp(f"{end} 23:59:59")
     jobs = [
         (ReplaySpec("morning_va_breakout_s1", "MNQ", 2.0, 0.25, "LucidMorningVABreakoutStudy"), bars["nq"], replay_morning_va),
         (ReplaySpec("morning_va_breakout_s1", "MES", 5.0, 0.25, "LucidMorningVABreakoutStudy"), bars["es"], replay_morning_va),
         (ReplaySpec("macro_momentum_s2", "MNQ", 2.0, 0.25, "LucidMacroMomentumStudy"), bars["nq"], replay_macro_0835),
-        (ReplaySpec("gold_london_fix_s3", "MGC", 1.0, 0.10, "LucidGoldFixBreakoutStudy"), bars["gc"], replay_gold_fix),
+        (ReplaySpec("gold_london_fix_s3", "MGC", 10.0, 0.10, "LucidGoldFixBreakoutStudy"), bars["gc"], replay_gold_fix),
     ]
     reports = []
     for spec, frame, fn in jobs:
-        trades = fn(frame, spec)
+        trades = fn(frame, spec, report_end=report_end)
+        if not trades.empty:
+            upper = exclusive_end(end)
+            if pd.to_datetime(trades["exit_time"]).max() >= upper or pd.to_datetime(trades["entry_time"]).max() >= upper:
+                raise SystemExit(f"{spec.strategy_id} emitted a trade outside {end}.")
         stats = summarize(trades)
-        params = frozen_parameters(spec)
+        params = frozen_parameters(spec, report_end=end)
         digest = trade_list_sha256(trades) if not trades.empty else hashlib.sha256(b"").hexdigest()
         data_key = {"MNQ": "nq", "MES": "es", "MGC": "gc"}[spec.instrument]
         reports.append({
@@ -183,8 +190,20 @@ def main() -> int:
     sha = full_git_sha()
     print(f"In-sample rebuild through {args.end}. Bars at or after 2025-01-01 are not read.")
     print(f"Git {sha}")
+    for key, path in DATA.items():
+        overlap = overlapping_cutoff_row_groups(path, exclusive_end(args.end))
+        if overlap:
+            print(
+                f"  {key}: {overlap} parquet row group(s) span the cutoff. "
+                "Predicate pushdown does not guarantee those groups are unread."
+            )
 
-    reports = replay_charts()
+    reports = replay_charts(args.end)
+    if args.record:
+        for row in reports:
+            legacy = f"run_insample_{row['spec'].strategy_id}_{row['spec'].instrument.lower()}_chart_tracker_2021_2024"
+            if default_store.quarantine_chart_tracker_baseline(legacy):
+                print(f"Quarantined {legacy} from BASELINE to CANDIDATE. Metrics were not changed.")
     for row in reports:
         print_report(row, sha)
         if args.record:
@@ -197,7 +216,10 @@ def main() -> int:
             slice_path = REPO_ROOT / "results" / "insample_rebuild" / f"{spec.strategy_id}_{spec.instrument.lower()}_bars_through_2024.parquet"
             slice_path.parent.mkdir(parents=True, exist_ok=True)
             row["bars"].to_parquet(slice_path, index=False)
-            run_id = f"run_insample_{spec.strategy_id}_{spec.instrument.lower()}_chart_tracker_2021_2024"
+            end_tag = args.end.replace("-", "")
+            point_tag = f"_pt{int(spec.point_value)}" if spec.strategy_id == "gold_london_fix_s3" else ""
+            legacy = f"run_insample_{spec.strategy_id}_{spec.instrument.lower()}_chart_tracker_2021_2024"
+            run_id = legacy + point_tag if args.end == "2024-12-31" else f"{legacy}_{end_tag}{point_tag}"
             record_new_run(
                 default_store,
                 run_id,
@@ -215,7 +237,7 @@ def main() -> int:
                 max_drawdown=stats["max_drawdown"],
                 sharpe_ratio=0.0,
                 largest_win=stats["largest_win"],
-                strategy_tier=StrategyTier.BASELINE,
+                strategy_tier=StrategyTier.CANDIDATE,
                 slippage_model="none: Java chart tracker fills exact stop, target, or close",
                 commission_model="none: Java chart tracker does not deduct commission",
                 is_net=False,

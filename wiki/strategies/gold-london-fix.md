@@ -27,7 +27,7 @@ Strategy 3 (`gold_london_fix_s3`) trades Micro Gold futures (`MGC`) on the COMEX
 During the auction fixing, major bullion banks accumulate and match commercial physical orders. Once the PM fix price is officially declared at approximately 10:15 ET, institutional inventory imbalances cascade into the US futures market, generating high-velocity directional breakouts that exhibit strong uncorrelated returns relative to US equity indices.
 
 ## Technical Specification
-- **Instrument**: `MGC` (Micro Gold Futures, $10.00/pt multiplier, $1.00 per 0.10 tick)
+- **Instrument**: `MGC` (Micro Gold Futures, $10.00 per 1.00 price move, $1.00 per 0.10 tick). Full-size `GC` is $100.00 per 1.00. An unrecognized symbol is not treated as `MGC` and cannot submit an order. This multiplier is display and chart P&L only; contract quantity comes from the account-state sizer.
 - **Time Window**: 10:15:00 to 11:00:00 ET (Order cancellation and force exit at 11:45 ET)
 - **Direction**: Long-Only structural bias (empirically validated institutional gold accumulation bias following physical auction resolution).
 - **Entry Logic**:

@@ -24,6 +24,11 @@ from typing import Iterable
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.dataset as ds
+import pyarrow.parquet as pq
+
+from backtest.gold_contract_value import confirmed_point_value
 
 OOS_START = pd.Timestamp("2025-01-01")
 REPORT_START = pd.Timestamp("2021-01-01")
@@ -71,13 +76,56 @@ def assert_insample_bars(times: pd.Series) -> None:
         raise ValueError("Timestamps are not monotonic.")
 
 
-def load_insample_bars(path: Path) -> pd.DataFrame:
-    df = pd.read_parquet(path, columns=["time", "open", "high", "low", "close", "volume"])
-    df["time"] = pd.to_datetime(df["time"])
-    df = df.loc[df["time"] < OOS_START].copy()
-    df = df.sort_values("time").reset_index(drop=True)
-    assert_insample_bars(df["time"])
-    return df
+def exclusive_end(end_date: str) -> pd.Timestamp:
+    """Inclusive calendar date to the next-day exclusive timestamp."""
+    if end_date > "2024-12-31":
+        raise ValueError(f"Refusing end date {end_date}. Dates after 2024-12-31 are protected.")
+    return pd.Timestamp(end_date).normalize() + pd.Timedelta(days=1)
+
+
+def overlapping_cutoff_row_groups(path: Path, upper: pd.Timestamp) -> int:
+    """Row groups whose time statistics cross the cutoff.
+
+    Predicate pushdown still reads a row group when its min/max range crosses
+    the cutoff. The local files each have one such group. This count is not a
+    claim that those bytes are unread.
+    """
+    parquet = pq.ParquetFile(path)
+    time_index = parquet.schema_arrow.get_field_index("time")
+    cutoff = upper.to_pydatetime()
+    overlapping = 0
+    for group in range(parquet.num_row_groups):
+        stats = parquet.metadata.row_group(group).column(time_index).statistics
+        if stats is None or not stats.has_min_max:
+            continue
+        if stats.min < cutoff and stats.max >= cutoff:
+            overlapping += 1
+    return overlapping
+
+
+def load_bars_through(path: Path, end_date: str = "2024-12-31") -> pd.DataFrame:
+    """Load bars with a Parquet predicate. No returned row is on or after the cutoff."""
+    upper = exclusive_end(end_date)
+    if upper > OOS_START:
+        raise ValueError("Requested end reaches the protected period.")
+    upper_scalar = pa.scalar(np.datetime64(upper.to_datetime64(), "us"))
+    table = ds.dataset(str(path), format="parquet").to_table(
+        columns=["time", "open", "high", "low", "close", "volume"],
+        filter=ds.field("time") < upper_scalar,
+    )
+    frame = table.to_pandas()
+    if "time" not in frame.columns:
+        raise ValueError(f"{path} has no time column.")
+    frame["time"] = pd.to_datetime(frame["time"])
+    frame = frame.sort_values("time").reset_index(drop=True)
+    if frame.empty or frame["time"].max() >= upper or frame["time"].max() >= OOS_START:
+        raise ValueError("Loaded bars are empty or cross the requested cutoff.")
+    assert_insample_bars(frame["time"])
+    return frame
+
+
+def load_insample_bars(path: Path, end_date: str = "2024-12-31") -> pd.DataFrame:
+    return load_bars_through(path, end_date)
 
 
 def trade_list_sha256(trades: pd.DataFrame) -> str:
@@ -248,9 +296,17 @@ def _walk_exit(
     return _chart_row(spec, signal, times[entry_i], times[exit_i], entry_price, exit_price, reason)
 
 
-def _in_report_window(entry_time) -> bool:
+def _report_end(report_end) -> pd.Timestamp:
+    return REPORT_END if report_end is None else pd.Timestamp(report_end)
+
+
+def _in_report_window(entry_time, report_end) -> bool:
     t = pd.Timestamp(entry_time)
-    return REPORT_START <= t <= REPORT_END
+    return REPORT_START <= t <= _report_end(report_end)
+
+
+def _exit_inside(exit_time, report_end) -> bool:
+    return pd.Timestamp(exit_time) <= _report_end(report_end)
 
 
 def is_s1_news_day(day: pd.Timestamp) -> bool:
@@ -270,7 +326,7 @@ def is_s1_news_day(day: pd.Timestamp) -> bool:
     return False
 
 
-def replay_morning_va(df: pd.DataFrame, spec: ReplaySpec) -> pd.DataFrame:
+def replay_morning_va(df: pd.DataFrame, spec: ReplaySpec, report_end=None) -> pd.DataFrame:
     """LucidMorningVABreakoutStudy.calculate, default settings, one chart."""
     assert_insample_bars(df["time"])
     is_es = "ES" in spec.instrument
@@ -351,12 +407,12 @@ def replay_morning_va(df: pd.DataFrame, spec: ReplaySpec) -> pd.DataFrame:
                     news_i = j
                     break
         row = _walk_exit(spec, signal, i, entry, stop, target, flatten_i, news_i, times, high, low, close)
-        if row is not None and _in_report_window(row["entry_time"]):
+        if row is not None and _in_report_window(row["entry_time"], report_end) and _exit_inside(row["exit_time"], report_end):
             rows.append(row)
     return pd.DataFrame(rows, columns=TRADE_COLUMNS)
 
 
-def replay_macro_0835(df: pd.DataFrame, spec: ReplaySpec) -> pd.DataFrame:
+def replay_macro_0835(df: pd.DataFrame, spec: ReplaySpec, report_end=None) -> pd.DataFrame:
     """LucidMacroMomentumStudy 08:35 path only. The 10:00 window is not replayed."""
     assert_insample_bars(df["time"])
     min_vol_mult = 2.50
@@ -421,14 +477,16 @@ def replay_macro_0835(df: pd.DataFrame, spec: ReplaySpec) -> pd.DataFrame:
         if flatten_i is None:
             continue
         row = _walk_exit(spec, signal, i, entry, stop, target, flatten_i, None, times, high, low, close)
-        if row is not None and _in_report_window(row["entry_time"]):
+        if row is not None and _in_report_window(row["entry_time"], report_end) and _exit_inside(row["exit_time"], report_end):
             rows.append(row)
     return pd.DataFrame(rows, columns=TRADE_COLUMNS)
 
 
-def replay_gold_fix(df: pd.DataFrame, spec: ReplaySpec) -> pd.DataFrame:
+def replay_gold_fix(df: pd.DataFrame, spec: ReplaySpec, report_end=None) -> pd.DataFrame:
     """LucidGoldFixBreakoutStudy.calculate, default long-only settings."""
     assert_insample_bars(df["time"])
+    if abs(spec.point_value - confirmed_point_value(spec.instrument)) > 1e-9:
+        raise ValueError("Gold replay point value does not match the identified contract.")
     tick = spec.tick_size
     min_ret = 0.001125
     min_long_loc = 0.70
@@ -491,7 +549,7 @@ def replay_gold_fix(df: pd.DataFrame, spec: ReplaySpec) -> pd.DataFrame:
         if flatten_i is None:
             continue
         row = _walk_exit(spec, "long", i, entry, stop, target, flatten_i, None, times, high, low, close)
-        if row is not None and _in_report_window(row["entry_time"]):
+        if row is not None and _in_report_window(row["entry_time"], report_end) and _exit_inside(row["exit_time"], report_end):
             rows.append(row)
     return pd.DataFrame(rows, columns=TRADE_COLUMNS)
 
@@ -528,7 +586,7 @@ def summarize(trades: pd.DataFrame) -> dict[str, float]:
     }
 
 
-def frozen_parameters(spec: ReplaySpec) -> dict:
+def frozen_parameters(spec: ReplaySpec, report_end: str = "2024-12-31") -> dict:
     base = {
         "strategy_id": spec.strategy_id,
         "instrument": spec.instrument,
@@ -539,7 +597,7 @@ def frozen_parameters(spec: ReplaySpec) -> dict:
         "slippage_usd": 0.0,
         "fill_model": "java_chart_tracker_target_before_stop",
         "report_start": str(REPORT_START.date()),
-        "report_end": "2024-12-31",
+        "report_end": report_end,
         "oos_excluded_from": str(OOS_START.date()),
         "source": spec.source,
     }
@@ -552,5 +610,5 @@ def iter_specs() -> Iterable[tuple[ReplaySpec, str]]:
         (ReplaySpec("morning_va_breakout_s1", "MNQ", 2.0, 0.25, "LucidMorningVABreakoutStudy"), "nq"),
         (ReplaySpec("morning_va_breakout_s1", "MES", 5.0, 0.25, "LucidMorningVABreakoutStudy"), "es"),
         (ReplaySpec("macro_momentum_s2", "MNQ", 2.0, 0.25, "LucidMacroMomentumStudy"), "nq"),
-        (ReplaySpec("gold_london_fix_s3", "MGC", 1.0, 0.10, "LucidGoldFixBreakoutStudy"), "gc"),
+        (ReplaySpec("gold_london_fix_s3", "MGC", 10.0, 0.10, "LucidGoldFixBreakoutStudy"), "gc"),
     )
