@@ -184,6 +184,7 @@ public class LucidCrudeRthExpansionStudy extends Study {
 
     private final Map<LocalDate, OpeningBox> boxMap = new HashMap<>();
     private final Map<LocalDate, ActiveTrade> tradeMap = new HashMap<>();
+    private boolean protectiveReconcileActive = false;
     private final Set<LocalDate> processedDays = new HashSet<>();
     private final Set<LocalDate> restartPositionReported = new HashSet<>();
     private final Map<LocalDate, DailySession> dailySessions = new HashMap<>();
@@ -662,6 +663,7 @@ public class LucidCrudeRthExpansionStudy extends Study {
         public Order tpOrder = null;
         public Order flattenOrder = null;
         public Order flattenCancelPendingOrder = null;
+        public final ProtectiveReconcile.State reconcile = new ProtectiveReconcile.State();
         public String entryOrderId = "";
         public String slOrderId = "";
         public String tpOrderId = "";
@@ -719,6 +721,8 @@ public class LucidCrudeRthExpansionStudy extends Study {
         desc.declareSignal(Signals.BUY_CRUDE_EXPANSION, "Crude Oil RTH Expansion Long (10:15–11:15 ET)");
         desc.declareSignal(Signals.SELL_CRUDE_EXPANSION, "Crude Oil RTH Expansion Short (10:15–11:15 ET)");
         desc.declareSignal(Signals.EXIT_TIME_1230, "Mandatory Time Flatten (12:30 ET)");
+        ProtectiveReconcile.declare(desc);
+
 
         if (getSettings() != null) {
             getSettings().setAutoEntry(false);
@@ -1103,6 +1107,9 @@ public class LucidCrudeRthExpansionStudy extends Study {
             trade.flattenEvent = event;
             trade.flattenReason = reason;
         }
+        if (ctx.getPosition() != 0 && (trade.flattenCancelPendingOrder != null || trade.flattenSubmitted)) {
+            verifyAndSyncBracketQuantities(ctx, trade);
+        }
         if (trade.flattenSubmitted) {
             Order pendingFlatten = trade.flattenOrder;
             if (pendingFlatten != null && (pendingFlatten.isCancelled() || pendingFlatten.isFilled())) {
@@ -1117,18 +1124,6 @@ public class LucidCrudeRthExpansionStudy extends Study {
                         "Position is flat but the submitted flatten order is not terminal; reconcile before residual cleanup.");
                 }
                 return;
-            }
-        }
-
-        if (trade.flattenCancelPendingOrder != null && ctx != null && ctx.getPosition() != 0) {
-            String coverageFailure = flattenStopCoverageFailure(ctx, trade, ctx.getPosition());
-            if (coverageFailure != null) {
-                reportFlattenOperatorAction(ctx, trade,
-                    "POSITION_PROTECTION_RECONCILE_DURING_CANCEL_PENDING",
-                    trade.slOrder, 0L,
-                    coverageFailure + "|FILL_RECONCILIATION_REQUIRED|PENDING_CANCEL_BLOCKS_FLATTEN_PROGRESS");
-            } else if (trade.slOrder != null && trade.slOrder.isActive()) {
-                verifyAndSyncBracketQuantities(ctx, trade);
             }
         }
 
@@ -1209,6 +1204,8 @@ public class LucidCrudeRthExpansionStudy extends Study {
             String orderId = stop.getOrderId();
             if (trade.slOrderId != null && !trade.slOrderId.isEmpty() && !trade.slOrderId.equals(orderId)) return "STOP_ID_MISMATCH";
             if (!stop.isActive() || stop.isCancelled() || stop.isFilled()) return "STOP_NOT_ACTIVE";
+            if (trade.reconcile.positionLag || trade.reconcile.stopRequested || trade.reconcile.targetRequested) return "STOP_QUANTITY_UNCONFIRMED";
+            if (trade.reconcile.confirmedStopQty >= 0 && trade.reconcile.confirmedStopQty != quantity) return "STOP_QUANTITY_UNCONFIRMED";
             if (stop.getQuantity() != quantity || trade.attachedBracketQty != quantity) return "STOP_QUANTITY_MISMATCH";
             if (trade.stopSyncPending || trade.breakevenModifySubmitted) return "STOP_MODIFICATION_PENDING";
             Float observedPrice = stop.getStopPrice();
@@ -1248,6 +1245,7 @@ public class LucidCrudeRthExpansionStudy extends Study {
     private void reportFlattenOperatorAction(OrderContext ctx, ActiveTrade trade, String event,
         Order order, long elapsedNanos, String reason) {
         setState(Enums$StrategyState.INACTIVE);
+        ProtectiveReconcile.raise(this, ctx, trade.reconcile, this::addFigure, this::removeFigure, event, reason);
         long now = System.nanoTime();
         int position = ctx != null ? ctx.getPosition() : 0;
         Order stop = trade.slOrder;
@@ -1377,9 +1375,17 @@ public class LucidCrudeRthExpansionStudy extends Study {
         }
 
         if (trade == null) return;
+        if (trade.reconcile.positionLag) {
+            verifyAndSyncBracketQuantities(ctx, trade);
+        }
         if (trade.flattenPending && !trade.flattenSubmitted) {
             submitFlatten(ctx, trade, trade.flattenEvent, trade.flattenReason);
-            if (trade.flattenCancelPendingOrder != null || trade.flattenCancelBlocked || trade.closed) return;
+            if (trade.flattenCancelPendingOrder != null || trade.flattenCancelBlocked || trade.closed) {
+                if (ctx.getPosition() != 0 || trade.reconcile.positionLag) {
+                    verifyAndSyncBracketQuantities(ctx, trade);
+                }
+                return;
+            }
         }
 
         // 1. Keep protective bracket quantities synchronized with actual position
@@ -1412,6 +1418,11 @@ public class LucidCrudeRthExpansionStudy extends Study {
 
     public synchronized boolean modifyWorkingStopToBreakeven(OrderContext ctx, ActiveTrade trade) {
         if (ctx == null || trade == null || !trade.bracketsSubmitted) return false;
+        if (trade.flattenCancelPendingOrder != null || ProtectiveReconcile.same(trade.flattenCancelPendingOrder, trade.slOrder)) {
+            reportFlattenOperatorAction(ctx, trade, "STOP_MODIFICATION_WITHHELD_CANCEL_PENDING", trade.slOrder, 0L,
+                "Breakeven stop modification withheld while a cancellation is pending.");
+            return false;
+        }
         int posQty = Math.abs(ctx.getPosition());
         if (posQty <= 0) return false;
 
@@ -1458,15 +1469,41 @@ public class LucidCrudeRthExpansionStudy extends Study {
 
     public synchronized void verifyAndSyncBracketQuantities(OrderContext ctx, ActiveTrade trade) {
         if (ctx == null || trade == null || !trade.bracketsSubmitted) return;
-        if (trade.stopSyncPending || trade.targetSyncPending) {
-            trade.stopSyncPending = false;
-            trade.targetSyncPending = false;
-            submitFlatten(ctx, trade, "BRACKET_SYNC_SUPERSEDED_BY_NEW_FILL",
-                "Another position fill arrived before prior bracket modifications were confirmed.");
+        if (protectiveReconcileActive) return;
+        protectiveReconcileActive = true;
+        try {
+        int posQty = Math.abs(ctx.getPosition());
+        if (posQty <= 0) {
+            if (trade.reconcile.positionLag) {
+                trade.reconcile.pending = true;
+                return;
+            }
+            ProtectiveReconcile.markFlat(trade.reconcile);
+            ProtectiveReconcile.clear(this, trade.reconcile, this::removeFigure, false);
             return;
         }
-        int posQty = Math.abs(ctx.getPosition());
-        if (posQty <= 0) return;
+        if (trade.flattenCancelPendingOrder != null || ProtectiveReconcile.isWorking(trade.flattenOrder)) {
+            trade.reconcile.pending = true;
+            int stopQty = -1;
+            try {
+                if (trade.slOrder != null) stopQty = trade.slOrder.getQuantity();
+            } catch (RuntimeException ignored) {
+            }
+            reportFlattenOperatorAction(ctx, trade, "POSITION_PROTECTION_RECONCILE_DURING_CANCEL_PENDING",
+                trade.slOrder, 0L, "DETECTED|MODIFICATION_WITHHELD|POS=" + ctx.getPosition() + "|STOP_QTY=" + stopQty);
+            return;
+        }
+        if (trade.stopSyncPending || trade.targetSyncPending) {
+            if (trade.reconcile.pendingGeneration == trade.reconcile.generation
+                    && ctx.getPosition() == trade.reconcile.positionAtRequest) {
+                return;
+            }
+            trade.stopSyncPending = false;
+            trade.targetSyncPending = false;
+            trade.reconcile.stopRequested = false;
+            trade.reconcile.targetRequested = false;
+        }
+
 
         if (trade.slOrder == null || !trade.slOrder.isActive() || trade.slOrder.isCancelled()) {
             submitFlatten(ctx, trade, "PROTECTIVE_STOP_MISSING_DURING_POSITION_SYNC",
@@ -1509,6 +1546,12 @@ public class LucidCrudeRthExpansionStudy extends Study {
             trade.attachedBracketQty = posQty;
             trade.stopPrice = desiredStop;
             if (targetActive) trade.targetPrice = desiredTarget;
+            trade.reconcile.confirmedStopQty = posQty;
+            trade.reconcile.lastReconciledAbsQty = posQty;
+            trade.reconcile.pending = false;
+            trade.reconcile.stopRequested = false;
+            trade.reconcile.targetRequested = false;
+            ProtectiveReconcile.clear(this, trade.reconcile, this::removeFigure, !trade.flattenPending && !trade.flattenCancelBlocked);
             return;
         }
 
@@ -1518,8 +1561,22 @@ public class LucidCrudeRthExpansionStudy extends Study {
         trade.pendingBracketAverageFill = actualFill;
         trade.stopSyncPending = stopNeedsUpdate;
         trade.targetSyncPending = targetNeedsUpdate;
+        trade.reconcile.pendingGeneration = trade.reconcile.generation;
+        trade.reconcile.positionAtRequest = ctx.getPosition();
+        trade.reconcile.requestedStopQty = posQty;
+        trade.reconcile.requestedTargetQty = posQty;
+        trade.reconcile.requestedStopPrice = desiredStop;
+        trade.reconcile.requestedTargetPrice = desiredTarget;
+        trade.reconcile.stopRequested = stopNeedsUpdate;
+        trade.reconcile.targetRequested = targetNeedsUpdate;
+        trade.reconcile.pending = stopNeedsUpdate || targetNeedsUpdate;
         try {
             if (stopNeedsUpdate) {
+                if (ProtectiveReconcile.same(trade.flattenCancelPendingOrder, trade.slOrder)) {
+                    reportFlattenOperatorAction(ctx, trade, "STOP_MODIFICATION_WITHHELD_CANCEL_PENDING", trade.slOrder, 0L,
+                        "Refusing to modify the stop whose cancellation is pending.");
+                    return;
+                }
                 trade.slOrder.setAdjStopPrice(desiredStop);
                 trade.slOrder.setAdjQuantity(posQty);
                 ctx.submitOrders(trade.slOrder);
@@ -1533,6 +1590,11 @@ public class LucidCrudeRthExpansionStudy extends Study {
         }
         try {
             if (targetNeedsUpdate) {
+                if (ProtectiveReconcile.same(trade.flattenCancelPendingOrder, trade.tpOrder)) {
+                    reportFlattenOperatorAction(ctx, trade, "TARGET_MODIFICATION_WITHHELD_CANCEL_PENDING", trade.tpOrder, 0L,
+                        "Refusing to modify the target whose cancellation is pending.");
+                    return;
+                }
                 trade.tpOrder.setAdjLimitPrice(desiredTarget);
                 trade.tpOrder.setAdjQuantity(posQty);
                 ctx.submitOrders(trade.tpOrder);
@@ -1551,10 +1613,19 @@ public class LucidCrudeRthExpansionStudy extends Study {
             trade.attachedBracketQty = posQty;
             trade.stopPrice = desiredStop;
             if (targetActive) trade.targetPrice = desiredTarget;
+            trade.reconcile.confirmedStopQty = posQty;
+            trade.reconcile.lastReconciledAbsQty = posQty;
+            trade.reconcile.pending = false;
+            trade.reconcile.stopRequested = false;
+            trade.reconcile.targetRequested = false;
+            ProtectiveReconcile.clear(this, trade.reconcile, this::removeFigure, !trade.flattenPending && !trade.flattenCancelBlocked);
         } else {
             logExecutionToCsv("BRACKET_SYNC_SUBMITTED_NOT_CONFIRMED", trade.isLong ? "LONG" : "SHORT",
                 posQty, trade.theoreticalEntryPrice, actualFill, trade.entrySlippagePts,
                 trade.stopPrice, trade.targetPrice, "WAITING_FOR_ORDER_MODIFIED_CALLBACKS");
+        }
+        } finally {
+            protectiveReconcileActive = false;
         }
     }
 
@@ -1610,7 +1681,7 @@ public class LucidCrudeRthExpansionStudy extends Study {
             trade.flattenReason = "Position is flat; tracked working orders require terminal-state confirmation.";
             submitFlatten(ctx, trade, trade.flattenEvent, trade.flattenReason);
         }
-        logExecutionToCsv("POSITION_CLOSED_CONFIRMED", "FLAT", 0, 0.0, Double.NaN, 0.0, 0.0,
+        logExecutionToCsv("POSITION_CLOSED_CONFIRMED", "FLAT", 0, 0.0, Double.NaN, 0.0, 0.0, 0.0,
             "Position reports flat; residual tracked orders remain subject to terminal-state confirmation.");
     }
 
@@ -1619,6 +1690,16 @@ public class LucidCrudeRthExpansionStudy extends Study {
         if (ctx == null || order == null) return;
         for (ActiveTrade trade : tradeMap.values()) {
             if (trade.closed) continue;
+            if ((trade.stopSyncPending || trade.targetSyncPending)
+                    && (trade.reconcile.pendingGeneration != trade.reconcile.generation
+                        || ctx.getPosition() != trade.reconcile.positionAtRequest)) {
+                trade.stopSyncPending = false;
+                trade.targetSyncPending = false;
+                trade.reconcile.stopRequested = false;
+                trade.reconcile.targetRequested = false;
+                verifyAndSyncBracketQuantities(ctx, trade);
+                return;
+            }
             double syncTickSize = ctx.getInstrument() != null ? ctx.getInstrument().getTickSize() : 0.01;
             if (trade.stopSyncPending && (order == trade.slOrder
                     || (trade.slOrderId != null && trade.slOrderId.equals(order.getOrderId())))) {
@@ -1693,6 +1774,12 @@ public class LucidCrudeRthExpansionStudy extends Study {
 
     private void completePendingBracketSync(ActiveTrade trade) {
         if (trade.stopSyncPending || trade.targetSyncPending) return;
+        trade.reconcile.confirmedStopQty = trade.pendingBracketQty;
+        trade.reconcile.lastReconciledAbsQty = trade.pendingBracketQty;
+        trade.reconcile.pending = false;
+        trade.reconcile.stopRequested = false;
+        trade.reconcile.targetRequested = false;
+        ProtectiveReconcile.clear(this, trade.reconcile, this::removeFigure, !trade.flattenPending && !trade.flattenCancelBlocked);
         trade.actualEntryFill = trade.pendingBracketAverageFill;
         trade.entryPrice = trade.pendingBracketAverageFill;
         trade.filledQty = trade.pendingBracketQty;
@@ -1914,6 +2001,17 @@ public class LucidCrudeRthExpansionStudy extends Study {
 
         for (ActiveTrade trade : tradeMap.values()) {
             if (trade.closed) continue;
+            if (!ProtectiveReconcile.isTrackedFill(order, trade.entryOrder, trade.entryOrderId, trade.slOrder, trade.slOrderId, trade.tpOrder, trade.tpOrderId, trade.flattenOrder, trade.flattenOrderId)) {
+                continue;
+            }
+            if (ProtectiveReconcile.noteFill(trade.reconcile, order, trade.entryOrder, trade.slOrder, trade.tpOrder, trade.flattenOrder, ctx.getPosition())) {
+                reportFlattenOperatorAction(ctx, trade, "POSITION_FILL_NOT_YET_REFLECTED", order, 0L,
+                    "Tracked fill is not yet visible on getPosition(); protective reconciliation stays pending.");
+                return;
+            }
+            if (trade.bracketsSubmitted || ProtectiveReconcile.isWorking(trade.slOrder)) {
+                verifyAndSyncBracketQuantities(ctx, trade);
+            }
 
             // 1. Check if position reached zero (protective stop, target leg, or flatten market fill)
             if (ctx.getPosition() == 0) {

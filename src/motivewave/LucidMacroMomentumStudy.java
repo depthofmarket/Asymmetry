@@ -162,6 +162,7 @@ public class LucidMacroMomentumStudy extends Study {
         Order tpOrder;
         Order flattenOrder;
         Order flattenCancelPendingOrder;
+        final ProtectiveReconcile.State reconcile = new ProtectiveReconcile.State();
         String entryOrderId;
         String slOrderId;
         String tpOrderId;
@@ -683,6 +684,7 @@ public class LucidMacroMomentumStudy extends Study {
         rd.declareSignal(SIGNAL_SELL, "Macro Momentum Sell (08:35 ET)");
         rd.declareSignal(SIGNAL_BUY_10AM, "10:00 AM Macro Momentum Buy (10:05 ET)");
         rd.declareSignal(SIGNAL_SELL_10AM, "10:00 AM Macro Momentum Sell (10:05 ET)");
+        ProtectiveReconcile.declare(rd);
         setRuntimeDescriptor(rd);
     }
 
@@ -1323,9 +1325,15 @@ public class LucidMacroMomentumStudy extends Study {
         List<ActiveTrade> dayTrades = tradesByDate.get(today);
         if (dayTrades != null) {
             for (ActiveTrade trade : dayTrades) {
+                if (trade.reconcile.positionLag) {
+                    verifyAndSyncBracketQuantities(ctx, trade);
+                }
                 if (trade.flattenPending && !trade.flattenSubmitted) {
                     submitMarketFlatten(ctx, trade, trade.flattenEvent, trade.flattenReason);
-                    if (trade.flattenCancelPendingOrder != null || trade.flattenCancelBlocked || trade.closed) return;
+                    if (trade.flattenCancelPendingOrder != null || trade.flattenCancelBlocked || trade.closed) {
+                        verifyAndSyncBracketQuantities(ctx, trade);
+                        return;
+                    }
                 }
             }
         }
@@ -1380,40 +1388,8 @@ public class LucidMacroMomentumStudy extends Study {
                 if (trade.flattenPending && !trade.flattenSubmitted) {
                     submitMarketFlatten(ctx, trade, trade.flattenEvent, trade.flattenReason);
                 }
-                if (trade.bracketsSubmitted && trade.attachedBracketQty != Math.abs(ctx.getPosition())) {
-                    int contracts = Math.abs(ctx.getPosition());
-                    boolean syncConfirmed = false;
-                    try {
-                        if (trade.slOrder == null || !trade.slOrder.isActive() || trade.slOrder.isCancelled()
-                                || trade.slOrder.isFilled()) {
-                            throw new IllegalStateException("Protective stop is not active.");
-                        }
-                        trade.slOrder.setAdjQuantity(contracts);
-                        ctx.submitOrders(trade.slOrder);
-                        if (trade.tpOrder != null && trade.tpOrder.isActive() && !trade.tpOrder.isCancelled()
-                                && !trade.tpOrder.isFilled()) {
-                            trade.tpOrder.setAdjQuantity(contracts);
-                            ctx.submitOrders(trade.tpOrder);
-                        }
-                        Float stopPrice = trade.slOrder.getStopPrice();
-                        boolean stopConfirmed = trade.slOrder.isActive()
-                            && trade.slOrder.getQuantity() == contracts && stopPrice != null
-                            && Math.abs(stopPrice - trade.stopPrice) <= ctx.getInstrument().getTickSize() / 2.0;
-                        boolean targetConfirmed = trade.tpOrder == null || !trade.tpOrder.isActive()
-                            || (trade.tpOrder.getQuantity() == contracts && trade.tpOrder.getLimitPrice() != null
-                                && Math.abs(trade.tpOrder.getLimitPrice() - trade.targetPrice)
-                                    <= ctx.getInstrument().getTickSize() / 2.0);
-                        syncConfirmed = stopConfirmed && targetConfirmed;
-                        if (syncConfirmed) trade.attachedBracketQty = contracts;
-                    } catch (RuntimeException e) {
-                        logExecutionEvent("BRACKET_QTY_SYNC_EXCEPTION", "LucidMacroMomentum",
-                            ctx.getInstrument().getSymbol(), "BLOCKED", 0.0, trade.stopPrice,
-                            trade.targetPrice, contracts, e.getMessage());
-                    }
-                    if (!syncConfirmed) {
-                        submitMarketFlatten(ctx, trade, "BRACKET_QTY_SYNC_UNCONFIRMED",
-                            "Protective stop or active target quantity does not match the live position.");
-                    }
+                if (trade.bracketsSubmitted || trade.reconcile.pending || trade.reconcile.positionLag) {
+                    verifyAndSyncBracketQuantities(ctx, trade);
                 }
 
                 if (trade.orderSubmitted && !trade.closed && now >= trade.maxExitTime) {
@@ -1527,6 +1503,17 @@ public class LucidMacroMomentumStudy extends Study {
 
         if (dayTrades == null) return;
         for (ActiveTrade trade : dayTrades) {
+            if (trade.closed || !ProtectiveReconcile.isTrackedFill(order, trade.entryOrder, trade.entryOrderId, trade.slOrder, trade.slOrderId, trade.tpOrder, trade.tpOrderId, trade.flattenOrder, trade.flattenOrderId)) {
+                continue;
+            }
+            if (ProtectiveReconcile.noteFill(trade.reconcile, order, trade.entryOrder, trade.slOrder, trade.tpOrder, trade.flattenOrder, ctx.getPosition())) {
+                reportFlattenOperatorAction(ctx, trade, "POSITION_FILL_NOT_YET_REFLECTED", order, 0L,
+                    "Tracked fill is not yet visible on getPosition(); protective reconciliation stays pending.");
+                return;
+            }
+            if (trade.bracketsSubmitted || ProtectiveReconcile.isWorking(trade.slOrder)) {
+                verifyAndSyncBracketQuantities(ctx, trade);
+            }
             if (!trade.closed && ctx.getPosition() == 0) {
                 trade.flattenPending = true;
                 if (trade.flattenEvent.isEmpty()) {
@@ -1584,47 +1571,8 @@ public class LucidMacroMomentumStudy extends Study {
                 submitInitialBrackets(ctx, trade, contracts, actualFill, stopPrice, targetPrice);
                 break;
             } else if (ctx.getPosition() != 0 && trade.bracketsSubmitted && trade.orderSubmitted && !trade.closed && isTrackedEntry) {
-                int contracts = Math.abs(ctx.getPosition());
-                double actualFill = ctx.getAvgEntryPrice() > 0 ? ctx.getAvgEntryPrice()
-                    : (order.getAvgFillPrice() > 0 ? order.getAvgFillPrice() : trade.actualEntryFill);
-                double riskDist = Double.isFinite(trade.initialRiskDist) ? trade.initialRiskDist : Math.abs(trade.entryPrice - trade.stopPrice);
-                double targetDist = Double.isFinite(trade.initialTargetDist) ? trade.initialTargetDist : Math.abs(trade.targetPrice - trade.entryPrice);
-                float stopPrice = ctx.getInstrument().round((float) (trade.isLong ? actualFill - riskDist : actualFill + riskDist));
-                float targetPrice = ctx.getInstrument().round((float) (trade.isLong ? actualFill + targetDist : actualFill - targetDist));
-                try {
-                    if (trade.slOrder == null || !trade.slOrder.isActive() || trade.slOrder.isCancelled()) {
-                        throw new IllegalStateException("Protective stop is not active.");
-                    }
-                    trade.slOrder.setAdjStopPrice(stopPrice);
-                    trade.slOrder.setAdjQuantity(contracts);
-                    ctx.submitOrders(trade.slOrder);
-                    if (trade.tpOrder != null && trade.tpOrder.isActive() && !trade.tpOrder.isCancelled()) {
-                        trade.tpOrder.setAdjLimitPrice(targetPrice);
-                        trade.tpOrder.setAdjQuantity(contracts);
-                        ctx.submitOrders(trade.tpOrder);
-                    }
-                    Float confirmedStop = trade.slOrder.getStopPrice();
-                    boolean stopConfirmed = trade.slOrder.isActive() && trade.slOrder.getQuantity() == contracts
-                        && confirmedStop != null && Math.abs(confirmedStop - stopPrice)
-                            <= ctx.getInstrument().getTickSize() / 2.0;
-                    boolean targetConfirmed = trade.tpOrder == null || !trade.tpOrder.isActive()
-                        || (trade.tpOrder.getQuantity() == contracts && trade.tpOrder.getLimitPrice() != null
-                            && Math.abs(trade.tpOrder.getLimitPrice() - targetPrice)
-                                <= ctx.getInstrument().getTickSize() / 2.0);
-                    if (!stopConfirmed || !targetConfirmed) {
-                        throw new IllegalStateException("Updated protective order quantity/price was not confirmed.");
-                    }
-                    trade.actualEntryFill = actualFill;
-                    trade.entryPrice = actualFill;
-                    trade.stopPrice = stopPrice;
-                    trade.targetPrice = targetPrice;
-                    trade.attachedBracketQty = contracts;
-                    logExecutionEvent("PARTIAL_FILL_SYNC_CONFIRMED", "LucidMacroMomentum",
-                        ctx.getInstrument().getSymbol(), order.getAction().toString(), actualFill,
-                        trade.stopPrice, trade.targetPrice, contracts,
-                        "Protective stop and active target quantity/price match current position.");
-                } catch (RuntimeException e) {
-                    submitMarketFlatten(ctx, trade, "PARTIAL_FILL_BRACKET_SYNC_FAILED", e.getMessage());
+                if (!ProtectiveReconcile.isWorking(trade.slOrder)) {
+                    submitMarketFlatten(ctx, trade, "PARTIAL_FILL_WITHOUT_CONFIRMED_STOP", "Open position has no confirmed protective stop");
                 }
                 break;
             }
@@ -1869,7 +1817,7 @@ public class LucidMacroMomentumStudy extends Study {
         }
         logExecutionEvent("POSITION_CLOSED_CONFIRMED", "LucidMacroMomentum",
             ctx != null && ctx.getInstrument() != null ? ctx.getInstrument().getSymbol() : "UNKNOWN",
-            "FLAT", 0.0, 0.0, 0, "Broker reports flat position; tracked order cleanup remains callback-confirmed.");
+            "FLAT", 0.0, 0.0, 0.0, 0, "Broker reports flat position; tracked order cleanup remains callback-confirmed.");
     }
 
     @Override
@@ -1906,6 +1854,93 @@ public class LucidMacroMomentumStudy extends Study {
             "INACTIVE", 0.0, 0.0, 0.0, 0, "Strategy deactivated by user");
     }
 
+    public synchronized void verifyAndSyncBracketQuantities(OrderContext ctx, ActiveTrade trade) {
+        if (ctx == null || trade == null) return;
+        int position = ctx.getPosition();
+        if (position != 0 && !trade.bracketsSubmitted && !ProtectiveReconcile.isWorking(trade.slOrder)) return;
+        float desiredStop = (float) trade.stopPrice;
+        float desiredTarget = (float) trade.targetPrice;
+        boolean havePrices = false;
+        double actualFill = Double.NaN;
+        var inst = ctx.getInstrument();
+        if (inst != null && position != 0) {
+            actualFill = ctx.getAvgEntryPrice() > 0 && Float.isFinite(ctx.getAvgEntryPrice())
+                ? ctx.getAvgEntryPrice()
+                : (Double.isFinite(trade.actualEntryFill) ? trade.actualEntryFill : trade.entryPrice);
+            double riskDist = Double.isFinite(trade.initialRiskDist) && trade.initialRiskDist > 0
+                ? trade.initialRiskDist : Math.abs(trade.entryPrice - trade.stopPrice);
+            double targetDist = Double.isFinite(trade.initialTargetDist) && trade.initialTargetDist > 0
+                ? trade.initialTargetDist : Math.abs(trade.targetPrice - trade.entryPrice);
+            if (Double.isFinite(actualFill) && actualFill > 0 && riskDist > 0 && targetDist > 0) {
+                desiredStop = inst.round((float) (trade.isLong ? actualFill - riskDist : actualFill + riskDist));
+                desiredTarget = inst.round((float) (trade.isLong ? actualFill + targetDist : actualFill - targetDist));
+                havePrices = true;
+            }
+        }
+        applyReconcileDecision(ctx, trade, position, desiredStop, desiredTarget, havePrices, actualFill);
+    }
+
+    private void applyReconcileDecision(OrderContext ctx, ActiveTrade trade, int position,
+            float desiredStop, float desiredTarget, boolean havePrices, double actualFill) {
+        boolean flattenWorking = trade.flattenSubmitted && ProtectiveReconcile.isWorking(trade.flattenOrder);
+        ProtectiveReconcile.Decision decision = ProtectiveReconcile.reconcile(
+            ctx, trade.reconcile, trade.flattenCancelPendingOrder, trade.entryOrder, trade.slOrder,
+            trade.tpOrder, trade.flattenOrder, flattenWorking, desiredStop, desiredTarget, havePrices);
+        int absQty = Math.abs(position);
+        switch (decision) {
+            case FLAT -> ProtectiveReconcile.clear(this, trade.reconcile, this::removeFigure, false);
+            case COVERED -> {
+                if (position != 0) {
+                    trade.attachedBracketQty = absQty;
+                    if (havePrices && Double.isFinite(actualFill) && actualFill > 0) {
+                        trade.actualEntryFill = actualFill;
+                        trade.entryPrice = actualFill;
+                        trade.stopPrice = desiredStop;
+                        trade.targetPrice = desiredTarget;
+                    }
+                }
+                ProtectiveReconcile.clear(this, trade.reconcile, this::removeFigure, !trade.flattenPending && !trade.flattenCancelBlocked);
+            }
+            case REQUESTED, AWAITING, IDLE -> { }
+            case WITHHELD_CANCEL, WITHHELD_FLATTEN_WORKING, WITHHELD_UNSAFE, STOP_MISSING, REQUEST_FAILED ->
+                ProtectiveReconcile.raise(this, ctx, trade.reconcile, this::addFigure, this::removeFigure, "PROTECTIVE_COVERAGE_UNRESOLVED",
+                    decision + "|POS=" + position + "|ERROR=" + trade.reconcile.lastError
+                        + "|REQUESTED_NOT_CONFIRMED|MODIFICATION_WITHHELD_WHEN_UNSAFE");
+            default -> { }
+        }
+    }
+
+    @Override
+    public void onOrderModified(OrderContext ctx, Order order) {
+        if (ctx == null || order == null) return;
+        long now = ctx.getCurrentTime();
+        LocalDate today = Instant.ofEpochMilli(now).atZone(NY_ZONE).toLocalDate();
+        List<ActiveTrade> dayTrades = tradesByDate.get(today);
+        if (dayTrades == null) return;
+        for (ActiveTrade trade : dayTrades) confirmProtectiveModification(ctx, trade, order);
+    }
+
+    private void confirmProtectiveModification(OrderContext ctx, ActiveTrade trade, Order order) {
+        if (trade == null || order == null) return;
+        boolean trackedStop = ProtectiveReconcile.same(order, trade.slOrder) || ProtectiveReconcile.matchesId(order, trade.slOrderId);
+        boolean trackedTarget = ProtectiveReconcile.same(order, trade.tpOrder) || ProtectiveReconcile.matchesId(order, trade.tpOrderId);
+        if (!trackedStop && !trackedTarget) return;
+        double tick = ctx.getInstrument() != null ? ctx.getInstrument().getTickSize() : 0.25;
+        int position = ctx.getPosition();
+        boolean stopOk = trackedStop && ProtectiveReconcile.confirmStop(trade.reconcile, order, position, tick);
+        boolean targetOk = trackedTarget && ProtectiveReconcile.confirmTarget(trade.reconcile, order, position, tick);
+        if (stopOk && order.getStopPrice() != null) trade.stopPrice = order.getStopPrice();
+        if (targetOk && order.getLimitPrice() != null) trade.targetPrice = order.getLimitPrice();
+        if ((stopOk || targetOk) && !trade.reconcile.pending && position != 0) {
+            trade.attachedBracketQty = Math.abs(position);
+            ProtectiveReconcile.clear(this, trade.reconcile, this::removeFigure, !trade.flattenPending && !trade.flattenCancelBlocked);
+            return;
+        }
+        if (!stopOk && !targetOk && (trade.reconcile.stopRequested || trade.reconcile.targetRequested || trade.reconcile.pending)) {
+            verifyAndSyncBracketQuantities(ctx, trade);
+        }
+    }
+
     private void submitMarketFlatten(OrderContext ctx, ActiveTrade trade, String event, String reason) {
         if (ctx == null || trade == null) return;
         trade.flattenPending = true;
@@ -1913,18 +1948,10 @@ public class LucidMacroMomentumStudy extends Study {
             trade.flattenEvent = event;
             trade.flattenReason = reason;
         }
-        if (trade.flattenSubmitted) return;
-        if (trade.flattenCancelPendingOrder != null && ctx != null && ctx.getPosition() != 0) {
-            String coverageFailure = flattenStopCoverageFailure(ctx, trade, ctx.getPosition());
-            if (coverageFailure != null) {
-                reportFlattenOperatorAction(ctx, trade,
-                    "POSITION_PROTECTION_RECONCILE_DURING_CANCEL_PENDING",
-                    trade.slOrder, 0L,
-                    coverageFailure + "|FILL_RECONCILIATION_REQUIRED|PENDING_CANCEL_BLOCKS_FLATTEN_PROGRESS");
-            } else if (trade.slOrder != null && trade.slOrder.isActive()) {
-                verifyAndSyncBracketQuantities(ctx, trade);
-            }
+        if (ctx.getPosition() != 0 && (trade.flattenCancelPendingOrder != null || trade.flattenSubmitted)) {
+            verifyAndSyncBracketQuantities(ctx, trade);
         }
+        if (trade.flattenSubmitted) return;
 
         if (checkFlattenCancelPending(ctx, trade)) return;
         if (trade.flattenCancelBlocked && trade.flattenCancelPendingOrder == null) {
@@ -2002,6 +2029,8 @@ public class LucidMacroMomentumStudy extends Study {
             String orderId = stop.getOrderId();
             if (trade.slOrderId != null && !trade.slOrderId.isEmpty() && !trade.slOrderId.equals(orderId)) return "STOP_ID_MISMATCH";
             if (!stop.isActive() || stop.isCancelled() || stop.isFilled()) return "STOP_NOT_ACTIVE";
+            if (trade.reconcile.positionLag || trade.reconcile.stopRequested || trade.reconcile.targetRequested) return "STOP_QUANTITY_UNCONFIRMED";
+            if (trade.reconcile.confirmedStopQty >= 0 && trade.reconcile.confirmedStopQty != quantity) return "STOP_QUANTITY_UNCONFIRMED";
             if (stop.getQuantity() != quantity || trade.attachedBracketQty != quantity) return "STOP_QUANTITY_MISMATCH";
             Float observedPrice = stop.getStopPrice();
             double tickSize = ctx.getInstrument() != null ? ctx.getInstrument().getTickSize() : Double.NaN;
@@ -2040,6 +2069,7 @@ public class LucidMacroMomentumStudy extends Study {
     private void reportFlattenOperatorAction(OrderContext ctx, ActiveTrade trade, String event,
         Order order, long elapsedNanos, String reason) {
         setState(Enums$StrategyState.INACTIVE);
+        ProtectiveReconcile.raise(this, ctx, trade.reconcile, this::addFigure, this::removeFigure, event, reason);
         long now = System.nanoTime();
         int position = ctx != null ? ctx.getPosition() : 0;
         Order stop = trade.slOrder;

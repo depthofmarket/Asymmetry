@@ -937,14 +937,9 @@ class TestConfirmedFlatStateForS4AndS5:
             end_marker = "\n    private synchronized void executeAutoTradeIfArmed("
             end = code.index(end_marker, start)
             on_bar = code[start:end]
-            sync_start = on_bar.index("trade.bracketsSubmitted && trade.attachedBracketQty")
-            sync_end = on_bar.index("\n            }", sync_start) + len("\n            }")
-            sync = on_bar[sync_start:sync_end]
-            assert "ctx.submitOrders(trade.slOrder)" in sync
-            assert "trade.slOrder.getQuantity() == contracts" in sync
-            assert "syncConfirmed = stopConfirmed && targetConfirmed;" in sync
-            assert "if (syncConfirmed) trade.attachedBracketQty = contracts;" in sync
-            assert "BRACKET_QTY_SYNC_UNCONFIRMED" in sync
+            assert "verifyAndSyncBracketQuantities(ctx," in on_bar
+            assert "if (syncConfirmed) trade.attachedBracketQty = contracts;" not in on_bar
+            assert "BRACKET_QTY_SYNC_UNCONFIRMED" not in on_bar
 
     def test_s4_s5_breakeven_modification_waits_for_confirmed_state(self):
         for key in ["S4", "S5"]:
@@ -993,11 +988,11 @@ class TestS1S3OrderIdentityAndPartialFillIntegrity:
         """Subsequent partial fills must adjust working bracket quantities in-place."""
         for key in ["S1", "S2", "S3"]:
             code = STUDY_FILES[key].read_text(encoding="utf-8")
-            assert "setAdjQuantity(contracts)" in code, (
-                f"{key} must adjust bracket quantity to contracts on partial fill"
+            assert "verifyAndSyncBracketQuantities(ctx, trade)" in code, (
+                f"{key} must reconcile bracket quantity from the tracked fill"
             )
-            assert "trade.attachedBracketQty = contracts;" in code, (
-                f"{key} must track attachedBracketQty"
+            assert "trade.attachedBracketQty = absQty;" in code, (
+                f"{key} must record attached quantity only from the reconciled snapshot"
             )
 
     def test_partial_fills_reconcile_average_price_and_both_bracket_legs(self):
@@ -1005,10 +1000,11 @@ class TestS1S3OrderIdentityAndPartialFillIntegrity:
         for key in ["S1", "S2", "S3"]:
             code = STUDY_FILES[key].read_text(encoding="utf-8")
             assert "ctx.getAvgEntryPrice() > 0 ? ctx.getAvgEntryPrice()" in code
-            assert "trade.slOrder.setAdjStopPrice(stopPrice);" in code
-            assert "trade.slOrder.setAdjQuantity(contracts);" in code
-            assert "trade.tpOrder.setAdjLimitPrice(targetPrice);" in code
-            assert "trade.tpOrder.setAdjQuantity(contracts);" in code
+            assert "ProtectiveReconcile.noteFill(" in code
+            assert "ProtectiveReconcile.reconcile(" in code
+            assert "case REQUESTED, AWAITING, IDLE" in code
+            assert "trade.slOrder.setAdjQuantity(contracts);" not in code
+            assert "trade.tpOrder.setAdjQuantity(contracts);" not in code
 
     def test_s2_s3_target_cancellation_handling_is_independent_of_stop(self):
         """A cancelled target must be tracked even when the stop was not cancelled."""
