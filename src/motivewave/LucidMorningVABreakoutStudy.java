@@ -64,6 +64,8 @@ import java.util.regex.Pattern;
     supportsPosition = true
 )
 public class LucidMorningVABreakoutStudy extends Study {
+    private static final long FLATTEN_CANCEL_ACK_TIMEOUT_NANOS = 30_000_000_000L;
+    private static final long FLATTEN_OPERATOR_ALERT_INTERVAL_NANOS = 300_000_000_000L;
 
     private static final Font LINE_FONT = new Font("SansSerif", Font.BOLD, 10);
     private static final java.awt.BasicStroke DASHED_STROKE = new java.awt.BasicStroke(1.0f, java.awt.BasicStroke.CAP_BUTT, java.awt.BasicStroke.JOIN_MITER, 10.0f, new float[]{3.0f, 3.0f}, 0.0f);
@@ -159,6 +161,10 @@ public class LucidMorningVABreakoutStudy extends Study {
         boolean flattenSubmitted = false;
         boolean flattenPending = false;
         boolean flattenCancelBlocked = false;
+        boolean flattenCancelTimedOut = false;
+        long flattenCancelPendingSinceNanos = 0L;
+        long flattenOperatorAlertLastNanos = 0L;
+        String flattenOperatorAlertKey = "";
         boolean restartCoverageReported = false;
         String flattenEvent = "";
         String flattenReason = "";
@@ -1310,6 +1316,12 @@ public class LucidMorningVABreakoutStudy extends Study {
 
         long now = ctx.getCurrentTime();
         LocalDate today = Instant.ofEpochMilli(now).atZone(NY_ZONE).toLocalDate();
+        ActiveTrade pendingFlatten = tradesByDate.get(today);
+        if (pendingFlatten != null && pendingFlatten.flattenPending && !pendingFlatten.flattenSubmitted) {
+            submitMarketFlatten(ctx, pendingFlatten, pendingFlatten.flattenEvent, pendingFlatten.flattenReason);
+            if (pendingFlatten.flattenCancelPendingOrder != null
+                    || pendingFlatten.flattenCancelBlocked || pendingFlatten.closed) return;
+        }
 
         // 1. If flat and no trade submitted today, check if an unsubmitted trade signal exists for today
         if (ctx.getPosition() == 0 && liveAuthorized) {
@@ -1401,7 +1413,6 @@ public class LucidMorningVABreakoutStudy extends Study {
             // 10:15 ET Hard Max Time Exit
             if (hour > 10 || (hour == 10 && min >= 15)) {
                 if (trade != null) {
-                    if (trade.tpOrder != null && trade.tpOrder.isActive()) ctx.cancelOrders(trade.tpOrder);
                     submitMarketFlatten(ctx, trade, "TIME_EXIT_FLATTEN", "10:15 ET session boundary reached");
                 } else {
                     logExecutionEvent("RESTART_POSITION_UNRECONCILED", "LucidMorningVABreakout",
@@ -1413,7 +1424,6 @@ public class LucidMorningVABreakoutStudy extends Study {
             // 09:59 ET News Guard Flatten if Red-Folder Day
             else if (newsGuard && isNews && hour == 9 && min >= 59) {
                 if (trade != null) {
-                    if (trade.tpOrder != null && trade.tpOrder.isActive()) ctx.cancelOrders(trade.tpOrder);
                     submitMarketFlatten(ctx, trade, "NEWS_GUARD_FLATTEN", "09:59 ET Tier-1 Red Folder News Guard triggered");
                 } else {
                     logExecutionEvent("RESTART_POSITION_UNRECONCILED", "LucidMorningVABreakout",
@@ -1521,6 +1531,16 @@ public class LucidMorningVABreakoutStudy extends Study {
             "Order filled: id=" + order.getOrderId() + " pos=" + ctx.getPosition());
 
         boolean isTrackedEntry = (trade != null) && (trade.entryOrderId != null && trade.entryOrderId.equals(order.getOrderId()));
+
+        if (trade != null && ctx.getPosition() == 0) {
+            trade.flattenPending = true;
+            if (trade.flattenEvent.isEmpty()) {
+                trade.flattenEvent = "POSITION_FLAT_RESIDUAL_ORDER_CLEANUP";
+                trade.flattenReason = "Position is flat; wait for tracked entry, target, and stop orders to become terminal.";
+            }
+            submitMarketFlatten(ctx, trade, trade.flattenEvent, trade.flattenReason);
+            return;
+        }
 
         if (trade != null && trade.flattenSubmitted
                 && (order == trade.flattenOrder || (trade.flattenOrderId != null && trade.flattenOrderId.equals(order.getOrderId())))) {
@@ -1633,13 +1653,10 @@ public class LucidMorningVABreakoutStudy extends Study {
         }
         // Case B: Stop Loss or Profit Target filled -> Position flattened
         else if (ctx.getPosition() == 0) {
-            ctx.cancelOrders();
-            if (trade != null) {
-                trade.closed = true;
-                trade.flattenPending = false;
-            }
-            logExecutionEvent("POSITION_FLAT", "LucidMorningVABreakout", ctx.getInstrument().getSymbol(),
-                "FLAT", 0.0, 0.0, 0.0, 0, "Position closed, unfulfilled bracket orders cancelled.");
+            logExecutionEvent("POSITION_FLAT_UNTRACKED_ORDERS_OPERATOR_ACTION_REQUIRED",
+                "LucidMorningVABreakout", ctx.getInstrument().getSymbol(),
+                "BLOCKED", 0.0, 0.0, 0.0, 0,
+                "Position is flat but no active trade/order identities are available; manually reconcile working orders.");
         }
     }
 
@@ -1716,20 +1733,18 @@ public class LucidMorningVABreakoutStudy extends Study {
         long now = ctx != null ? ctx.getCurrentTime() : System.currentTimeMillis();
         LocalDate today = Instant.ofEpochMilli(now).atZone(NY_ZONE).toLocalDate();
         ActiveTrade trade = tradesByDate.get(today);
-        if (trade != null && (order == trade.flattenCancelPendingOrder
-                || (trade.flattenCancelPendingOrder != null && trade.flattenCancelPendingOrder.getOrderId() != null
-                    && trade.flattenCancelPendingOrder.getOrderId().equals(order.getOrderId())))) {
-            if (order.isActive()) {
+        if (trade != null && matchesFlattenCancelPending(trade, order)) {
+            if (order.isCancelled() || order.isFilled()) {
+                clearFlattenCancelPending(trade);
+            } else {
                 trade.flattenCancelBlocked = true;
-                logExecutionEvent("FLATTEN_CANCEL_REJECTED_ORDER_STILL_ACTIVE_OPERATOR_ACTION_REQUIRED",
-                    "LucidMorningVABreakout", ctx != null && ctx.getInstrument() != null
-                        ? ctx.getInstrument().getSymbol() : "UNKNOWN", "WAIT", 0.0, trade.stopPrice,
-                    trade.targetPrice, ctx != null ? Math.abs(ctx.getPosition()) : 0,
-                    "ORDER_ID=" + order.getOrderId());
+                trade.flattenCancelTimedOut = true;
+                reportFlattenOperatorAction(ctx, trade,
+                    "FLATTEN_CANCEL_REJECTED_STATUS_UNCERTAIN_OPERATOR_ACTION_REQUIRED",
+                    order, Math.max(0L, System.nanoTime() - trade.flattenCancelPendingSinceNanos),
+                    "Reject callback is not a terminal cancellation state.");
                 return;
             }
-            trade.flattenCancelPendingOrder = null;
-            trade.flattenCancelBlocked = false;
         }
         if (trade != null && trade.flattenSubmitted
                 && (order == trade.flattenOrder || (trade.flattenOrderId != null && trade.flattenOrderId.equals(order.getOrderId())))) {
@@ -1804,11 +1819,18 @@ public class LucidMorningVABreakoutStudy extends Study {
         long now = ctx != null ? ctx.getCurrentTime() : System.currentTimeMillis();
         LocalDate today = Instant.ofEpochMilli(now).atZone(NY_ZONE).toLocalDate();
         ActiveTrade trade = tradesByDate.get(today);
-        if (trade != null && (order == trade.flattenCancelPendingOrder
-                || (trade.flattenCancelPendingOrder != null && trade.flattenCancelPendingOrder.getOrderId() != null
-                    && trade.flattenCancelPendingOrder.getOrderId().equals(order.getOrderId())))) {
-            trade.flattenCancelPendingOrder = null;
-            trade.flattenCancelBlocked = false;
+        if (trade != null && matchesFlattenCancelPending(trade, order)) {
+            if (order.isCancelled() || order.isFilled()) {
+                clearFlattenCancelPending(trade);
+            } else {
+                trade.flattenCancelBlocked = true;
+                trade.flattenCancelTimedOut = true;
+                reportFlattenOperatorAction(ctx, trade,
+                    "FLATTEN_CANCEL_CALLBACK_STATUS_UNCERTAIN_OPERATOR_ACTION_REQUIRED",
+                    order, Math.max(0L, System.nanoTime() - trade.flattenCancelPendingSinceNanos),
+                    "Cancellation callback did not expose a terminal order state.");
+                return;
+            }
         }
         if (trade != null && trade.flattenSubmitted
                 && (order == trade.flattenOrder || (trade.flattenOrderId != null && trade.flattenOrderId.equals(order.getOrderId())))) {
@@ -1852,29 +1874,22 @@ public class LucidMorningVABreakoutStudy extends Study {
     @Override
     public void onPositionClosed(OrderContext ctx) {
         if (ctx == null || ctx.getPosition() != 0) return;
-        ctx.cancelOrders();
         long now = ctx != null ? ctx.getCurrentTime() : System.currentTimeMillis();
         LocalDate today = Instant.ofEpochMilli(now).atZone(NY_ZONE).toLocalDate();
         ActiveTrade trade = tradesByDate.get(today);
         if (trade != null) {
-            trade.closed = true;
-            trade.flattenSubmitted = false;
-            trade.flattenOrder = null;
-            trade.flattenOrderId = null;
-            trade.flattenPending = false;
+            trade.flattenPending = true;
+            trade.flattenEvent = "POSITION_FLAT_RESIDUAL_ORDER_CLEANUP";
+            trade.flattenReason = "Position is flat; tracked working orders require terminal-state confirmation.";
+            submitMarketFlatten(ctx, trade, trade.flattenEvent, trade.flattenReason);
         }
         logExecutionEvent("POSITION_CLOSED_CONFIRMED", "LucidMorningVABreakout",
             ctx != null && ctx.getInstrument() != null ? ctx.getInstrument().getSymbol() : "UNKNOWN",
-            "FLAT", 0.0, 0.0, 0.0, 0, "Broker confirmed position closed.");
+            "FLAT", 0.0, 0.0, 0, "Broker reports flat position; tracked order cleanup remains callback-confirmed.");
     }
 
     private void submitMarketFlatten(OrderContext ctx, ActiveTrade trade, String event, String reason) {
         if (ctx == null || trade == null) return;
-        if (ctx.getPosition() == 0) {
-            trade.flattenPending = false;
-            trade.closed = true;
-            return;
-        }
         trade.flattenPending = true;
         if (trade.flattenEvent.isEmpty()) {
             trade.flattenEvent = event;
@@ -1882,12 +1897,20 @@ public class LucidMorningVABreakoutStudy extends Study {
         }
         if (trade.flattenSubmitted) return;
 
-        if (trade.flattenCancelBlocked) {
-            logExecutionEvent("FLATTEN_OPERATOR_ACTION_REQUIRED", "LucidMorningVABreakout",
-                ctx.getInstrument() != null ? ctx.getInstrument().getSymbol() : "UNKNOWN",
-                "WAIT", 0.0, trade.stopPrice, trade.targetPrice, Math.abs(ctx.getPosition()),
-                "A tracked order cancellation was rejected or had unknown status; no market exit submitted.");
-            return;
+        if (checkFlattenCancelPending(ctx, trade)) return;
+        if (trade.flattenCancelBlocked && trade.flattenCancelPendingOrder == null) {
+            int currentPosition = ctx.getPosition();
+            if (currentPosition == 0) {
+                trade.flattenCancelBlocked = false;
+            } else {
+                String coverageFailure = flattenStopCoverageFailure(ctx, trade, currentPosition);
+                reportFlattenOperatorAction(ctx, trade, coverageFailure == null
+                        ? "FLATTEN_RETAINED_STOP_COVERAGE_CONFIRMED_OPERATOR_ACTION_REQUIRED"
+                        : "FLATTEN_RETAINED_STOP_COVERAGE_UNVERIFIED_OPERATOR_ACTION_REQUIRED",
+                    trade.slOrder, 0L, (coverageFailure == null ? "STOP_COVERAGE_CONFIRMED" : coverageFailure)
+                        + "|PROTECTIVE_STOP_RETAINED|AUTO_FLATTEN_WITHHELD");
+                return;
+            }
         }
 
         Order[] workingOrders = {trade.entryOrder, trade.tpOrder, trade.slOrder};
@@ -1895,22 +1918,22 @@ public class LucidMorningVABreakoutStudy extends Study {
             if (workingOrder == null || workingOrder.isCancelled() || workingOrder.isFilled()) continue;
             if (workingOrder == trade.slOrder) {
                 int positionBeforeStopCancel = ctx.getPosition();
-                if (positionBeforeStopCancel == 0) {
-                    trade.flattenOrder = null;
-                    trade.flattenPending = false;
-                    trade.closed = true;
+                if (positionBeforeStopCancel != 0) {
+                    String coverageFailure = flattenStopCoverageFailure(ctx, trade, positionBeforeStopCancel);
+                    boolean covered = coverageFailure == null;
+                    reportFlattenOperatorAction(ctx, trade, covered
+                            ? "FLATTEN_RETAINED_STOP_COVERAGE_CONFIRMED_OPERATOR_ACTION_REQUIRED"
+                            : "FLATTEN_RETAINED_STOP_COVERAGE_UNVERIFIED_OPERATOR_ACTION_REQUIRED",
+                        workingOrder, 0L, (covered ? "STOP_COVERAGE_CONFIRMED" : coverageFailure)
+                            + "|PROTECTIVE_STOP_RETAINED|AUTO_FLATTEN_WITHHELD|NO_REDUCE_ONLY_OR_ATOMIC_REPLACE");
+                    trade.flattenCancelBlocked = true;
                     return;
                 }
-                trade.flattenCancelBlocked = true;
-                logExecutionEvent("FLATTEN_NON_ATOMIC_TRANSITION_OPERATOR_ACTION_REQUIRED",
-                    "LucidMorningVABreakout", ctx.getInstrument() != null
-                        ? ctx.getInstrument().getSymbol() : "UNKNOWN", "BLOCKED", 0.0,
-                    trade.stopPrice, trade.targetPrice, Math.abs(positionBeforeStopCancel),
-                    trade.flattenReason + "|PROTECTIVE_STOP_RETAINED|SDK_HAS_NO_REDUCE_ONLY_OR_ATOMIC_REPLACE");
-                return;
             }
             if (trade.flattenCancelPendingOrder == workingOrder) return;
             trade.flattenCancelPendingOrder = workingOrder;
+            trade.flattenCancelPendingSinceNanos = System.nanoTime();
+            trade.flattenCancelTimedOut = false;
             try {
                 ctx.cancelOrders(workingOrder);
                 logExecutionEvent(workingOrder == trade.slOrder
@@ -1921,25 +1944,131 @@ public class LucidMorningVABreakoutStudy extends Study {
                     trade.flattenReason + "|ORDER_ID=" + workingOrder.getOrderId());
             } catch (RuntimeException e) {
                 trade.flattenCancelBlocked = true;
-                logExecutionEvent("FLATTEN_CANCEL_STATUS_UNKNOWN_OPERATOR_ACTION_REQUIRED", "LucidMorningVABreakout",
-                    ctx.getInstrument() != null ? ctx.getInstrument().getSymbol() : "UNKNOWN",
-                    "WAIT", 0.0, trade.stopPrice, trade.targetPrice, Math.abs(ctx.getPosition()),
-                    trade.flattenReason + "|ORDER_ID=" + workingOrder.getOrderId() + "|ERROR=" + e.getMessage());
+                trade.flattenCancelTimedOut = true;
+                reportFlattenOperatorAction(ctx, trade, "FLATTEN_CANCEL_STATUS_UNKNOWN_OPERATOR_ACTION_REQUIRED",
+                    workingOrder, 0L, "Cancel call threw; order state must be reconciled|ERROR=" + e.getMessage());
             }
             return;
         }
+
         int currentPosition = ctx.getPosition();
         if (currentPosition == 0) {
             trade.flattenPending = false;
             trade.closed = true;
             return;
         }
+        String coverageFailure = flattenStopCoverageFailure(ctx, trade, currentPosition);
         trade.flattenCancelBlocked = true;
-        logExecutionEvent("FLATTEN_NON_ATOMIC_TRANSITION_OPERATOR_ACTION_REQUIRED",
-            "LucidMorningVABreakout",
-            ctx.getInstrument() != null ? ctx.getInstrument().getSymbol() : "UNKNOWN",
-            "BLOCKED", 0.0, trade.stopPrice, trade.targetPrice, Math.abs(currentPosition),
-            trade.flattenReason + "|ALL_TRACKED_ORDERS_TERMINAL|NO_MARKET_EXIT_SUBMITTED|OPERATOR_MUST_RECONCILE_POSITION");
+        reportFlattenOperatorAction(ctx, trade,
+            coverageFailure == null ? "FLATTEN_RETAINED_STOP_COVERAGE_CONFIRMED_OPERATOR_ACTION_REQUIRED"
+                : "FLATTEN_RETAINED_STOP_COVERAGE_UNVERIFIED_OPERATOR_ACTION_REQUIRED",
+            trade.slOrder, 0L, (coverageFailure == null ? "STOP_COVERAGE_CONFIRMED" : coverageFailure)
+                + "|ALL_TRACKED_ORDERS_TERMINAL|NO_MARKET_EXIT_SUBMITTED|OPERATOR_MUST_RECONCILE_POSITION");
+    }
+
+    private String flattenStopCoverageFailure(OrderContext ctx, ActiveTrade trade, int positionSnapshot) {
+        int quantity = Math.abs(positionSnapshot);
+        Order stop = trade.slOrder;
+        try {
+            if (positionSnapshot == 0 || ctx.getPosition() != positionSnapshot) return "POSITION_CHANGED";
+            if (stop == null) return "STOP_MISSING";
+            String orderId = stop.getOrderId();
+            if (trade.slOrderId != null && !trade.slOrderId.isEmpty() && !trade.slOrderId.equals(orderId)) return "STOP_ID_MISMATCH";
+            if (!stop.isActive() || stop.isCancelled() || stop.isFilled()) return "STOP_NOT_ACTIVE";
+            if (stop.getQuantity() != quantity || trade.attachedBracketQty != quantity) return "STOP_QUANTITY_MISMATCH";
+            Float observedPrice = stop.getStopPrice();
+            double tickSize = ctx.getInstrument() != null ? ctx.getInstrument().getTickSize() : Double.NaN;
+            if (observedPrice == null || !Float.isFinite(observedPrice) || !Double.isFinite(trade.stopPrice)
+                    || !Double.isFinite(tickSize) || tickSize <= 0.0) return "STOP_PRICE_UNVERIFIABLE";
+            if (Math.abs(observedPrice - trade.stopPrice) > tickSize / 2.0) return "STOP_PRICE_MISMATCH";
+            if (ctx.getPosition() != positionSnapshot) return "POSITION_CHANGED_DURING_STOP_CHECK";
+            return null;
+        } catch (RuntimeException e) {
+            return "STOP_STATE_READ_FAILED:" + e.getMessage();
+        }
+    }
+
+    private boolean checkFlattenCancelPending(OrderContext ctx, ActiveTrade trade) {
+        Order pending = trade.flattenCancelPendingOrder;
+        if (pending == null) return false;
+        if (pending.isCancelled() || pending.isFilled()) {
+            trade.flattenCancelPendingOrder = null;
+            trade.flattenCancelPendingSinceNanos = 0L;
+            trade.flattenCancelBlocked = false;
+            trade.flattenCancelTimedOut = false;
+            return false;
+        }
+        long now = System.nanoTime();
+        long elapsed = trade.flattenCancelPendingSinceNanos > 0L
+            ? Math.max(0L, now - trade.flattenCancelPendingSinceNanos) : 0L;
+        if (elapsed >= FLATTEN_CANCEL_ACK_TIMEOUT_NANOS) {
+            trade.flattenCancelBlocked = true;
+            trade.flattenCancelTimedOut = true;
+            reportFlattenOperatorAction(ctx, trade, "FLATTEN_CANCEL_ACK_TIMEOUT_OPERATOR_ACTION_REQUIRED",
+                pending, elapsed, "Cancellation acknowledgement timed out; no retry or market exit is safe.");
+        }
+        return true;
+    }
+
+    private void reportFlattenOperatorAction(OrderContext ctx, ActiveTrade trade, String event,
+        Order order, long elapsedNanos, String reason) {
+        setState(Enums$StrategyState.INACTIVE);
+        long now = System.nanoTime();
+        int position = ctx != null ? ctx.getPosition() : 0;
+        Order stop = trade.slOrder;
+        Float stopPrice = stop != null ? stop.getStopPrice() : null;
+        String details = "OPERATOR_ACTION_REQUIRED|AUTO_FLATTEN_WITHHELD|POSITION=" + position
+            + "|PENDING_ORDER_ID=" + (order != null ? order.getOrderId() : "NONE")
+            + "|PENDING_ORDER_STATE=" + flattenOrderState(order)
+            + "|PENDING_ORDER_ACTIVE=" + (order != null && order.isActive())
+            + "|PENDING_ORDER_CANCELLED=" + (order != null && order.isCancelled())
+            + "|PENDING_ORDER_FILLED=" + (order != null && order.isFilled())
+            + "|CANCEL_WAIT_MS=" + (elapsedNanos / 1_000_000L)
+            + "|STOP_ID=" + (stop != null ? stop.getOrderId() : "NONE")
+            + "|STOP_STATE=" + flattenOrderState(stop)
+            + "|STOP_ACTIVE=" + (stop != null && stop.isActive())
+            + "|STOP_CANCELLED=" + (stop != null && stop.isCancelled())
+            + "|STOP_FILLED=" + (stop != null && stop.isFilled())
+            + "|STOP_QTY=" + (stop != null ? stop.getQuantity() : 0)
+            + "|STOP_EXPECTED_QTY=" + Math.abs(position)
+            + "|STOP_PRICE=" + stopPrice
+            + "|CONFIRMED_STOP_PRICE=" + trade.stopPrice
+            + "|REASON=" + reason + "|" + trade.flattenReason
+            + "|RECONCILE_POSITION_ENTRY_TARGET_STOP_BEFORE_MANUAL_ACTION";
+        String alertKey = event + "|POSITION=" + position + "|PENDING_ID="
+            + (order != null ? order.getOrderId() : "NONE") + "|STOP_ID="
+            + (stop != null ? stop.getOrderId() : "NONE") + "|STOP_QTY="
+            + (stop != null ? stop.getQuantity() : 0) + "|STOP_PRICE=" + stopPrice + "|REASON=" + reason;
+        if (alertKey.equals(trade.flattenOperatorAlertKey) && trade.flattenOperatorAlertLastNanos != 0L
+                && now - trade.flattenOperatorAlertLastNanos < FLATTEN_OPERATOR_ALERT_INTERVAL_NANOS) return;
+        trade.flattenOperatorAlertLastNanos = now;
+        trade.flattenOperatorAlertKey = alertKey;
+        logExecutionEvent(event, "LucidMorningVABreakout",
+            ctx != null && ctx.getInstrument() != null ? ctx.getInstrument().getSymbol() : "UNKNOWN",
+            "BLOCKED", stopPrice != null ? stopPrice : 0.0, trade.stopPrice, trade.targetPrice,
+            Math.abs(position), details);
+    }
+
+    private String flattenOrderState(Order order) {
+        if (order == null) return "NONE";
+        if (order.isActive()) return "ACTIVE";
+        if (order.isCancelled()) return "CANCELLED";
+        if (order.isFilled()) return "FILLED";
+        return "UNKNOWN";
+    }
+
+    private boolean matchesFlattenCancelPending(ActiveTrade trade, Order order) {
+        return order != null && trade.flattenCancelPendingOrder != null
+            && (order == trade.flattenCancelPendingOrder
+                || (trade.flattenCancelPendingOrder.getOrderId() != null
+                    && trade.flattenCancelPendingOrder.getOrderId().equals(order.getOrderId())));
+    }
+
+    private void clearFlattenCancelPending(ActiveTrade trade) {
+        trade.flattenCancelPendingOrder = null;
+        trade.flattenCancelPendingSinceNanos = 0L;
+        trade.flattenCancelBlocked = false;
+        trade.flattenCancelTimedOut = false;
     }
 
     @Override
@@ -1947,7 +2076,21 @@ public class LucidMorningVABreakoutStudy extends Study {
         setState(Enums$StrategyState.INACTIVE);
         if (ctx != null) {
             if (ctx.getPosition() == 0) {
-                ctx.cancelOrders();
+                boolean trackedTrade = false;
+                for (ActiveTrade trade : tradesByDate.values()) {
+                    if (trade.closed) continue;
+                    trackedTrade = true;
+                    trade.flattenPending = true;
+                    trade.flattenEvent = "STRATEGY_DEACTIVATION_FLAT_ORDER_CLEANUP";
+                    trade.flattenReason = "Flat position; cancel tracked residual orders and await terminal states.";
+                    submitMarketFlatten(ctx, trade, trade.flattenEvent, trade.flattenReason);
+                }
+                if (!trackedTrade) {
+                    logExecutionEvent("DEACTIVATION_UNTRACKED_ORDERS_OPERATOR_ACTION_REQUIRED", "LucidMorningVABreakout",
+                        ctx.getInstrument() != null ? ctx.getInstrument().getSymbol() : "UNKNOWN",
+                        "BLOCKED", 0.0, 0.0, 0.0, 0,
+                        "No active trade identities are available; manually verify no working orders remain.");
+                }
             } else {
                 logExecutionEvent("STRATEGY_DEACTIVATED_POSITION_REMAINS_OPEN", "LucidMorningVABreakout",
                     ctx.getInstrument() != null ? ctx.getInstrument().getSymbol() : "MNQ",

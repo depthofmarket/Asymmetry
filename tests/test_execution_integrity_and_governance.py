@@ -722,12 +722,21 @@ class TestConfirmedFlatStateForS4AndS5:
         """Both S4 and S5 must implement onPositionClosed(OrderContext ctx)."""
         for key in ["S4", "S5"]:
             code = STUDY_FILES[key].read_text(encoding="utf-8")
-            assert "public void onPositionClosed(OrderContext ctx)" in code, (
+            start = code.index("public void onPositionClosed(OrderContext ctx)")
+            end_candidates = [
+                offset for marker in ("\n    @Override", "\n    private ")
+                if (offset := code.find(marker, start + 1)) >= 0
+            ]
+            callback = code[start:min(end_candidates)]
+            assert "public void onPositionClosed(OrderContext ctx)" in callback, (
                 f"{key} must implement onPositionClosed(OrderContext ctx)"
             )
-            assert "POSITION_CLOSED_CONFIRMED" in code, (
+            assert "POSITION_CLOSED_CONFIRMED" in callback, (
                 f"{key} must log POSITION_CLOSED_CONFIRMED event"
             )
+            assert "submitFlatten(ctx, trade, trade.flattenEvent, trade.flattenReason);" in callback
+            assert "trade.closed = true;" not in callback
+            assert "ctx.cancelOrders();" not in callback
 
     def test_flatten_submitted_flag_exists(self):
         """ActiveTrade in S4 and S5 must track flattenSubmitted."""
@@ -773,9 +782,100 @@ class TestConfirmedFlatStateForS4AndS5:
         for key in ["S1", "S2", "S3", "S4", "S5"]:
             code = STUDY_FILES[key].read_text(encoding="utf-8")
             assert "flattenCancelPendingOrder" in code
-            assert "FLATTEN_CANCEL_REJECTED_ORDER_STILL_ACTIVE_OPERATOR_ACTION_REQUIRED" in code
+            assert "FLATTEN_CANCEL_REJECTED_STATUS_UNCERTAIN_OPERATOR_ACTION_REQUIRED" in code
             assert "flattenCancelBlocked = true;" in code
             assert "TARGET_REJECTION_STATUS_UNCERTAIN_FLATTEN" in code
+            assert "matchesFlattenCancelPending(trade, order)" in code
+            assert "order.isCancelled() || order.isFilled()" in code
+            assert "clearFlattenCancelPending(trade);" in code
+
+    def test_retained_stop_coverage_is_verified_for_all_strategies(self):
+        for key in ["S1", "S2", "S3", "S4", "S5"]:
+            code = STUDY_FILES[key].read_text(encoding="utf-8")
+            start = code.index("private String flattenStopCoverageFailure(")
+            end_candidates = [
+                offset for marker in ("\n    private ", "\n    @Override")
+                if (offset := code.find(marker, start + 1)) >= 0
+            ]
+            checker = code[start:min(end_candidates)]
+            for requirement in (
+                "ctx.getPosition() != positionSnapshot",
+                "if (stop == null)",
+                "trade.slOrderId.equals(orderId)",
+                "!stop.isActive() || stop.isCancelled() || stop.isFilled()",
+                "stop.getQuantity() != quantity || trade.attachedBracketQty != quantity",
+                "Float.isFinite(observedPrice)",
+                "Double.isFinite(trade.stopPrice)",
+                "Math.abs(observedPrice - trade.stopPrice) > tickSize / 2.0",
+                "POSITION_CHANGED_DURING_STOP_CHECK",
+            ):
+                assert requirement in checker, f"{key} missing stop-coverage guard {requirement}"
+            if key in {"S4", "S5"}:
+                assert "trade.stopSyncPending || trade.breakevenModifySubmitted" in checker
+            assert "FLATTEN_RETAINED_STOP_COVERAGE_CONFIRMED_OPERATOR_ACTION_REQUIRED" in code
+            assert "FLATTEN_RETAINED_STOP_COVERAGE_UNVERIFIED_OPERATOR_ACTION_REQUIRED" in code
+            assert "|PENDING_ORDER_STATE=" in code
+            assert "|STOP_STATE=" in code
+            if key in {"S4", "S5"}:
+                assert "|INSTRUMENT=" in code
+                assert "|STRATEGY=" in code
+
+    def test_cancellation_watchdog_is_monotonic_fail_closed_and_bar_driven(self):
+        for key in ["S1", "S2", "S3", "S4", "S5"]:
+            code = STUDY_FILES[key].read_text(encoding="utf-8")
+            assert "FLATTEN_CANCEL_ACK_TIMEOUT_NANOS = 30_000_000_000L" in code
+            assert "flattenCancelPendingSinceNanos = System.nanoTime();" in code
+            start = code.index("private boolean checkFlattenCancelPending(")
+            end = code.index("\n    private ", start + 1)
+            watchdog = code[start:end]
+            assert "System.nanoTime()" in watchdog
+            assert "elapsed >= FLATTEN_CANCEL_ACK_TIMEOUT_NANOS" in watchdog
+            assert "FLATTEN_CANCEL_ACK_TIMEOUT_OPERATOR_ACTION_REQUIRED" in watchdog
+            assert "Cancellation acknowledgement timed out; no retry or market exit is safe." in watchdog
+            assert "ctx.cancelOrders(" not in watchdog
+            assert "ctx.submitOrders(" not in watchdog
+            assert "setState(Enums$StrategyState.INACTIVE)" in code
+            assert "FLATTEN_OPERATOR_ALERT_INTERVAL_NANOS" in code
+            assert "RECONCILE_POSITION_ENTRY_TARGET_STOP_BEFORE_MANUAL_ACTION" in code
+            assert "flattenPending && !trade.flattenSubmitted" in code
+
+    def test_s4_s5_flatten_order_callbacks_require_terminal_state(self):
+        for key in ["S4", "S5"]:
+            code = STUDY_FILES[key].read_text(encoding="utf-8")
+            flatten_start = code.index("private void submitFlatten(")
+            flatten_end = code.index("\n    private ", flatten_start + 1)
+            flatten_helper = code[flatten_start:flatten_end]
+            assert "pendingFlatten.isCancelled() || pendingFlatten.isFilled()" in flatten_helper
+            assert "FLATTEN_ORDER_STATE_UNCERTAIN_POSITION_FLAT_OPERATOR_ACTION_REQUIRED" in flatten_helper
+
+            rejected_start = code.index("public void onOrderRejected")
+            rejected_end = code.index("public void onOrderCancelled", rejected_start)
+            rejected = code[rejected_start:rejected_end]
+            assert "!order.isCancelled() && !order.isFilled()" in rejected
+            assert "FLATTEN_REJECTION_STATUS_UNCERTAIN_OPERATOR_ACTION_REQUIRED" in rejected
+            assert "if (ctx.getPosition() == 0) trade.closed = true;" not in rejected
+
+            cancelled_start = code.index("public void onOrderCancelled")
+            cancelled_end = code.index("public void onOrderFilled", cancelled_start)
+            cancelled = code[cancelled_start:cancelled_end]
+            assert "FLATTEN_CANCEL_CALLBACK_STATUS_UNCERTAIN_OPERATOR_ACTION_REQUIRED" in cancelled
+            assert "submitFlatten(ctx, trade, trade.flattenEvent, trade.flattenReason);" in cancelled
+
+    def test_all_order_cancellations_use_tracked_flatten_path(self):
+        for key in ["S1", "S2", "S3", "S4", "S5"]:
+            code = STUDY_FILES[key].read_text(encoding="utf-8")
+            assert code.count("ctx.cancelOrders(") == 1, (
+                f"{key} must route all cancellations through one tracked helper"
+            )
+            assert "ctx.cancelOrders(workingOrder);" in code
+            assert "ctx.cancelOrders(trade.tpOrder)" not in code
+
+            deactivate_start = code.index("public void onDeactivate(OrderContext ctx)")
+            deactivate_end = code.index("\n    private ", deactivate_start)
+            deactivation = code[deactivate_start:deactivate_end]
+            assert "ctx.cancelOrders(" not in deactivation
+            assert "STRATEGY_DEACTIVATION_FLAT_ORDER_CLEANUP" in deactivation
+            assert "No active trade identities are available" in deactivation
 
     def test_initial_brackets_confirm_stop_independently_from_optional_target(self):
         for key in ["S1", "S2", "S3"]:
