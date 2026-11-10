@@ -143,6 +143,8 @@ public class LucidMacroMomentumStudy extends Study {
         String microSym;
         double ptVal;
         boolean closed = false;
+        /** H45: 10:00 Tier-2 trades are never eligible for broker submission. */
+        boolean rejectedTenAmWindow = false;
         boolean orderSubmitted = false;
         boolean entryFilled = false;
         boolean bracketsSubmitted = false;
@@ -675,15 +677,18 @@ public class LucidMacroMomentumStudy extends Study {
         group.addRow(new BooleanDescriptor(SHOW_NO_SETUP_MARKER, "Show 'No Setup' Reason Marker at 08:35", false));
         group.addRow(new BooleanDescriptor(ENABLE_HIGH_VOL_GATE, "Enable High-Vol Regime Whipsaw Gate (H19 Option 1 Hard Gate)", false));
         group.addRow(new DoubleDescriptor(MAX_OVN_RANGE_GATE_PTS, "Max Overnight Range Cutoff Points (0=Off, NQ 180.0)", 180.0, 0.0, 400.0, 10.0));
-        group.addRow(new BooleanDescriptor(ENABLE_10AM_WINDOW, "Enable 10:00 AM Macro Catalyst Window (ISM/JOLTS)", true));
+        group.addRow(new BooleanDescriptor(
+            ENABLE_10AM_WINDOW,
+            "Rejected 10:00 Tier-2 window (H45). Saved or manual true cannot submit orders.",
+            false));
 
         setSettingsDescriptor(sd);
 
         RuntimeDescriptor rd = createRD();
         rd.declareSignal(SIGNAL_BUY, "Macro Momentum Buy (08:35 ET)");
         rd.declareSignal(SIGNAL_SELL, "Macro Momentum Sell (08:35 ET)");
-        rd.declareSignal(SIGNAL_BUY_10AM, "10:00 AM Macro Momentum Buy (10:05 ET)");
-        rd.declareSignal(SIGNAL_SELL_10AM, "10:00 AM Macro Momentum Sell (10:05 ET)");
+        rd.declareSignal(SIGNAL_BUY_10AM, "REJECTED 10:00 AM window — orders disabled");
+        rd.declareSignal(SIGNAL_SELL_10AM, "REJECTED 10:00 AM window — orders disabled");
         ProtectiveReconcile.declare(rd);
         setRuntimeDescriptor(rd);
     }
@@ -980,8 +985,16 @@ public class LucidMacroMomentumStudy extends Study {
             }
         }
 
-        // 4. Evaluate 10:00 AM Catalyst Signal on the first bar at or after 10:05:00 ET sharp
-        if (getSettings().getBoolean(ENABLE_10AM_WINDOW, true) && hour == 10 && min >= 5 && !processed10amDays.contains(today)) {
+        // 4. Rejected 10:00 Tier-2 window. The gate ignores the saved checkbox.
+        // The body remains so a chart can still be inspected, but it is not entered
+        // unless order submission is permitted, which the gate never allows.
+        boolean tenAmPersistedRequest = getSettings().getBoolean(ENABLE_10AM_WINDOW, true);
+        if (MacroTenAmOrderGate.orderSubmissionPermitted(
+                MacroTenAmOrderGate.WINDOW_TIER2_1000,
+                MacroTenAmOrderGate.SIGNAL_BUY_10AM,
+                MacroTenAmOrderGate.FLATTEN_LABEL_10AM,
+                tenAmPersistedRequest)
+            && hour == 10 && min >= 5 && !processed10amDays.contains(today)) {
             processed10amDays.add(today);
             RthPriorStats rth = rthByDate.get(today);
             SpikeStats spike10 = spike10ByDate.get(today);
@@ -1066,6 +1079,7 @@ public class LucidMacroMomentumStudy extends Study {
                         trade.microSym = microSym;
                         trade.ptVal = ptVal;
                         trade.closed = false;
+                        trade.rejectedTenAmWindow = true;
                         trade.flattenLabel = "10:35 CASH FLATTEN";
 
                         if (isLong) {
@@ -1302,6 +1316,18 @@ public class LucidMacroMomentumStudy extends Study {
     @Override
     public void onSignal(OrderContext ctx, Object signal) {
         if (ctx == null) return;
+        boolean tenAmPersistedRequest = getSettings().getBoolean(ENABLE_10AM_WINDOW, true);
+        if (signal != null && !MacroTenAmOrderGate.orderSubmissionPermitted(
+                MacroTenAmOrderGate.WINDOW_TIER1_0835,
+                String.valueOf(signal),
+                null,
+                tenAmPersistedRequest)) {
+            logExecutionEvent("REJECTED_TIER2_10AM_WINDOW", "LucidMacroMomentum",
+                ctx.getInstrument() != null ? ctx.getInstrument().getSymbol() : "UNKNOWN",
+                "BLOCKED", 0.0, 0.0, 0.0, 0,
+                "10:00 Tier-2 signal cannot submit orders. Saved enable10amWindow=" + tenAmPersistedRequest);
+            return;
+        }
         if (!getSettings().getBoolean(ENABLE_LIVE_AUTOTRADE, true)) return;
         long now = ctx.getCurrentTime();
         LocalDate today = Instant.ofEpochMilli(now).atZone(NY_ZONE).toLocalDate();
@@ -1400,6 +1426,23 @@ public class LucidMacroMomentumStudy extends Study {
     }
 
     private synchronized void executeAutoTradeIfArmed(OrderContext ctx, Object signal, ActiveTrade trade) {
+        if (ctx == null) return;
+        boolean tenAmPersistedRequest = getSettings().getBoolean(ENABLE_10AM_WINDOW, true);
+        String windowId = (trade != null && trade.rejectedTenAmWindow)
+            ? MacroTenAmOrderGate.WINDOW_TIER2_1000
+            : MacroTenAmOrderGate.WINDOW_TIER1_0835;
+        String flattenLabel = trade != null ? trade.flattenLabel : null;
+        if (!MacroTenAmOrderGate.orderSubmissionPermitted(
+                windowId,
+                signal == null ? null : String.valueOf(signal),
+                flattenLabel,
+                tenAmPersistedRequest)) {
+            logExecutionEvent("REJECTED_TIER2_10AM_WINDOW", "LucidMacroMomentum",
+                ctx.getInstrument() != null ? ctx.getInstrument().getSymbol() : "UNKNOWN",
+                "BLOCKED", 0.0, 0.0, 0.0, 0,
+                "10:00 Tier-2 order blocked before submission. Saved enable10amWindow=" + tenAmPersistedRequest);
+            return;
+        }
         if (ctx.getPosition() != 0) return; // Prevent double-entry / pyramiding
 
         long now = ctx.getCurrentTime();

@@ -26,6 +26,10 @@ Strategy 2 (`macro_momentum_s2`) exploits directional repricing in Micro E-mini 
 
 By coupling 5-minute directional momentum with a 3-state Gaussian Hidden Markov Model (HMM) regime classifier, Strategy 2 participates in macro trend continuation while dynamically halving contract sizing during high-volatility whipsaw regimes.
 
+## Rejected 10:00 window
+
+The 10:05–10:35 Tier-2 window is permanently unable to submit orders. `MacroTenAmOrderGate` returns false for that window, its signal ids, and its 10:35 flatten label. A saved or manually enabled `enable10amWindow` value is ignored. The 08:35 Tier-1 entry, stop, target, flatten, and sizing rules are unchanged. H45 in `wiki/failed_ideas.md` is the rejection record.
+
 ## Technical Specification
 - **Instrument**: `MNQ` (Micro E-mini Nasdaq-100)
 - **Time Window**: 08:35:00 to 09:25:00 ET (Order expiration at 09:25 ET before cash equity open)
