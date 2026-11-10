@@ -475,6 +475,7 @@ class TestAgentInstructionSynchronization:
 # ==============================================================================
 
 class TestQueryProvenanceCli:
+    @pytest.mark.generated_results
     def test_cli_list_displays_strategy_tier(self):
         proc = subprocess.run(
             [sys.executable, str(REPO_ROOT / "scripts/query_provenance.py"), "--list"],
@@ -488,6 +489,7 @@ class TestQueryProvenanceCli:
         assert "morning_va_breakout_s1" in proc.stdout
         assert "lucid_flex_forward_demo" in proc.stdout
 
+    @pytest.mark.generated_results
     def test_cli_list_filter_tier(self):
         proc = subprocess.run(
             [sys.executable, str(REPO_ROOT / "scripts/query_provenance.py"), "--list", "--tier", "FORWARD_DEMO"],
@@ -500,6 +502,7 @@ class TestQueryProvenanceCli:
         assert "Total verified runs: 1" in proc.stdout
         assert "morning_va_breakout_s1" not in proc.stdout
 
+    @pytest.mark.generated_results
     def test_cli_list_excludes_candidates_by_default(self):
         """CLI --list must strictly quarantine candidate runs by default."""
         proc = subprocess.run(

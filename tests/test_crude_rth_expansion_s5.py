@@ -266,6 +266,33 @@ class TestCandidateS5RegimeGating:
         signals = generate_signals(rth_df, daily_map, params_narrow)
         assert (signals["signal"] == 0).all()
 
+    @pytest.mark.parametrize(
+        ("breakout_minute", "expected_signal_minute"),
+        [(620, None), (644, 644)],
+    )
+    def test_minimum_trade_window_bars_are_counted_causally(
+        self, synthetic_rth_days, breakout_minute, expected_signal_minute
+    ):
+        params = CrudeRthExpansionParams()
+        rth_df, daily_map = calculate_crude_rth_features(synthetic_rth_days, params)
+        day = sorted(daily_map)[54]
+        daily_map[day].update(atr14=3.0, rvol=1.5, sma50=75.0, macro_trend=1)
+
+        day_mask = rth_df["date_str"] == day
+        trade_mask = day_mask & rth_df["m"].between(params.entry_start_m, params.session_flatten_m)
+        rth_df.loc[trade_mask, ["open", "high", "low", "close"]] = [75.2, 75.5, 75.0, 75.25]
+        signal_mask = day_mask & (rth_df["m"] == breakout_minute)
+        rth_df.loc[signal_mask, ["open", "high", "low", "close"]] = [75.3, 75.8, 75.25, 75.75]
+
+        signals = generate_signals(rth_df, daily_map, params)
+        day_signals = signals.loc[day_mask & (signals["signal"] != 0)]
+        if expected_signal_minute is None:
+            assert day_signals.empty
+        else:
+            assert day_signals["time"].dt.hour.mul(60).add(day_signals["time"].dt.minute).tolist() == [
+                expected_signal_minute
+            ]
+
 
 class TestCandidateS5ExecutionAndTiming:
     def test_entry_timing_window(self):
@@ -405,4 +432,3 @@ class TestCandidateS5ExecutionAndTiming:
         assert trades_4.iloc[0]["exit_reason"] == "breakeven"
         assert trades_4.iloc[0]["exit_price"] == pytest.approx(ep + params.breakeven_lock_pts, rel=1e-6)
         assert trades_4.iloc[0]["hold_bars"] == 2
-

@@ -98,11 +98,14 @@ public class LucidGoldFixBreakoutStudy extends Study {
     private final Map<LocalDate, ActiveTrade> tradesByDate = new HashMap<>();
     // IAF Session Cooldown Lock: strictly enforces <= 1 automated trade per session
     private static final Set<LocalDate> DAILY_SUBMITTED_DATES = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private static final Set<LocalDate> RESTART_POSITION_REPORTED = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     private static class ActiveTrade {
         LocalDate date;
         double entryPrice;
         double actualEntryFill = Double.NaN;
+        double initialRiskDist = Double.NaN;
+        double initialTargetDist = Double.NaN;
         double stopPrice;
         double targetPrice;
         long entryTime;
@@ -115,12 +118,19 @@ public class LucidGoldFixBreakoutStudy extends Study {
         boolean orderSubmitted = false;
         boolean entryFilled = false;
         boolean bracketsSubmitted = false;
+        boolean flattenSubmitted = false;
+        boolean flattenPending = false;
+        boolean restartCoverageReported = false;
+        String flattenEvent = "";
+        String flattenReason = "";
         Order entryOrder;
         Order slOrder;
         Order tpOrder;
+        Order flattenOrder;
         String entryOrderId;
         String slOrderId;
         String tpOrderId;
+        String flattenOrderId;
         Line slLine;
         Line tpLine;
         Line entryLine;
@@ -1035,15 +1045,28 @@ public class LucidGoldFixBreakoutStudy extends Study {
     @Override
     public void onBarClose(OrderContext ctx) {
         if (ctx == null) return;
-        if (!getSettings().getBoolean(ENABLE_LIVE_AUTOTRADE, true)) return;
+        boolean liveAuthorized = getSettings().getBoolean(ENABLE_LIVE_AUTOTRADE, true);
 
         long now = ctx.getCurrentTime();
         LocalDate today = Instant.ofEpochMilli(now).atZone(NY_ZONE).toLocalDate();
 
         // 1. If flat and no trade submitted today, check if an unsubmitted trade signal exists for today
-        if (ctx.getPosition() == 0) {
+        if (ctx.getPosition() == 0 && liveAuthorized) {
             if (DAILY_SUBMITTED_DATES.contains(today)) return; // Session cooldown locked
             ActiveTrade trade = tradesByDate.get(today);
+            if (trade == null && RESTART_POSITION_REPORTED.add(today)) {
+                logExecutionEvent("RESTART_POSITION_UNRECONCILED", "LucidGoldFixBreakout",
+                    ctx.getInstrument() != null ? ctx.getInstrument().getSymbol() : "UNKNOWN",
+                    "BLOCKED", 0.0, 0.0, 0.0, Math.abs(ctx.getPosition()),
+                    "No active trade or order identities were recovered; do not recreate protective orders.");
+            } else if (trade != null && !trade.restartCoverageReported
+                    && (trade.slOrder == null || !trade.slOrder.isActive())) {
+                trade.restartCoverageReported = true;
+                logExecutionEvent("RESTART_PROTECTIVE_COVERAGE_UNVERIFIED", "LucidGoldFixBreakout",
+                    ctx.getInstrument() != null ? ctx.getInstrument().getSymbol() : "UNKNOWN",
+                    "BLOCKED", 0.0, trade.stopPrice, trade.targetPrice, Math.abs(ctx.getPosition()),
+                    "Position is open but no working stop is confirmed; do not recreate protection automatically.");
+            }
             if (trade != null && !trade.orderSubmitted && !trade.closed && now >= trade.entryTime && now < trade.maxExitTime) {
                 executeAutoTradeIfArmed(ctx, SIGNAL_BUY);
             }
@@ -1054,10 +1077,23 @@ public class LucidGoldFixBreakoutStudy extends Study {
             DAILY_SUBMITTED_DATES.add(today);
             File lockFile = getDailyLockFile("gold_london_fix_s3", today);
             if (lockFile != null && !lockFile.exists()) {
-                try { lockFile.createNewFile(); } catch (Exception ignored) {}
+                try {
+                    if (!lockFile.createNewFile()) {
+                        logExecutionEvent("RESTART_DAILY_LOCK_NOT_CREATED", "LucidGoldFixBreakout",
+                            ctx.getInstrument() != null ? ctx.getInstrument().getSymbol() : "UNKNOWN",
+                            "BLOCKED", 0.0, 0.0, 0.0, Math.abs(ctx.getPosition()), "Lock already exists or could not be created.");
+                    }
+                } catch (Exception e) {
+                    logExecutionEvent("RESTART_DAILY_LOCK_CREATE_FAILED", "LucidGoldFixBreakout",
+                        ctx.getInstrument() != null ? ctx.getInstrument().getSymbol() : "UNKNOWN",
+                        "BLOCKED", 0.0, 0.0, 0.0, Math.abs(ctx.getPosition()), e.getMessage());
+                }
             }
 
             ActiveTrade trade = tradesByDate.get(today);
+            if (trade != null && trade.flattenPending && !trade.flattenSubmitted) {
+                submitMarketFlatten(ctx, trade, trade.flattenEvent, trade.flattenReason);
+            }
             if (trade != null && trade.bracketsSubmitted && trade.attachedBracketQty != Math.abs(ctx.getPosition())) {
                 int contracts = Math.abs(ctx.getPosition());
                 if (trade.slOrder != null && trade.slOrder.isActive()) {
@@ -1080,10 +1116,15 @@ public class LucidGoldFixBreakoutStudy extends Study {
             int min = zdt.getMinute();
 
             if (hour > 11 || (hour == 11 && min >= 0)) {
-                ctx.cancelOrders();
-                ctx.closeAtMarket();
-                logExecutionEvent("TIME_EXIT_FLATTEN", "LucidGoldFixBreakout", ctx.getInstrument().getSymbol(),
-                    "FLAT", 0.0, 0.0, 0.0, 0, "11:00 ET session close boundary reached, position flattened.");
+                if (trade != null) {
+                    if (trade.tpOrder != null && trade.tpOrder.isActive()) ctx.cancelOrders(trade.tpOrder);
+                    submitMarketFlatten(ctx, trade, "TIME_EXIT_FLATTEN", "11:00 ET session close boundary reached");
+                } else {
+                    logExecutionEvent("RESTART_POSITION_UNRECONCILED", "LucidGoldFixBreakout",
+                        ctx.getInstrument() != null ? ctx.getInstrument().getSymbol() : "UNKNOWN",
+                        "BLOCKED", 0.0, 0.0, 0.0, Math.abs(ctx.getPosition()),
+                        "Position is open but no active trade/order identities were recovered; do not recreate brackets.");
+                }
             }
         }
     }
@@ -1176,13 +1217,39 @@ public class LucidGoldFixBreakoutStudy extends Study {
             "Order filled: id=" + order.getOrderId() + " pos=" + ctx.getPosition());
 
         boolean isTrackedEntry = (trade != null) && (trade.entryOrderId != null && trade.entryOrderId.equals(order.getOrderId()));
+        if (trade != null && trade.flattenSubmitted
+                && (order == trade.flattenOrder || (trade.flattenOrderId != null && trade.flattenOrderId.equals(order.getOrderId())))) {
+            trade.flattenSubmitted = false;
+            trade.flattenOrder = null;
+            trade.flattenOrderId = null;
+            if (ctx.getPosition() == 0) {
+                trade.closed = true;
+                trade.flattenPending = false;
+                trade.restartCoverageReported = false;
+            } else {
+                logExecutionEvent("FLATTEN_PARTIAL_FILL_REMAINS_OPEN", "LucidGoldFixBreakout", ctx.getInstrument().getSymbol(),
+                    "FLATTEN", 0.0, trade.stopPrice, trade.targetPrice, Math.abs(ctx.getPosition()),
+                    "Flatten order filled partially; remaining position is still open.");
+                submitMarketFlatten(ctx, trade, trade.flattenEvent, trade.flattenReason);
+            }
+            return;
+        }
+        if (trade != null && trade.flattenPending && ctx.getPosition() != 0
+                && (order == trade.entryOrder || (trade.entryOrderId != null && trade.entryOrderId.equals(order.getOrderId()))
+                    || order == trade.slOrder || order == trade.tpOrder)) {
+            submitMarketFlatten(ctx, trade, trade.flattenEvent, trade.flattenReason);
+            return;
+        }
         if (ctx.getPosition() != 0 && trade != null && !trade.bracketsSubmitted && isTrackedEntry) {
             trade.entryFilled = true;
             int contracts = Math.abs(ctx.getPosition());
 
-            double actualFill = order.getAvgFillPrice() > 0 ? order.getAvgFillPrice() : (ctx.getAvgEntryPrice() > 0 ? ctx.getAvgEntryPrice() : trade.entryPrice);
+            double actualFill = ctx.getAvgEntryPrice() > 0 ? ctx.getAvgEntryPrice()
+                : (order.getAvgFillPrice() > 0 ? order.getAvgFillPrice() : trade.entryPrice);
             double riskDist = Math.abs(trade.entryPrice - trade.stopPrice);
             double targetDist = Math.abs(trade.targetPrice - trade.entryPrice);
+            trade.initialRiskDist = riskDist;
+            trade.initialTargetDist = targetDist;
             float stopPrice = ctx.getInstrument().round((float) (actualFill - riskDist));
             float targetPrice = ctx.getInstrument().round((float) (actualFill + targetDist));
             trade.actualEntryFill = actualFill;
@@ -1204,22 +1271,42 @@ public class LucidGoldFixBreakoutStudy extends Study {
                 "Attached Stop (" + stopPrice + ") and Target (" + targetPrice + ") submitted to broker anchored to fill=" + actualFill);
         } else if (ctx.getPosition() != 0 && trade != null && trade.bracketsSubmitted && isTrackedEntry) {
             int contracts = Math.abs(ctx.getPosition());
-            if (trade.slOrder != null && trade.slOrder.isActive()) {
-                trade.slOrder.setAdjQuantity(contracts);
-                if (trade.tpOrder != null && trade.tpOrder.isActive()) {
-                    trade.tpOrder.setAdjQuantity(contracts);
-                    ctx.submitOrders(trade.slOrder, trade.tpOrder);
-                } else {
-                    ctx.submitOrders(trade.slOrder);
+            double actualFill = ctx.getAvgEntryPrice() > 0 ? ctx.getAvgEntryPrice()
+                : (order.getAvgFillPrice() > 0 ? order.getAvgFillPrice() : trade.actualEntryFill);
+            double riskDist = Double.isFinite(trade.initialRiskDist) ? trade.initialRiskDist : Math.abs(trade.entryPrice - trade.stopPrice);
+            double targetDist = Double.isFinite(trade.initialTargetDist) ? trade.initialTargetDist : Math.abs(trade.targetPrice - trade.entryPrice);
+            if (actualFill > 0 && trade.slOrder != null && trade.slOrder.isActive()) {
+                float stopPrice = ctx.getInstrument().round((float) (actualFill - riskDist));
+                float targetPrice = ctx.getInstrument().round((float) (actualFill + targetDist));
+                trade.actualEntryFill = actualFill;
+                trade.stopPrice = stopPrice;
+                trade.targetPrice = targetPrice;
+                try {
+                    trade.slOrder.setAdjStopPrice(stopPrice);
+                    trade.slOrder.setAdjQuantity(contracts);
+                    if (trade.tpOrder != null && trade.tpOrder.isActive()) {
+                        trade.tpOrder.setAdjLimitPrice(targetPrice);
+                        trade.tpOrder.setAdjQuantity(contracts);
+                        ctx.submitOrders(trade.slOrder, trade.tpOrder);
+                    } else {
+                        ctx.submitOrders(trade.slOrder);
+                    }
+                } catch (RuntimeException e) {
+                    submitMarketFlatten(ctx, trade, "PARTIAL_FILL_BRACKET_SYNC_FAILED", e.getMessage());
                 }
                 trade.attachedBracketQty = contracts;
                 logExecutionEvent("PARTIAL_FILL_SYNC", "LucidGoldFixBreakout", ctx.getInstrument().getSymbol(),
                     order.getAction().toString(), order.getAvgFillPrice(), trade.stopPrice, trade.targetPrice, contracts,
-                    "Partial entry fill synchronized bracket qty to pos=" + contracts);
+                    "Cumulative average fill and bracket prices/quantity reconciled to position=" + contracts);
+            } else {
+                submitMarketFlatten(ctx, trade, "PARTIAL_FILL_WITHOUT_CONFIRMED_STOP", "Open position has no confirmed protective stop");
             }
         } else if (ctx.getPosition() == 0) {
             ctx.cancelOrders();
-            if (trade != null) trade.closed = true;
+            if (trade != null) {
+                trade.closed = true;
+                trade.flattenPending = false;
+            }
             logExecutionEvent("POSITION_FLAT", "LucidGoldFixBreakout", ctx.getInstrument().getSymbol(),
                 "FLAT", 0.0, 0.0, 0.0, 0, "Position closed, unfulfilled bracket orders cancelled.");
         }
@@ -1231,19 +1318,63 @@ public class LucidGoldFixBreakoutStudy extends Study {
         long now = ctx != null ? ctx.getCurrentTime() : System.currentTimeMillis();
         LocalDate today = Instant.ofEpochMilli(now).atZone(NY_ZONE).toLocalDate();
         ActiveTrade trade = tradesByDate.get(today);
-        if (trade != null && trade.entryOrderId != null && trade.entryOrderId.equals(order.getOrderId())) {
-            trade.orderSubmitted = false;
-            trade.closed = true;
+        if (trade != null && trade.flattenSubmitted
+                && (order == trade.flattenOrder || (trade.flattenOrderId != null && trade.flattenOrderId.equals(order.getOrderId())))) {
+            trade.flattenSubmitted = false;
+            trade.flattenOrder = null;
+            trade.flattenOrderId = null;
+            if (ctx != null && ctx.getPosition() == 0) trade.closed = true;
+            else trade.flattenPending = true;
+            logExecutionEvent("FLATTEN_ORDER_REJECTED", "LucidGoldFixBreakout",
+                ctx != null && ctx.getInstrument() != null ? ctx.getInstrument().getSymbol() : "UNKNOWN",
+                order.getAction().toString(), 0.0, trade.stopPrice, trade.targetPrice,
+                ctx != null ? Math.abs(ctx.getPosition()) : 0, "REJECTED_ORDER_ID=" + order.getOrderId());
+            return;
         }
-        if (trade != null && trade.slOrderId != null && trade.slOrderId.equals(order.getOrderId())) {
-            if (ctx != null && ctx.getPosition() != 0) {
-                ctx.cancelOrders();
-                ctx.closeAtMarket();
+        if (trade != null && (order == trade.entryOrder
+                || (trade.entryOrderId != null && trade.entryOrderId.equals(order.getOrderId())))) {
+            trade.entryOrder = null;
+            if (ctx != null && ctx.getPosition() == 0) {
+                trade.orderSubmitted = false;
                 trade.closed = true;
-                logExecutionEvent("PROTECTIVE_STOP_REJECTED_EMERGENCY_FLATTEN", "LucidGoldFixBreakout",
-                    ctx.getInstrument() != null ? ctx.getInstrument().getSymbol() : "UNKNOWN",
-                    "FLAT", 0.0, 0.0, 0.0, Math.abs(ctx.getPosition()),
-                    "Protective stop order REJECTED by broker while position open. Emergency flatten executed.");
+            } else if (ctx != null) {
+                trade.orderSubmitted = true;
+                trade.closed = false;
+                if (trade.slOrder != null && trade.slOrder.isActive()) {
+                    int contracts = Math.abs(ctx.getPosition());
+                    trade.slOrder.setAdjQuantity(contracts);
+                    if (trade.tpOrder != null && trade.tpOrder.isActive()) {
+                        trade.tpOrder.setAdjQuantity(contracts);
+                        ctx.submitOrders(trade.slOrder, trade.tpOrder);
+                    } else {
+                        ctx.submitOrders(trade.slOrder);
+                    }
+                    if (ctx != null && trade.flattenPending) submitMarketFlatten(ctx, trade, trade.flattenEvent, trade.flattenReason);
+                } else {
+                    submitMarketFlatten(ctx, trade, "PARTIAL_ENTRY_REJECTED_EMERGENCY_FLATTEN", "Entry rejected with an open position and no confirmed stop");
+                }
+            }
+            logExecutionEvent("ENTRY_ORDER_REJECTED", "LucidGoldFixBreakout",
+                ctx != null && ctx.getInstrument() != null ? ctx.getInstrument().getSymbol() : "UNKNOWN",
+                order.getAction().toString(), 0.0, trade.stopPrice, trade.targetPrice,
+                ctx != null ? Math.abs(ctx.getPosition()) : 0, "ENTRY_REJECTED:" + order.getOrderId());
+            return;
+        }
+        if (trade != null && (order == trade.slOrder
+                || (trade.slOrderId != null && trade.slOrderId.equals(order.getOrderId())))) {
+            trade.slOrder = null;
+            if (ctx != null && ctx.getPosition() != 0) {
+                submitMarketFlatten(ctx, trade, "PROTECTIVE_STOP_REJECTED_EMERGENCY_FLATTEN", "Protective stop rejected while position open");
+            }
+        } else if (trade != null && (order == trade.tpOrder
+                || (trade.tpOrderId != null && trade.tpOrderId.equals(order.getOrderId())))) {
+            trade.tpOrder = null;
+            logExecutionEvent("PROFIT_TARGET_REJECTED_STOP_RETAINED", "LucidGoldFixBreakout",
+                ctx != null && ctx.getInstrument() != null ? ctx.getInstrument().getSymbol() : "UNKNOWN",
+                order.getAction().toString(), 0.0, trade.stopPrice, trade.targetPrice,
+                ctx != null ? Math.abs(ctx.getPosition()) : 0, "TARGET_REJECTED:" + order.getOrderId());
+            if (ctx != null && ctx.getPosition() != 0 && (trade.slOrder == null || !trade.slOrder.isActive())) {
+                submitMarketFlatten(ctx, trade, "TARGET_REJECTED_WITHOUT_STOP_FLATTEN", "Target rejected and stop is not confirmed working");
             }
         }
         logExecutionEvent("ORDER_REJECTED", "LucidGoldFixBreakout",
@@ -1258,16 +1389,39 @@ public class LucidGoldFixBreakoutStudy extends Study {
         long now = ctx != null ? ctx.getCurrentTime() : System.currentTimeMillis();
         LocalDate today = Instant.ofEpochMilli(now).atZone(NY_ZONE).toLocalDate();
         ActiveTrade trade = tradesByDate.get(today);
-        if (trade != null && trade.slOrderId != null && trade.slOrderId.equals(order.getOrderId())) {
-            if (ctx != null && ctx.getPosition() != 0) {
-                ctx.cancelOrders();
-                ctx.closeAtMarket();
-                trade.closed = true;
-                logExecutionEvent("PROTECTIVE_STOP_CANCELLED_EMERGENCY_FLATTEN", "LucidGoldFixBreakout",
-                    ctx.getInstrument() != null ? ctx.getInstrument().getSymbol() : "UNKNOWN",
-                    "FLAT", 0.0, 0.0, 0.0, Math.abs(ctx.getPosition()),
-                    "Protective stop order CANCELLED unexpectedly while position open. Emergency flatten executed.");
+        if (trade != null && trade.flattenSubmitted
+                && (order == trade.flattenOrder || (trade.flattenOrderId != null && trade.flattenOrderId.equals(order.getOrderId())))) {
+            trade.flattenSubmitted = false;
+            trade.flattenOrder = null;
+            trade.flattenOrderId = null;
+            if (ctx != null && ctx.getPosition() == 0) trade.closed = true;
+            else trade.flattenPending = true;
+            logExecutionEvent("FLATTEN_ORDER_CANCELLED", "LucidGoldFixBreakout",
+                ctx != null && ctx.getInstrument() != null ? ctx.getInstrument().getSymbol() : "UNKNOWN",
+                order.getAction().toString(), 0.0, trade.stopPrice, trade.targetPrice,
+                ctx != null ? Math.abs(ctx.getPosition()) : 0, "CANCELLED_ORDER_ID=" + order.getOrderId());
+            return;
+        }
+        if (trade != null && order == trade.entryOrder) {
+            trade.entryOrder = null;
+            if (ctx != null && trade.flattenPending) submitMarketFlatten(ctx, trade, trade.flattenEvent, trade.flattenReason);
+            return;
+        }
+        if (trade != null && (order == trade.slOrder
+                || (trade.slOrderId != null && trade.slOrderId.equals(order.getOrderId())))) {
+            trade.slOrder = null;
+            if (trade.flattenPending) {
+                if (ctx != null) submitMarketFlatten(ctx, trade, trade.flattenEvent, trade.flattenReason);
+                return;
             }
+            if (ctx != null && ctx.getPosition() != 0) {
+                submitMarketFlatten(ctx, trade, "PROTECTIVE_STOP_CANCELLED_EMERGENCY_FLATTEN", "Protective stop cancelled unexpectedly while position open");
+            }
+            return;
+        }
+        if (trade != null && order == trade.tpOrder) {
+            trade.tpOrder = null;
+            if (ctx != null && trade.flattenPending) submitMarketFlatten(ctx, trade, trade.flattenEvent, trade.flattenReason);
         }
         logExecutionEvent("ORDER_CANCELLED", "LucidGoldFixBreakout",
             ctx != null ? ctx.getInstrument().getSymbol() : "UNKNOWN",
@@ -1277,14 +1431,17 @@ public class LucidGoldFixBreakoutStudy extends Study {
 
     @Override
     public void onPositionClosed(OrderContext ctx) {
-        if (ctx != null) {
-            ctx.cancelOrders();
-        }
+        if (ctx == null || ctx.getPosition() != 0) return;
+        ctx.cancelOrders();
         long now = ctx != null ? ctx.getCurrentTime() : System.currentTimeMillis();
         LocalDate today = Instant.ofEpochMilli(now).atZone(NY_ZONE).toLocalDate();
         ActiveTrade trade = tradesByDate.get(today);
         if (trade != null) {
             trade.closed = true;
+            trade.flattenSubmitted = false;
+            trade.flattenOrder = null;
+            trade.flattenOrderId = null;
+            trade.flattenPending = false;
         }
         logExecutionEvent("POSITION_CLOSED_CONFIRMED", "LucidGoldFixBreakout",
             ctx != null && ctx.getInstrument() != null ? ctx.getInstrument().getSymbol() : "UNKNOWN",
@@ -1307,6 +1464,62 @@ public class LucidGoldFixBreakoutStudy extends Study {
         logExecutionEvent("STRATEGY_DEACTIVATED", "LucidGoldFixBreakout",
             ctx != null ? ctx.getInstrument().getSymbol() : "MGC",
             "INACTIVE", 0.0, 0.0, 0.0, 0, "Strategy deactivated by user");
+    }
+
+    private void submitMarketFlatten(OrderContext ctx, ActiveTrade trade, String event, String reason) {
+        if (ctx == null || trade == null) return;
+        if (ctx.getPosition() == 0) {
+            trade.flattenPending = false;
+            trade.closed = true;
+            return;
+        }
+        trade.flattenPending = true;
+        if (trade.flattenEvent.isEmpty()) {
+            trade.flattenEvent = event;
+            trade.flattenReason = reason;
+        }
+        if (trade.flattenSubmitted) return;
+        Order[] workingOrders = {trade.entryOrder, trade.slOrder, trade.tpOrder};
+        for (Order workingOrder : workingOrders) {
+            if (workingOrder == null || workingOrder.isCancelled() || workingOrder.isFilled()) continue;
+            try {
+                ctx.cancelOrders(workingOrder);
+                logExecutionEvent("FLATTEN_WAITING_FOR_ORDER_CANCELLATION", "LucidGoldFixBreakout",
+                    ctx.getInstrument() != null ? ctx.getInstrument().getSymbol() : "UNKNOWN",
+                    "WAIT", 0.0, trade.stopPrice, trade.targetPrice, Math.abs(ctx.getPosition()),
+                    trade.flattenReason + "|ORDER_ID=" + workingOrder.getOrderId());
+            } catch (RuntimeException e) {
+                logExecutionEvent("FLATTEN_CANCEL_STATUS_UNKNOWN", "LucidGoldFixBreakout",
+                    ctx.getInstrument() != null ? ctx.getInstrument().getSymbol() : "UNKNOWN",
+                    "WAIT", 0.0, trade.stopPrice, trade.targetPrice, Math.abs(ctx.getPosition()),
+                    trade.flattenReason + "|ORDER_ID=" + workingOrder.getOrderId() + "|ERROR=" + e.getMessage());
+            }
+            return;
+        }
+        int quantity = Math.abs(ctx.getPosition());
+        Enums$OrderAction action = ctx.getPosition() > 0 ? Enums$OrderAction.SELL : Enums$OrderAction.BUY;
+        Order flatten = ctx.createMarketOrder(action, quantity);
+        if (flatten == null) {
+            logExecutionEvent(trade.flattenEvent + "_ORDER_CREATION_FAILED", "LucidGoldFixBreakout",
+                ctx.getInstrument() != null ? ctx.getInstrument().getSymbol() : "UNKNOWN",
+                "BLOCKED", 0.0, trade.stopPrice, trade.targetPrice, quantity, trade.flattenReason);
+            return;
+        }
+        trade.flattenOrder = flatten;
+        trade.flattenOrderId = flatten.getOrderId();
+        trade.flattenSubmitted = true;
+        try {
+            ctx.submitOrders(flatten);
+            logExecutionEvent(trade.flattenEvent + "_SUBMITTED", "LucidGoldFixBreakout",
+                ctx.getInstrument() != null ? ctx.getInstrument().getSymbol() : "UNKNOWN",
+                action.toString(), 0.0, trade.stopPrice, trade.targetPrice, quantity,
+                trade.flattenReason + "|ORDER_ID=" + trade.flattenOrderId);
+        } catch (RuntimeException e) {
+            logExecutionEvent(trade.flattenEvent + "_SUBMISSION_STATUS_UNKNOWN", "LucidGoldFixBreakout",
+                ctx.getInstrument() != null ? ctx.getInstrument().getSymbol() : "UNKNOWN",
+                action.toString(), 0.0, trade.stopPrice, trade.targetPrice, quantity,
+                trade.flattenReason + "|ORDER_ID=" + trade.flattenOrderId + "|ERROR=" + e.getMessage());
+        }
     }
 
     private static synchronized void logExecutionEvent(String event, String studyId, String symbol,

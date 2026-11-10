@@ -217,6 +217,7 @@ def test_provenance_store_extended_metrics_roundtrip(temp_store, tmp_path):
     assert f"{inst_metrics['trimmed_profit_factor']:.2f}" in quote_trimmed
 
 
+@pytest.mark.generated_results
 def test_cli_query_provenance_institutional_stats():
     """Verify scripts/query_provenance.py CLI quotes Sortino and Calmar on production baselines."""
     res_sortino = subprocess.run(

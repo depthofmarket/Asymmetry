@@ -73,6 +73,7 @@ def test_trim_winners_edge_cases():
     assert res_single["edge_holds"] is False
 
 
+@pytest.mark.private_data
 def test_canonical_strategies_edge_holds_under_5pct_trimming():
     """
     CRITICAL EMPIRICAL PROOF:
@@ -144,6 +145,7 @@ def test_benchmark_relative_uncorrelated():
     assert abs(res["correlation"]) < 0.10
 
 
+@pytest.mark.private_data
 def test_canonical_benchmark_relative_metrics():
     """
     CRITICAL PORTFOLIO STRUCTURAL PROOF:
@@ -196,6 +198,7 @@ def test_canonical_benchmark_relative_metrics():
 # 3. PROVENANCE INTEGRATION & CLI QUERY TESTS
 # =============================================================================
 
+@pytest.mark.generated_results
 def test_provenance_store_retrieval():
     """Verifies that the canonical runs in provenance store contain the trimmed and benchmark stats."""
     rec = default_store.get_latest_run("lucid_flex_ensemble")
@@ -210,6 +213,7 @@ def test_provenance_store_retrieval():
     assert float(m["beta"]) < 0.05
 
 
+@pytest.mark.generated_results
 def test_cli_query_trimmed_and_benchmark():
     """Verifies scripts/query_provenance.py CLI flags for trimmed_pf_5pct and beta."""
     res_trim = subprocess.run(

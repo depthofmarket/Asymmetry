@@ -71,6 +71,7 @@ def test_mcp_tools_list():
         assert "properties" in t["inputSchema"]
 
 
+@pytest.mark.generated_results
 def test_mcp_query_stat():
     req = {
         "jsonrpc": "2.0",
@@ -93,6 +94,7 @@ def test_mcp_query_stat():
     assert "1.75" in content
 
 
+@pytest.mark.generated_results
 def test_mcp_list_runs():
     req = {
         "jsonrpc": "2.0",
@@ -112,6 +114,7 @@ def test_mcp_list_runs():
     assert "BASELINE" in content
 
 
+@pytest.mark.generated_results
 def test_mcp_compare_strategies():
     req = {
         "jsonrpc": "2.0",
@@ -135,6 +138,7 @@ def test_mcp_compare_strategies():
     assert "Sortino Ratio" in content
 
 
+@pytest.mark.generated_results
 def test_mcp_inspect_bundle():
     req = {
         "jsonrpc": "2.0",
@@ -157,6 +161,7 @@ def test_mcp_inspect_bundle():
     assert "WORST 3 LOSING TRADES" in content
 
 
+@pytest.mark.generated_results
 def test_mcp_verify_data_hash():
     req = {
         "jsonrpc": "2.0",
@@ -179,6 +184,7 @@ def test_mcp_verify_data_hash():
     assert "Matches" in content
 
 
+@pytest.mark.generated_results
 def test_mcp_get_equity_curve():
     req = {
         "jsonrpc": "2.0",
@@ -203,6 +209,7 @@ def test_mcp_get_equity_curve():
     assert "Drawdown ($)" in content
 
 
+@pytest.mark.generated_results
 def test_mcp_get_trades():
     req = {
         "jsonrpc": "2.0",
@@ -229,6 +236,7 @@ def test_mcp_get_trades():
     assert "long" in content.lower()
 
 
+@pytest.mark.generated_results
 def test_mcp_get_monthly_returns():
     req = {
         "jsonrpc": "2.0",
@@ -253,6 +261,7 @@ def test_mcp_get_monthly_returns():
     assert "Winning Months" in content
 
 
+@pytest.mark.generated_results
 def test_mcp_rank_strategies():
     req = {
         "jsonrpc": "2.0",

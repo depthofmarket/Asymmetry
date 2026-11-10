@@ -8,7 +8,7 @@ tags:
   - globex
   - tokyo-open
 created: "2026-11-08"
-updated: "2026-11-08"
+updated: "2026-11-10"
 status: active
 strategies:
   - asian_evening_reversion_s4
@@ -62,7 +62,11 @@ Why `MNQ` instead of `MES`? Empirical microstructure testing demonstrated that u
 | **Safe CPPI Defense** | Cushion `< $400` above Floor | **1 MNQ** | `-$72.40` | `+$73.10` |
 
 ## Empirical Evidence & Provenance
-Directly queried from `results/backtest_provenance.db`:
+### Current Checkout Verification and Path Parity
+
+The canonical live MotiveWave study implements the multi-day Globex Path A conditions described above. The Python research implementation also contains Path B, explicitly labeled as a single-session/synthetic-slice VWAP-band fallback; this is not evidence that the live Java strategy implements Path B. No verified S4 run was returned from the local provenance-store query during the current execution-safety audit, so the existing prose and bundle references below were not revalidated and must not be used as verified evidence for this checkout. Path A/Path B parity remains unresolved pending a verified run and matching source/data provenance; neither path was changed or disabled.
+
+Historical wiki provenance block, not revalidated in the current checkout (do not use as verified evidence):
 
 ```text
 ────────────────────────────────────────────────────────────────────────────

@@ -343,6 +343,7 @@ class TestQuantitativeProvenanceAndAgentInstructionsAdversarial:
             assert "hot.md" in content, f"{fname} missing hot.md rule"
             assert "log.md" in content, f"{fname} missing log.md rule"
 
+    @pytest.mark.generated_results
     def test_provenance_cli_live_execution(self):
         """Execute query_provenance.py to ensure the underlying provenance DB is intact."""
         cli_path = ROOT / "scripts" / "query_provenance.py"

@@ -207,6 +207,7 @@ def test_signal_fires_at_bar_close_and_executes_on_next_open():
         assert trade["entry_time"] == df.loc[sig_idx + 1, "time"]
 
 
+@pytest.mark.generated_results
 def test_prohibited_techniques_zero_smt_zero_3am_zero_945():
     """
     Adversarial Audit:
@@ -258,6 +259,7 @@ def test_prohibited_techniques_zero_smt_zero_3am_zero_945():
     assert latest_exit <= "23:00", f"Trade exited after mandatory flatten: {latest_exit}"
 
 
+@pytest.mark.generated_results
 def test_daily_return_pairwise_correlations_strictly_below_20_percent():
     """
     Computes empirical daily return correlations between Candidate S4 and

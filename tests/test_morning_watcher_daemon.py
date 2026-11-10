@@ -64,14 +64,14 @@ def test_repo_plist_structure_and_syntax():
     # Logging redirection
     stdout_log = Path(data.get("StandardOutPath", ""))
     stderr_log = Path(data.get("StandardErrorPath", ""))
-    assert stdout_log == REPO_ROOT / "logs/morning_watcher.log"
-    assert stderr_log == REPO_ROOT / "logs/morning_watcher.log"
+    assert stdout_log.parts[-2:] == ("logs", "morning_watcher.log")
+    assert stderr_log.parts[-2:] == ("logs", "morning_watcher.log")
 
     # Environment variables
     env = data.get("EnvironmentVariables", {})
     assert env.get("PYTHONUNBUFFERED") == "1"
     assert "PATH" in env
-    assert env.get("PYTHONPATH") == str(REPO_ROOT)
+    assert Path(env.get("PYTHONPATH", "")) == Path(data.get("WorkingDirectory", ""))
 
     # StartCalendarInterval for Weekdays 1 through 5 at 08:30
     intervals = data.get("StartCalendarInterval", [])

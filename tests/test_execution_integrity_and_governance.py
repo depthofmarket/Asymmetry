@@ -747,12 +747,18 @@ class TestConfirmedFlatStateForS4AndS5:
             assert "ctx.closeAtMarket();\n            trade.closed = true;" not in code
             assert "ctx.closeAtMarket();\n                trade.closed = true;" not in code
 
-    def test_protective_stop_retained_during_flatten(self):
-        """When flatten is submitted, protective stop must NOT be cancelled prematurely."""
+    def test_flatten_waits_for_confirmed_cancellation_of_entry_and_brackets(self):
+        """A market flatten must wait until entry and both bracket legs are terminal."""
         for key in ["S4", "S5"]:
             code = STUDY_FILES[key].read_text(encoding="utf-8")
-            # It must cancel only tpOrder if active, preserving slOrder
-            assert "ctx.cancelOrders(trade.tpOrder);" in code
+            start = code.index("private void submitFlatten(")
+            end = code.index("\n    @Override", start)
+            helper = code[start:end]
+            assert "Order[] workingOrders = {trade.entryOrder, trade.slOrder, trade.tpOrder};" in helper
+            assert "workingOrder.isCancelled() || workingOrder.isFilled()" in helper
+            assert "ctx.cancelOrders(workingOrder);" in helper
+            assert helper.index("ctx.cancelOrders(workingOrder);") < helper.index("ctx.createMarketOrder(")
+            assert "trade.flattenPending = true;" in helper
 
 
 # ==============================================================================
@@ -791,6 +797,45 @@ class TestS1S3OrderIdentityAndPartialFillIntegrity:
             assert "trade.attachedBracketQty = contracts;" in code, (
                 f"{key} must track attachedBracketQty"
             )
+
+    def test_partial_fills_reconcile_average_price_and_both_bracket_legs(self):
+        """Cumulative position average and quantity must drive working bracket updates."""
+        for key in ["S1", "S2", "S3"]:
+            code = STUDY_FILES[key].read_text(encoding="utf-8")
+            assert "ctx.getAvgEntryPrice() > 0 ? ctx.getAvgEntryPrice()" in code
+            assert "trade.slOrder.setAdjStopPrice(stopPrice);" in code
+            assert "trade.slOrder.setAdjQuantity(contracts);" in code
+            assert "trade.tpOrder.setAdjLimitPrice(targetPrice);" in code
+            assert "trade.tpOrder.setAdjQuantity(contracts);" in code
+
+    def test_s2_s3_target_cancellation_handling_is_independent_of_stop(self):
+        """A cancelled target must be tracked even when the stop was not cancelled."""
+        def block_for(source: str, marker: str) -> str:
+            start = source.index(marker)
+            opening = source.index("{", start)
+            depth = 0
+            for index in range(opening, len(source)):
+                if source[index] == "{":
+                    depth += 1
+                elif source[index] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        return source[start:index + 1]
+            raise AssertionError(f"Unclosed block for {marker}")
+
+        for key in ["S2", "S3"]:
+            code = STUDY_FILES[key].read_text(encoding="utf-8")
+            start = code.index("public void onOrderCancelled")
+            end = code.index("public void onPositionClosed", start)
+            handler = code[start:end]
+            stop_marker = "if (order == trade.slOrder" if key == "S2" else "if (trade != null && (order == trade.slOrder"
+            target_marker = "if (order == trade.tpOrder)" if key == "S2" else "if (trade != null && order == trade.tpOrder)"
+            stop_block = block_for(handler, stop_marker)
+            target_block = block_for(handler, target_marker)
+            assert "trade.tpOrder" not in stop_block
+            assert "trade.tpOrder = null;" in target_block
+            assert "trade.flattenPending" in target_block
+            assert "submitMarketFlatten" in target_block
 
     def test_protective_stop_rejection_triggers_emergency_flatten_in_s1_s2_s3(self):
         """Rejection of protective stop order while position open must execute emergency flatten."""

@@ -438,11 +438,15 @@ def test_pre_commit_hook_blocks_invalid_wiki_content(tmp_path: Path):
         shutil.copy(ROOT / doc, tmp_path / doc)
 
     # 3. Install pre-commit hook
-    hooks_dir = tmp_path / ".git" / "hooks"
-    hooks_dir.mkdir(parents=True, exist_ok=True)
-    hook_file = hooks_dir / "pre-commit"
-    shutil.copy(ROOT / ".git" / "hooks" / "pre-commit", hook_file)
-    hook_file.chmod(0o755)
+    install_hooks = subprocess.run(
+        ["bash", str(scripts_dir / "install_wiki_hooks.sh")],
+        cwd=str(tmp_path),
+        capture_output=True,
+        text=True,
+    )
+    assert install_hooks.returncode == 0, install_hooks.stderr
+    hook_file = tmp_path / ".git" / "hooks" / "pre-commit"
+    assert hook_file.is_file()
 
     run_git_local(["add", "."])
     run_git_local(["commit", "-m", "Initial clean repository state"])

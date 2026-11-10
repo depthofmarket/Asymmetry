@@ -171,7 +171,7 @@ def generate_signals(
         cons = day_df[(day_df["m"] >= params.consolidation_start_m) & (day_df["m"] <= params.consolidation_end_m)]
         trade_bars = day_df[(day_df["m"] >= params.entry_start_m) & (day_df["m"] <= params.session_flatten_m)]
 
-        if len(cons) < params.min_consolidation_bars or len(trade_bars) < params.min_trade_bars:
+        if len(cons) < params.min_consolidation_bars:
             continue
 
         h_cons = float(cons["high"].max())
@@ -185,9 +185,11 @@ def generate_signals(
         macro_trend = int(d_info["macro_trend"])
 
         # Check entry triggers in [10:15, 11:15 ET]
-        for idx, row in trade_bars.iterrows():
+        for trade_bar_count, (idx, row) in enumerate(trade_bars.iterrows(), start=1):
             if row["m"] > params.entry_end_m:
                 break
+            if trade_bar_count < params.min_trade_bars:
+                continue
 
             close_p = float(row["close"])
             sig = 0

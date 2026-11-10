@@ -30,7 +30,7 @@ jobs:
         run: python scripts/verify_wiki_integrity.py
 
   pytest-suite:
-    name: Pytest Automated Test Suite
+    name: Portable Pytest Suite
     runs-on: ubuntu-latest
     needs: wiki-integrity
     steps:
@@ -49,4 +49,4 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run Pytest
-        run: pytest -v
+        run: pytest -v -m "not private_data and not generated_results and not local_account_state and not macos_env"

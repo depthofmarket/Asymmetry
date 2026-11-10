@@ -18,7 +18,7 @@ The repository maintains a strict separation between the **3-Strategy Production
 | **Candidate S5 (10:15 ET)** | `crude_rth_expansion_s5` | `CANDIDATE` | `MCL` (`10:15–12:30`) | 102 | 36.27% | **1.37** | **+$791.00** | -$348.50 | ⚠️ `CANDIDATE_TIER_QUARANTINED` |
 | **Forward Demo Parity** | `lucid_flex_forward_demo` | `FORWARD_DEMO` | `MNQ/MES/MGC` | 1 | 100.0% | 99.00 | +$144.70 | $0.00 | ⚠️ `LOW_SAMPLE_SIZE` |
 
-- **Current Repository Branch**: `main`
+- **Current Repository Branch**: `depthofmarket-execution-safety-audit`
 - **Canonical Provenance Store**: `results/backtest_provenance.db` (26 verified runs recorded: 5 canonical baselines, 3 parameter plateau sweeps, 1 alpha factory walkforward, 1 forward demo, 16 candidate runs including verified S4 and S5)
 - **5-Strategy Expansion Empirical Verification (`results/m3_portfolio_ratchet_simulation.json`)**:
   - **Empirical $5 \times 5$ Daily Return Correlation Matrix**: Maximum pairwise $|\rho| = 0.0599 \ll 0.20$ across 1,515 trading sessions (`2021–2026`).
@@ -33,6 +33,16 @@ The repository maintains a strict separation between the **3-Strategy Production
   4. `LucidAsianEveningReversionStudy.java` (`ASIAN_EVENING_REVERSION_S4` on MNQ, S4)
   5. `LucidCrudeRthExpansionStudy.java` (`CRUDE_RTH_EXPANSION_S5` on MCL, S5)
 - **Agent Swarm & Skills Status**: 5 permanent specialized agents configured in `.agents/agents/` and 5 modular skills active in `.agents/skills/`
+
+### Current Worktree Execution-Safety Audit (2026-11-10)
+
+- Implemented confirmed-flat lifecycle handling, order-correlated flatten rejection/cancellation handling, separate S4/S5 stop and target creation/submission attempts, fail-closed partial-entry reconciliation, and cumulative S1–S3 fill/bracket synchronization.
+- Fixed the S2/S3 target-cancellation callback path so target tracking and pending flatten continuation do not depend on the stop being cancelled.
+- S5's minimum trade-window count is causal in both Python and Java: only observed/completed bars through the candidate bar count.
+- Restart recovery recreates daily locks and reports untracked positions or unconfirmed coverage, but does not restore unknown active-order/trade identities or blindly recreate protection.
+- S4's Java Path A vs Python Path B parity remains unresolved. The local provenance query did not return a verified S4 run; existing wiki performance prose and bundle references are not treated as verified for this worktree.
+- Watcher path and pre-commit hook tests no longer depend on a fixed machine path or the worktree's `.git/hooks`. CI excludes only tests marked for private datasets, generated results, local account state, or macOS dependencies.
+- Java sources have not been compiled or deployed for this worktree revision. No strategy signals, parameters, or risk limits were changed.
 
 ---
 

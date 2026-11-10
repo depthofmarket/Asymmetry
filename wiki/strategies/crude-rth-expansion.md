@@ -8,7 +8,7 @@ tags:
   - mcl
   - crude-oil
 created: "2026-11-08"
-updated: "2026-11-08"
+updated: "2026-11-10"
 status: active
 strategies:
   - crude_rth_expansion_s5
@@ -39,6 +39,7 @@ Earlier NYMEX energy hypotheses at the 09:00 ET pit open (Failed Idea #25), 09:4
   3. **Lagged Macro Trend Alignment**: Prior completed day's `SMA(20) > SMA(50)`.
   4. **Morning Consolidation Box (`09:30–10:14 ET`)**: Box width $R_{\text{box}} = H_{09:30\text{--}10:14} - L_{09:30\text{--}10:14} \in [\$0.30, \$1.20]$.
 - **Entry Trigger**: First 1-minute bar between `10:15` and `11:15 ET` closing strictly outside $[L_{\text{box}}, H_{\text{box}}]$ triggers a next-bar open market entry (max 1 trade per session).
+- **Causal Trade-Window Completeness**: The configurable minimum trade-bar count is evaluated at each eligible completed breakout bar using only bars observed from `10:15 ET` through that bar. Python and Java therefore agree that a live last-bar evaluation cannot qualify using future bars or bypass the minimum-window gate.
 - **Cost Model**: 1-tick entry slippage (`$1.00`/contract), 2-tick adverse stop slippage (`$2.00`/contract), plus `$3.50` round-trip micro energy commission (`$6.50` total round-trip friction on stop-out, `$5.50` on target/time exit).
 - **Bracket Geometry & Pareto Anti-Martingale Ratchet Sizing**:
   - **Base Bracket Distance**: Stop Loss = `$0.45/bbl` (`45` ticks = `$45.00`/micro gross, `$51.50`/micro net); Profit Target = `$0.90/bbl` (`90` ticks = `2.0R`, `$90.00`/micro gross, `$84.50`/micro net); Breakeven Ratchet at `+1.0R` (`+$0.45/bbl` favorable excursion locks stop at entry `+2` ticks); Mandatory Time Exit at `12:30:00 ET`.

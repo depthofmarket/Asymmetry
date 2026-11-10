@@ -172,6 +172,7 @@ def test_no_naked_numbers_formatting(temp_store, tmp_path):
     assert "PROVENANCE VERIFICATION FOOTER" in quote
 
 
+@pytest.mark.generated_results
 def test_query_cli():
     # 1. Run list
     proc_list = subprocess.run(

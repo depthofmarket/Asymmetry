@@ -383,6 +383,7 @@ class TestGrossProfitAndDSRStress:
         assert flawed_gross == 744.5, "Flawed formula should have produced 744.5"
         # The authentic calculation avoids creating $744.50 of phantom profit
 
+    @pytest.mark.private_data
     def test_gross_profit_single_massive_win_and_outlier_dominance(self):
         """Single massive win: gross_profit is authentic sum, and outlier dominance triggers."""
         trades = pd.DataFrame({

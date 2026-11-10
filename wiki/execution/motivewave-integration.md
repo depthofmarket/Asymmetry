@@ -7,7 +7,7 @@ tags:
   - cqg
   - broker-bridge
 created: "2026-11-05"
-updated: "2026-11-06"
+updated: "2026-11-10"
 status: active
 strategies:
   - morning_va_breakout_s1
@@ -80,16 +80,19 @@ Candidate strategies must strictly reject full-size contracts that share root su
 
 ### Confirmed Flat State Lifecycle & Order Management
 To eliminate phantom trade closures and unprotected positions:
-- **No Premature Closed State**: Emitting `closeAtMarket()` or scheduled time flattens sets `trade.flattenSubmitted = true` and cancels limit `tpOrder`, but preserves protective `slOrder` and **never** sets `trade.closed = true`.
-- **`onPositionClosed(OrderContext ctx)`**: Official MotiveWave callback invoked when platform position reaches zero. Cancels residual working orders, resets `flattenSubmitted = false`, and transitions `trade.closed = true`.
+- **No Premature Closed State**: A flatten request is not a fill. S1–S5 keep the active trade pending until a zero position is observed; submission, cancellation request, rejection, or partial fill alone does not close it.
+- **Tracked Flatten Orders**: Rejection/cancellation callbacks are correlated to the submitted flatten order identity. Unrelated rejected orders do not reset flatten state; a rejected flatten remains pending for retry while position remains open.
+- **Cancellation Before Flatten**: Before submitting a market flatten, tracked entry and bracket orders must be observed cancelled/filled. Cancellation requests are not treated as confirmation; order callbacks resume the transition.
+- **Independent Bracket Attempts (S4 & S5)**: Stop and target creation/submission failures are handled independently. A missing/unconfirmed protective stop follows the emergency flatten policy; a rejected target is recorded while a confirmed stop is retained where possible.
+- **`onPositionClosed(OrderContext ctx)`**: On confirmed zero position, residual orders are cancelled, flatten state is reset, and the active trade is closed.
 - **Replay vs Live Calculation**: `calculate()` marks `trade.closed = true` strictly on historical replay bars (`series.size() - 1 > index`). Live bars rely on `onPositionClosed` or confirmed `onOrderFilled` (`ctx.getPosition() == 0`).
 - **Emergency Stop-Out Protection**: In `onOrderRejected` and `onOrderCancelled`, if a protective stop order (`trade.slOrderId`) is rejected or cancelled while an open position exists (`ctx.getPosition() != 0`), an emergency market flatten (`ctx.closeAtMarket()`) is triggered immediately.
 
 ### S1–S3 Order Identity & Fill-Anchored Brackets
 Baseline studies (S1, S2, S3) enforce strict order attribution:
 - **Strict Order ID Matching**: Removed loose boolean order matching; `onOrderFilled` verifies `trade.entryOrderId.equals(order.getOrderId())`.
-- **Fill-Anchored Bracket Pricing**: Initial stop and target prices are calculated from actual execution fill (`order.getAvgFillPrice()`), eliminating slippage-induced bracket skew.
-- **Partial Fill Quantity Synchronization**: Dynamically updates working bracket order quantities (`slOrder.setAdjQuantity()`, `tpOrder.setAdjQuantity()`) to match partial fills.
+- **Cumulative Fill Reconciliation**: Uses the position's average entry price when available, retains fill-distance geometry, and updates working bracket prices and quantities to match cumulative fills.
+- **Partial Entry Rejection**: Reconciles the remaining position and protective quantity; if protection cannot be confirmed, requests a fail-closed flatten.
 
 ### Cross-Process Atomic Daily Locks
 - **File-Based Lock**: Prior to order submission, studies atomically create a lock file (`results/forward_test/.locks/<study>_<symbol>_<date>.lock`) via `lockFile.createNewFile()`. If the file exists, execution aborts.
@@ -110,6 +113,10 @@ Candidate strategies are segregated from baseline production trading:
 2. **Explicit User Opt-In Required**: `isCandidateAutoTradeAuthorized()` requires `isCandidateTier()` and explicit `settings.getBoolean(ENABLE_LIVE_AUTOTRADE)` set by user action.
 3. **Reload Safety**: `onLoad(defaults)` and `initialize(desc)` explicitly sanitize execution state to disabled (`userExplicitlyAuthorizedAutoTrade = false; settings.setAutoEntry(false); settings.setBoolean(ENABLE_LIVE_AUTOTRADE, false);`). Upgrades or workspace reloads cannot silently flip candidate execution to enabled.
 4. **Visual & Acoustic Signals Preserved**: Chart markers, levels, and sound alerts (`ctx.signal` and `Toolkit.beep()`) remain active even when automated execution is disabled, enabling live operator observation.
+
+### Restart Recovery Limit
+
+Restart handling restores daily locks and reports an open position or unverified protective coverage when active trade/order identities cannot be recovered. It deliberately does not recreate protective orders blindly. Broker-position, working-order, and active-trade reconciliation across a restart remains limited by the order state available to the current study instance. The current worktree's Java changes have not been compiled or deployed; prior extension artifacts do not contain or verify these edits.
 
 ### Unified Account-Risk State Interface & Fail-Closed Enforcement
 All five Java studies load canonical risk state from `demo_parity_state.json`:

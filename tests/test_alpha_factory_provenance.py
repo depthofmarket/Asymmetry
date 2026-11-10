@@ -40,6 +40,7 @@ def temp_store(tmp_path):
 class TestAlphaFactoryProvenanceRemediation:
     """Comprehensive regression tests for Priority 1 provenance remediation."""
 
+    @pytest.mark.private_data
     def test_record_flag_dry_run_does_not_mutate_db(self, temp_store, monkeypatch, capsys):
         """P1.1: When --record is False/omitted, DB must not be modified, and dry-run notice is output."""
         monkeypatch.setattr(af, "default_store", temp_store)
@@ -57,6 +58,7 @@ class TestAlphaFactoryProvenanceRemediation:
         assert "PROVENANCE VERIFICATION FOOTER" in captured
         assert "DRY RUN (not recorded to database; pass --record to persist)" in captured
 
+    @pytest.mark.private_data
     def test_record_flag_persists_to_db_when_passed(self, temp_store, monkeypatch, capsys):
         """P1.1: When --record is True, run is persisted into the database."""
         monkeypatch.setattr(af, "default_store", temp_store)
@@ -74,6 +76,7 @@ class TestAlphaFactoryProvenanceRemediation:
         assert "PROVENANCE VERIFICATION FOOTER" in captured
         assert "Run successfully registered in results/backtest_provenance.db" in captured
 
+    @pytest.mark.private_data
     def test_git_commit_dynamically_resolved(self, temp_store, monkeypatch):
         """P1.2: Git commit is dynamically queried from HEAD, never hardcoded '8cb04d68a9'."""
         monkeypatch.setattr(af, "default_store", temp_store)
@@ -88,6 +91,7 @@ class TestAlphaFactoryProvenanceRemediation:
         assert run.git_commit == expected_commit
         assert run.git_commit != "8cb04d68a9"
 
+    @pytest.mark.private_data
     def test_date_range_dynamically_resolved_per_strategy(self):
         """P1.3: Date range matches min/max date of trade dataframe, not static strings."""
         trades_df = da.load_trades()
@@ -110,6 +114,7 @@ class TestAlphaFactoryProvenanceRemediation:
                 assert expected_start == "2021-01-20"
                 assert expected_end == "2026-08-19"
 
+    @pytest.mark.private_data
     def test_date_range_dynamically_resolved_on_arbitrary_slice(self, temp_store, monkeypatch):
         """P1.3: Slicing trades to a custom window updates date_start and date_end in record."""
         trades_df = da.load_trades()
@@ -136,6 +141,7 @@ class TestAlphaFactoryProvenanceRemediation:
         assert run.date_end == "2024-12-27"
         assert run.date_end != "2026-10-30"
 
+    @pytest.mark.private_data
     def test_gross_profit_computed_from_winning_trades(self):
         """P1.4: Gross profit is sum of winning trades, NOT net_pnl + 1000.0."""
         trades_df = da.load_trades()
@@ -167,6 +173,7 @@ class TestAlphaFactoryProvenanceRemediation:
                 headers = re.findall(r"### \d+\.\s+", f.read())
                 assert baseline >= len(headers)
 
+    @pytest.mark.private_data
     def test_dsr_trial_count_scales_evt_hurdle(self):
         """P1.5: EVT hurdle SR* strictly increases with higher trial count N."""
         trades_df = da.load_trades()
@@ -178,6 +185,7 @@ class TestAlphaFactoryProvenanceRemediation:
         assert audit_low_n["trials"] == 20
         assert audit_high_n["trials"] == 100
 
+    @pytest.mark.private_data
     def test_cli_trials_override(self, temp_store, monkeypatch):
         """P1.5: CLI argument --trials correctly overrides default baseline."""
         monkeypatch.setattr(af, "default_store", temp_store)
@@ -191,6 +199,7 @@ class TestAlphaFactoryProvenanceRemediation:
         assert run is not None
         assert "Trials: 50" in run.notes
 
+    @pytest.mark.private_data
     def test_strategy_flag_alias(self, temp_store, monkeypatch, capsys):
         """CLI supports both --strategy and --evaluate interchangeably."""
         monkeypatch.setattr(af, "default_store", temp_store)
@@ -202,6 +211,7 @@ class TestAlphaFactoryProvenanceRemediation:
         captured = capsys.readouterr().out
         assert "lucid_flex_ensemble" in captured
 
+    @pytest.mark.private_data
     def test_binding_veto_on_unviable_alpha(self, temp_store, monkeypatch, capsys, tmp_path):
         """P1.5: Alpha failing multiple testing hurdle (S2 standalone) receives binding veto with baseline protection."""
         monkeypatch.setattr(af, "default_store", temp_store)
