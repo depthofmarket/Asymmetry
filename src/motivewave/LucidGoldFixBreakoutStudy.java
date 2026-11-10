@@ -1625,6 +1625,18 @@ public class LucidGoldFixBreakoutStudy extends Study {
             trade.flattenReason = reason;
         }
         if (trade.flattenSubmitted) return;
+        if (trade.flattenCancelPendingOrder != null && ctx != null && ctx.getPosition() != 0) {
+            String coverageFailure = flattenStopCoverageFailure(ctx, trade, ctx.getPosition());
+            if (coverageFailure != null) {
+                reportFlattenOperatorAction(ctx, trade,
+                    "POSITION_PROTECTION_RECONCILE_DURING_CANCEL_PENDING",
+                    trade.slOrder, 0L,
+                    coverageFailure + "|FILL_RECONCILIATION_REQUIRED|PENDING_CANCEL_BLOCKS_FLATTEN_PROGRESS");
+            } else if (trade.slOrder != null && trade.slOrder.isActive()) {
+                verifyAndSyncBracketQuantities(ctx, trade);
+            }
+        }
+
         if (checkFlattenCancelPending(ctx, trade)) return;
         if (trade.flattenCancelBlocked && trade.flattenCancelPendingOrder == null) {
             int currentPosition = ctx.getPosition();
