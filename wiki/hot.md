@@ -37,10 +37,14 @@ The repository maintains a strict separation between the **3-Strategy Production
 ### Current Worktree Execution-Safety Audit (2026-11-10)
 
 - Implemented confirmed-flat lifecycle handling, order-correlated flatten rejection/cancellation handling, separate S4/S5 stop and target creation/submission attempts, fail-closed partial-entry reconciliation, and cumulative S1–S3 fill/bracket synchronization.
+- Follow-up P0 hardening now cancels only still-working entry/target orders, retains any working protective stop, and blocks automatic market exits when the position remains open because the inspected SDK offers no atomic/reduce-only transition. All five studies emit operator-action diagnostics; no broker-side flatness or live safety is assumed.
+- S4/S5 partial-fill bracket updates retain pending quantities/prices until modified callbacks confirm active order quantity and price; failures route to fail-closed handling. Final focused tests passed (72); portable CI selection reported 848 passed, 1 skipped, 128 deselected, 2 subtests passed, and one unchanged morning-watcher test failed with `KeyError: 'macro_reasons'`. Java compilation and broker execution remain unverified.
 - Fixed the S2/S3 target-cancellation callback path so target tracking and pending flatten continuation do not depend on the stop being cancelled.
 - S5's minimum trade-window count is causal in both Python and Java: only observed/completed bars through the candidate bar count.
 - Restart recovery recreates daily locks and reports untracked positions or unconfirmed coverage, but does not restore unknown active-order/trade identities or blindly recreate protection.
 - S4's Java Path A vs Python Path B parity remains unresolved. The local provenance query did not return a verified S4 run; existing wiki performance prose and bundle references are not treated as verified for this worktree.
+- S1/S3 restart diagnostics now execute on the nonzero-position path and restore the daily lock without recreating unknown protection; S1-S3 live bracket-quantity reconciliation and S4/S5 breakeven adjustments only claim state after active order getters/callbacks match.
+- Final verification: focused execution-integrity/S5 tests passed (72); portable pytest selection reported 848 passed, 1 skipped, 128 deselected, and 2 subtests passed, with one unrelated morning-watcher failure (`KeyError: 'macro_reasons'`). Java brace balance and `git diff --check` passed; compilation and broker execution remain unverified because no Java runtime/compiler is installed.
 - Watcher path and pre-commit hook tests no longer depend on a fixed machine path or the worktree's `.git/hooks`. CI excludes only tests marked for private datasets, generated results, local account state, or macOS dependencies.
 - Java sources have not been compiled or deployed for this worktree revision. No strategy signals, parameters, or risk limits were changed.
 

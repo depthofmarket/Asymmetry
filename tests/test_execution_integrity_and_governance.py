@@ -738,27 +738,129 @@ class TestConfirmedFlatStateForS4AndS5:
             )
 
     def test_close_at_market_does_not_prematurely_mark_closed(self):
-        """closeAtMarket() must not be immediately followed by trade.closed = true."""
+        """Flatten helpers must wait for confirmed flat and not assume submission succeeds."""
         for key in ["S4", "S5"]:
             code = STUDY_FILES[key].read_text(encoding="utf-8")
-            # Must set trade.flattenSubmitted = true when closeAtMarket() is issued
-            assert "trade.flattenSubmitted = true;" in code
-            # Reject pattern: ctx.closeAtMarket(); trade.closed = true;
+            assert "trade.closed = true;" in code
             assert "ctx.closeAtMarket();\n            trade.closed = true;" not in code
             assert "ctx.closeAtMarket();\n                trade.closed = true;" not in code
 
     def test_flatten_waits_for_confirmed_cancellation_of_entry_and_brackets(self):
-        """A market flatten must wait until entry and both bracket legs are terminal."""
-        for key in ["S4", "S5"]:
+        """Without atomic/reduce-only support, retain a working stop and require intervention."""
+        for key in ["S1", "S2", "S3", "S4", "S5"]:
             code = STUDY_FILES[key].read_text(encoding="utf-8")
-            start = code.index("private void submitFlatten(")
-            end = code.index("\n    @Override", start)
+            method_name = "submitFlatten(" if key in {"S4", "S5"} else "submitMarketFlatten("
+            start = code.index(f"private void {method_name}")
+            end_candidates = [
+                offset for marker in ("\n    @Override", "\n    private ")
+                if (offset := code.find(marker, start)) >= 0
+            ]
+            end = min(end_candidates)
             helper = code[start:end]
-            assert "Order[] workingOrders = {trade.entryOrder, trade.slOrder, trade.tpOrder};" in helper
+            assert "Order[] workingOrders = {trade.entryOrder, trade.tpOrder, trade.slOrder};" in helper
             assert "workingOrder.isCancelled() || workingOrder.isFilled()" in helper
             assert "ctx.cancelOrders(workingOrder);" in helper
-            assert helper.index("ctx.cancelOrders(workingOrder);") < helper.index("ctx.createMarketOrder(")
             assert "trade.flattenPending = true;" in helper
+            assert "trade.flattenCancelBlocked" in helper
+            assert "currentPosition = ctx.getPosition()" in helper
+            assert "if (workingOrder == trade.slOrder)" in helper
+            assert "PROTECTIVE_STOP_RETAINED" in helper
+            assert "ALL_TRACKED_ORDERS_TERMINAL|NO_MARKET_EXIT_SUBMITTED" in helper
+            assert "ctx.createMarketOrder(" not in helper
+            assert "ctx.submitOrders(" not in helper
+
+    def test_flatten_cancel_rejection_is_correlated_and_fail_closed(self):
+        for key in ["S1", "S2", "S3", "S4", "S5"]:
+            code = STUDY_FILES[key].read_text(encoding="utf-8")
+            assert "flattenCancelPendingOrder" in code
+            assert "FLATTEN_CANCEL_REJECTED_ORDER_STILL_ACTIVE_OPERATOR_ACTION_REQUIRED" in code
+            assert "flattenCancelBlocked = true;" in code
+            assert "TARGET_REJECTION_STATUS_UNCERTAIN_FLATTEN" in code
+
+    def test_initial_brackets_confirm_stop_independently_from_optional_target(self):
+        for key in ["S1", "S2", "S3"]:
+            code = STUDY_FILES[key].read_text(encoding="utf-8")
+            helper_start = code.index("private void submitInitialBrackets(")
+            helper_end = code.index("\n    @Override", helper_start)
+            helper = code[helper_start:helper_end]
+            assert "Order sl = null;" in helper and "Order tp = null;" in helper
+            assert "sl = ctx.createStopOrder(" in helper
+            assert "tp = ctx.createLimitOrder(" in helper
+            assert "PROTECTIVE_STOP_CREATION_FAILED" in helper
+            assert "PROFIT_TARGET_CREATION_FAILED_OPTIONAL" in helper
+            assert "ctx.submitOrders(sl);" in helper
+            assert "ctx.submitOrders(tp);" in helper
+            assert "PROTECTIVE_STOP_SUBMISSION_STATUS_UNKNOWN" in helper
+            assert "PROFIT_TARGET_SUBMISSION_FAILED_OPTIONAL" in helper
+            assert helper.index("trade.slOrder = sl;") < helper.index("ctx.submitOrders(sl);")
+            assert helper.index("trade.tpOrder = tp;") < helper.index("ctx.submitOrders(tp);")
+            assert "sl.isActive()" in helper
+            assert "sl.getQuantity() == contracts" in helper
+            assert "trade.bracketSetupAttempted = true;" in helper
+            assert "INITIAL_PROTECTIVE_STOP_UNCONFIRMED_EMERGENCY_FLATTEN" in helper
+            assert "PROFIT_TARGET_UNAVAILABLE_STOP_RETAINED" in helper
+        for key in ["S4", "S5"]:
+            code = STUDY_FILES[key].read_text(encoding="utf-8")
+            assert "ctx.submitOrders(slOrder);" in code
+            assert "ctx.submitOrders(tpOrder);" in code
+            assert "submittedStopPrice != null" in code
+            assert "slOrder.getQuantity() == posQty" in code
+            assert "stopSyncPending" in code and "targetSyncPending" in code
+            assert "PARTIAL_FILL_BRACKET_SYNC_CONFIRMED" in code
+            assert "PARTIAL_FILL_STOP_SYNC_UNCONFIRMED" in code
+
+    def test_partial_flatten_fill_does_not_duplicate_active_exit(self):
+        for key in ["S1", "S2", "S3", "S4", "S5"]:
+            code = STUDY_FILES[key].read_text(encoding="utf-8")
+            assert "FLATTEN_FILL_STATUS_UNCERTAIN_DUPLICATE_SUPPRESSED" in code
+            assert "order.isActive() || (!order.isFilled() && !order.isCancelled())" in code
+
+    def test_s1_s3_restart_position_diagnostic_runs_in_open_position_path(self):
+        for key in ["S1", "S3"]:
+            code = STUDY_FILES[key].read_text(encoding="utf-8")
+            start = code.index("public void onBarClose(OrderContext ctx)")
+            end_marker = "\n    private synchronized void executeAutoTradeIfArmed("
+            end = code.index(end_marker, start)
+            on_bar = code[start:end]
+            flat_branch = on_bar[:on_bar.index("if (ctx.getPosition() != 0)")]
+            open_branch = on_bar[on_bar.index("if (ctx.getPosition() != 0)"):]
+            assert "RESTART_POSITION_UNRECONCILED" not in flat_branch
+            assert "if (trade == null && RESTART_POSITION_REPORTED.add(today))" in open_branch
+            assert "DAILY_SUBMITTED_DATES.add(today);" in open_branch
+            assert "getDailyLockFile(" in open_branch
+            assert "do not recreate protection" in open_branch
+
+    def test_s1_s3_live_bracket_quantity_sync_is_verified_before_tracking(self):
+        for key in ["S1", "S2", "S3"]:
+            code = STUDY_FILES[key].read_text(encoding="utf-8")
+            start = code.index("public void onBarClose(OrderContext ctx)")
+            end_marker = "\n    private synchronized void executeAutoTradeIfArmed("
+            end = code.index(end_marker, start)
+            on_bar = code[start:end]
+            sync_start = on_bar.index("trade.bracketsSubmitted && trade.attachedBracketQty")
+            sync_end = on_bar.index("\n            }", sync_start) + len("\n            }")
+            sync = on_bar[sync_start:sync_end]
+            assert "ctx.submitOrders(trade.slOrder)" in sync
+            assert "trade.slOrder.getQuantity() == contracts" in sync
+            assert "syncConfirmed = stopConfirmed && targetConfirmed;" in sync
+            assert "if (syncConfirmed) trade.attachedBracketQty = contracts;" in sync
+            assert "BRACKET_QTY_SYNC_UNCONFIRMED" in sync
+
+    def test_s4_s5_breakeven_modification_waits_for_confirmed_state(self):
+        for key in ["S4", "S5"]:
+            code = STUDY_FILES[key].read_text(encoding="utf-8")
+            start = code.index("public synchronized boolean modifyWorkingStopToBreakeven(")
+            end = code.index("\n    public synchronized void verifyAndSyncBracketQuantities(", start)
+            modify = code[start:end]
+            assert "trade.slOrder.getQuantity() != posQty" in modify
+            assert "trade.slOrder.setAdjQuantity" not in modify
+            assert "trade.attachedBracketQty = posQty" not in modify
+            callback_start = code.index("public void onOrderModified(OrderContext ctx, Order order)")
+            callback_end = code.index("\n    private void completePendingBracketSync(", callback_start)
+            callback = code[callback_start:callback_end]
+            assert "order.getQuantity() != Math.abs(ctx.getPosition())" in callback
+            assert "BREAKEVEN_STOP_SYNC_UNCONFIRMED" in callback
+            assert "BREAKEVEN_RATCHET_CONFIRMED" in callback
 
 
 # ==============================================================================

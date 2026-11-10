@@ -8,6 +8,38 @@ This is an append-only, chronological journal recording all agent actions, docum
 > Allowed AGENT values: `[claude]`, `[gemini]`, `[codex]`, `[orchestrator]`, `[explorer]`, `[worker]`, `[auditor]`, `[human]`, `[hook]`.  
 > Allowed ACTION values: `[INGEST]`, `[QUERY]`, `[LINT]`, `[UPDATE]`, `[SYNC]`, `[REVISE]`, `[SETUP]`.
 
+## [2026-11-10 14:10:18 UTC] [auditor] [UPDATE] | Close remaining execution lifecycle gaps
+- **Pages Modified**:
+  - `wiki/execution/motivewave-integration.md`
+  - `wiki/hot.md`
+  - `wiki/log.md`
+- **Summary**: Moved S1/S3 untracked-position restart diagnostics into the nonzero-position path while restoring daily locks and avoiding automatic protection recreation. Guarded S1-S3 bar-close bracket quantity synchronization and stopped S4/S5 breakeven requests from claiming attached quantity or stop changes before active order confirmation. SDK class signatures expose submission/cancellation and order state but no reduce-only/OCO/atomic replace operation.
+- **Verification**: Focused execution-integrity/S5 pytest passed (72). Portable pytest selection reported 848 passed, 1 skipped, 128 deselected, 2 subtests passed, and one unrelated watcher failure (`tests/test_morning_watcher_daemon.py::test_watcher_once_execution`, `KeyError: 'macro_reasons'` at `scripts/watch_morning_demo_alerts.py:515`). Java brace balance (5/5) and `git diff --check` passed. SDK JAR was inspected; compilation and broker execution remain unverified because no Java runtime/compiler is installed.
+
+## [2026-11-10 13:58:33 UTC] [auditor] [UPDATE] | Prepare flatten order before stop cancellation
+- **Pages Modified**:
+  - `wiki/execution/motivewave-integration.md`
+  - `wiki/hot.md`
+  - `wiki/log.md`
+- **Summary**: Hardened S1-S5 flatten transitions to construct an unsubmitted market exit before cancelling a still-working protective stop, then reuse it only when its side and quantity match the fresh post-cancellation position. Construction failure at preparation leaves the protective stop intact; post-cancellation quantity changes are re-created and failures explicitly require operator action.
+- **Verification**: Focused execution-integrity/S5 suite passed (69). Final portable pytest selection reported 845 passed, 1 skipped, 128 deselected, 2 subtests passed, and the same unrelated `tests/test_morning_watcher_daemon.py::test_watcher_once_execution` failure (`KeyError: 'macro_reasons'` at `scripts/watch_morning_demo_alerts.py:515`). Java brace balance (5/5) and `git diff --check` passed. Java compilation and broker execution remain unverified because no Java runtime/compiler is available.
+
+## [2026-11-10 13:51:03 UTC] [auditor] [UPDATE] | Verify fail-closed MotiveWave lifecycle changes
+- **Pages Modified**:
+  - `wiki/execution/motivewave-integration.md`
+  - `wiki/hot.md`
+  - `wiki/log.md`
+- **Summary**: Completed S4/S5 active-order rejection correlation and logged flatten-order creation failures across S1-S5. Confirmed pending flatten state is not treated as a completed exit and retained the non-atomic broker-transition limitation.
+- **Verification**: `python3 -m pytest tests/test_execution_integrity_and_governance.py tests/test_crude_rth_expansion_s5.py -q --tb=short` passed (69). Portable selection `python3 -m pytest -q -m 'not private_data and not generated_results and not local_account_state and not macos_env'` reported 845 passed, 1 skipped, 128 deselected, 2 subtests passed, and 1 unrelated failure in `tests/test_morning_watcher_daemon.py::test_watcher_once_execution` (`KeyError: 'macro_reasons'` in `scripts/watch_morning_demo_alerts.py:515`). Wiki integrity passed before this journal update; `git diff --check` and Java brace balance passed. Java compilation and broker execution were unavailable/unverified because no Java runtime/compiler is installed.
+
+## [2026-11-10 13:40:08 UTC] [auditor] [UPDATE] | Fail-closed MotiveWave order lifecycle hardening
+- **Pages Modified**:
+  - `wiki/execution/motivewave-integration.md`
+  - `wiki/hot.md`
+  - `wiki/log.md`
+- **Summary**: Hardened S1-S5 flatten cancellation ordering and identity correlation; added independent S1-S3 initial stop/target submissions with stop-state verification; guarded S1-S3 partial-entry rejection and partial-fill bracket reconciliation; made S4/S5 partial-fill modification state pending until callback quantity/price checks pass. The MotiveWave API does not expose a reduce-only or atomic cancel/replace operation, so broker race semantics remain unverified.
+- **Verification**: Focused pytest run initially reported 66 passed and 2 failures from stale source assertions; tests were updated for the new cancellation sequence and bracket confirmation behavior. Final rerun and Java compilation are pending; Java runtime/compiler is unavailable in this environment.
+
 ---
 
 ## [2026-11-09 20:35:00 UTC] [gemini] [UPDATE] | Final Execution Safety, Exact Micro Validation & Lifecycle Integrity
@@ -734,3 +766,8 @@ This is an append-only, chronological journal recording all agent actions, docum
 - **Pages Modified**: `wiki/strategies/asian-evening-reversion.md`, `wiki/strategies/crude-rth-expansion.md`, `wiki/execution/motivewave-integration.md`, `wiki/hot.md`, `wiki/log.md`
 - **Summary**: Completed focused S1–S5 execution lifecycle safety fixes: flatten tracking waits for terminal entry/bracket states, flatten rejection/cancellation is order-correlated, stop and target submission are independent for S4/S5, remaining partial-entry positions are reconciled, and S1–S3 bracket prices/quantities follow cumulative average fills. Fixed independent S2/S3 target-cancellation handling. Made S5's minimum trade-bar gate causal in Python/Java, added fail-closed restart diagnostics without blindly recreating protection, and classified exact private-data/generated-result CI tests. Documented that S4 Path A/Path B parity and active-state restart reconstruction remain unresolved; the local S4 provenance query returned no verified run.
 - **Verification**: Focused pytest suites passed 93 tests; portable pytest selection passed 843 tests, 1 skipped, 128 deselected, and 2 subtests; wiki integrity passed 15/15 checks; `git diff --check` passed. Java compilation was not run because no Java runtime or MotiveWave SDK jars are available.
+
+## [2026-11-10 14:14:03 UTC] [copilot] [UPDATE] | Fail-closed flatten race handling across S1-S5
+- **Pages Modified**: `src/motivewave/LucidMorningVABreakoutStudy.java`, `src/motivewave/LucidMacroMomentumStudy.java`, `src/motivewave/LucidGoldFixBreakoutStudy.java`, `src/motivewave/LucidAsianEveningReversionStudy.java`, `src/motivewave/LucidCrudeRthExpansionStudy.java`, `tests/test_execution_integrity_and_governance.py`, `wiki/execution/motivewave-integration.md`, `wiki/hot.md`, `wiki/log.md`
+- **Summary**: Removed the unsafe non-atomic cancel-stop/submit-market transition from all five studies. Working protective stops are retained; if all tracked orders are terminal but position remains nonzero, automatic market exit is withheld and an operator-action diagnostic requires position/order reconciliation. Updated the regression to require no market order submission in these helpers.
+- **Verification**: `python3 -m pytest tests/test_execution_integrity_and_governance.py tests/test_crude_rth_expansion_s5.py -q --tb=short` passed 72 tests. Portable CI selection passed 848, skipped 1, deselected 128, reported 2 subtests, and failed the unchanged `tests/test_morning_watcher_daemon.py::test_watcher_once_execution` with `KeyError: 'macro_reasons'` in unchanged `scripts/watch_morning_demo_alerts.py:515`; this failure is outside the changed files, but no clean-baseline run was made. `python3 scripts/verify_wiki_integrity.py` passed 15/15; `git diff --check` passed. Java compilation unavailable because this host has no Java Runtime/compiler; broker behavior untested.

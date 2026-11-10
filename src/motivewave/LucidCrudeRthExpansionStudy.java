@@ -635,6 +635,7 @@ public class LucidCrudeRthExpansionStudy extends Study {
         public boolean closed = false;
         public boolean flattenSubmitted = false;
         public boolean flattenPending = false;
+        public boolean flattenCancelBlocked = false;
         public boolean restartCoverageReported = false;
         public String flattenEvent = "";
         public String flattenReason = "";
@@ -643,10 +644,18 @@ public class LucidCrudeRthExpansionStudy extends Study {
         public boolean breakevenApplied = false;
         public boolean breakevenModificationFailed = false;
         public boolean bracketsSubmitted = false;
+        public boolean bracketSetupAttempted = false;
+        public boolean stopSyncPending = false;
+        public boolean targetSyncPending = false;
+        public int pendingBracketQty = 0;
+        public double pendingBracketStopPrice = Double.NaN;
+        public double pendingBracketTargetPrice = Double.NaN;
+        public double pendingBracketAverageFill = Double.NaN;
         public Order entryOrder = null;
         public Order slOrder = null;
         public Order tpOrder = null;
         public Order flattenOrder = null;
+        public Order flattenCancelPendingOrder = null;
         public String entryOrderId = "";
         public String slOrderId = "";
         public String tpOrderId = "";
@@ -1095,17 +1104,45 @@ public class LucidCrudeRthExpansionStudy extends Study {
         }
         if (trade.flattenSubmitted) return;
 
-        Order[] workingOrders = {trade.entryOrder, trade.slOrder, trade.tpOrder};
+        if (trade.flattenCancelBlocked) {
+            logExecutionToCsv("FLATTEN_OPERATOR_ACTION_REQUIRED", trade.isLong ? "SELL" : "BUY",
+                Math.abs(ctx.getPosition()), trade.theoreticalEntryPrice, trade.actualEntryFill,
+                trade.entrySlippagePts, trade.stopPrice, trade.targetPrice,
+                "A tracked order cancellation was rejected or had unknown status; no market exit submitted.");
+            return;
+        }
+        Order[] workingOrders = {trade.entryOrder, trade.tpOrder, trade.slOrder};
         for (Order workingOrder : workingOrders) {
             if (workingOrder == null || workingOrder.isCancelled() || workingOrder.isFilled()) continue;
+            if (workingOrder == trade.slOrder) {
+                int positionBeforeStopCancel = ctx.getPosition();
+                if (positionBeforeStopCancel == 0) {
+                    trade.flattenOrder = null;
+                    trade.flattenPending = false;
+                    trade.closed = true;
+                    return;
+                }
+                trade.flattenCancelBlocked = true;
+                logExecutionToCsv("FLATTEN_NON_ATOMIC_TRANSITION_OPERATOR_ACTION_REQUIRED",
+                    trade.isLong ? "SELL" : "BUY", Math.abs(positionBeforeStopCancel),
+                    trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts,
+                    trade.stopPrice, trade.targetPrice,
+                    trade.flattenReason + "|PROTECTIVE_STOP_RETAINED|SDK_HAS_NO_REDUCE_ONLY_OR_ATOMIC_REPLACE");
+                return;
+            }
+            if (trade.flattenCancelPendingOrder == workingOrder) return;
+            trade.flattenCancelPendingOrder = workingOrder;
             try {
                 ctx.cancelOrders(workingOrder);
-                logExecutionToCsv("FLATTEN_WAITING_FOR_ORDER_CANCELLATION", trade.isLong ? "SELL" : "BUY",
+                logExecutionToCsv(workingOrder == trade.slOrder
+                    ? "FLATTEN_WAITING_FOR_PROTECTIVE_STOP_CANCELLATION"
+                    : "FLATTEN_WAITING_FOR_ENTRY_OR_TARGET_CANCELLATION", trade.isLong ? "SELL" : "BUY",
                     Math.abs(ctx.getPosition()), trade.theoreticalEntryPrice, trade.actualEntryFill,
                     trade.entrySlippagePts, trade.stopPrice, trade.targetPrice,
                     trade.flattenReason + "|ORDER_ID=" + workingOrder.getOrderId());
             } catch (RuntimeException e) {
-                logExecutionToCsv("FLATTEN_CANCEL_STATUS_UNKNOWN", trade.isLong ? "SELL" : "BUY",
+                trade.flattenCancelBlocked = true;
+                logExecutionToCsv("FLATTEN_CANCEL_STATUS_UNKNOWN_OPERATOR_ACTION_REQUIRED", trade.isLong ? "SELL" : "BUY",
                     Math.abs(ctx.getPosition()), trade.theoreticalEntryPrice, trade.actualEntryFill,
                     trade.entrySlippagePts, trade.stopPrice, trade.targetPrice,
                     trade.flattenReason + "|ORDER_ID=" + workingOrder.getOrderId() + "|ERROR=" + e.getMessage());
@@ -1113,24 +1150,18 @@ public class LucidCrudeRthExpansionStudy extends Study {
             return;
         }
 
-        int posQty = Math.abs(ctx.getPosition());
-        Enums$OrderAction action = ctx.getPosition() > 0 ? Enums$OrderAction.SELL : Enums$OrderAction.BUY;
-        String orderRef = "LucidS5_Flatten_" + trade.signalTime;
-        Order flatten = ctx.createMarketOrder(ctx.getInstrument(), orderRef, action, posQty);
-        if (flatten == null) {
-            logExecutionToCsv(trade.flattenEvent + "_ORDER_CREATION_FAILED", action.name(), posQty, trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, trade.flattenReason);
+        int currentPosition = ctx.getPosition();
+        if (currentPosition == 0) {
+            trade.flattenPending = false;
+            trade.closed = true;
             return;
         }
-
-        trade.flattenOrder = flatten;
-        trade.flattenOrderId = flatten.getOrderId() != null ? flatten.getOrderId() : orderRef;
-        trade.flattenSubmitted = true;
-        try {
-            ctx.submitOrders(flatten);
-            logExecutionToCsv(trade.flattenEvent, action.name(), posQty, trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, trade.flattenReason + "|ORDER_ID=" + trade.flattenOrderId);
-        } catch (RuntimeException e) {
-            logExecutionToCsv(trade.flattenEvent + "_SUBMISSION_STATUS_UNKNOWN", action.name(), posQty, trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, trade.flattenReason + "|ORDER_ID=" + trade.flattenOrderId + "|ERROR=" + e.getMessage());
-        }
+        trade.flattenCancelBlocked = true;
+        logExecutionToCsv("FLATTEN_NON_ATOMIC_TRANSITION_OPERATOR_ACTION_REQUIRED",
+            currentPosition > 0 ? "SELL" : "BUY", Math.abs(currentPosition),
+            trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts,
+            trade.stopPrice, trade.targetPrice,
+            trade.flattenReason + "|ALL_TRACKED_ORDERS_TERMINAL|NO_MARKET_EXIT_SUBMITTED|OPERATOR_MUST_RECONCILE_POSITION");
     }
 
     @Override
@@ -1246,6 +1277,15 @@ public class LucidCrudeRthExpansionStudy extends Study {
             applyProtectiveFailurePolicy(ctx, trade, "STOP_ORDER_INACTIVE_OR_MISSING");
             return false;
         }
+        if (trade.slOrder.getQuantity() != posQty || trade.attachedBracketQty != posQty) {
+            verifyAndSyncBracketQuantities(ctx, trade);
+            return false;
+        }
+        if (trade.tpOrder != null && trade.tpOrder.isActive() && !trade.tpOrder.isCancelled()
+                && !trade.tpOrder.isFilled() && trade.tpOrder.getQuantity() != posQty) {
+            verifyAndSyncBracketQuantities(ctx, trade);
+            return false;
+        }
 
         double desiredStop = !Double.isNaN(trade.pendingStopPrice)
             ? trade.pendingStopPrice
@@ -1261,18 +1301,8 @@ public class LucidCrudeRthExpansionStudy extends Study {
 
         try {
             trade.slOrder.setAdjStopPrice(newStop);
-            if (trade.slOrder.getQuantity() != posQty) {
-                trade.slOrder.setAdjQuantity(posQty);
-            }
-            if (trade.tpOrder != null && trade.tpOrder.isActive() && trade.tpOrder.getQuantity() != posQty) {
-                trade.tpOrder.setAdjQuantity(posQty);
-                if (trade.slOrder != null && trade.slOrder.isActive()) ctx.submitOrders(trade.slOrder);
-                if (trade.tpOrder != null && trade.tpOrder.isActive()) ctx.submitOrders(trade.tpOrder);
-            } else {
-                ctx.submitOrders(trade.slOrder);
-            }
+            ctx.submitOrders(trade.slOrder);
             trade.breakevenModifySubmitted = true;
-            trade.attachedBracketQty = posQty;
             logExecutionToCsv("BREAKEVEN_MODIFY_SUBMITTED", trade.isLong ? "SELL_STOP" : "BUY_STOP", posQty, trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, newStop, trade.targetPrice, "IN_PLACE_SET_ADJ_STOP_PRICE");
             return true;
         } catch (Exception e) {
@@ -1283,32 +1313,103 @@ public class LucidCrudeRthExpansionStudy extends Study {
 
     public synchronized void verifyAndSyncBracketQuantities(OrderContext ctx, ActiveTrade trade) {
         if (ctx == null || trade == null || !trade.bracketsSubmitted) return;
+        if (trade.stopSyncPending || trade.targetSyncPending) {
+            trade.stopSyncPending = false;
+            trade.targetSyncPending = false;
+            submitFlatten(ctx, trade, "BRACKET_SYNC_SUPERSEDED_BY_NEW_FILL",
+                "Another position fill arrived before prior bracket modifications were confirmed.");
+            return;
+        }
         int posQty = Math.abs(ctx.getPosition());
         if (posQty <= 0) return;
 
         if (trade.slOrder == null || !trade.slOrder.isActive() || trade.slOrder.isCancelled()) {
-            applyProtectiveFailurePolicy(ctx, trade, "PROTECTIVE_STOP_MISSING_DURING_POSITION_SYNC");
+            submitFlatten(ctx, trade, "PROTECTIVE_STOP_MISSING_DURING_POSITION_SYNC",
+                "Open position has no active protective stop.");
             return;
         }
 
-        boolean needsUpdate = false;
-        if (trade.slOrder.getQuantity() != posQty && trade.slOrder.getAdjQuantity() != posQty) {
-            trade.slOrder.setAdjQuantity(posQty);
-            needsUpdate = true;
+        double actualFill = ctx.getAvgEntryPrice() > 0 && Float.isFinite(ctx.getAvgEntryPrice())
+            ? ctx.getAvgEntryPrice() : trade.actualEntryFill;
+        if (!Double.isFinite(actualFill) || actualFill <= 0) {
+            submitFlatten(ctx, trade, "BRACKET_SYNC_AVERAGE_FILL_UNAVAILABLE",
+                "Authoritative open-position average fill is unavailable.");
+            return;
         }
-        if (trade.tpOrder != null && trade.tpOrder.isActive()
-                && trade.tpOrder.getQuantity() != posQty && trade.tpOrder.getAdjQuantity() != posQty) {
-            trade.tpOrder.setAdjQuantity(posQty);
-            needsUpdate = true;
+        double riskDist = trade.initialRiskDist > 0 ? trade.initialRiskDist
+            : Math.abs(trade.theoreticalEntryPrice - trade.stopPrice);
+        double targetDist = trade.initialTargetDist > 0 ? trade.initialTargetDist
+            : Math.abs(trade.targetPrice - trade.theoreticalEntryPrice);
+        Instrument inst = ctx.getInstrument();
+        if (inst == null || !Double.isFinite(riskDist) || riskDist <= 0
+                || !Double.isFinite(targetDist) || targetDist <= 0) {
+            submitFlatten(ctx, trade, "BRACKET_SYNC_PARAMETERS_UNAVAILABLE",
+                "Instrument or initial stop/target distance is unavailable.");
+            return;
         }
-        if (needsUpdate) {
-            if (trade.tpOrder != null && trade.tpOrder.isActive()) {
-                ctx.submitOrders(trade.slOrder, trade.tpOrder);
-            } else {
+        float desiredStop = inst.round((float) (trade.isLong ? actualFill - riskDist : actualFill + riskDist));
+        if (trade.breakevenApplied) desiredStop = (float) trade.stopPrice;
+        float desiredTarget = inst.round((float) (trade.isLong ? actualFill + targetDist : actualFill - targetDist));
+        Float currentStop = trade.slOrder.getStopPrice();
+        boolean stopNeedsUpdate = trade.slOrder.getQuantity() != posQty || currentStop == null
+            || Math.abs(currentStop - desiredStop) > inst.getTickSize() / 2.0;
+        boolean targetActive = trade.tpOrder != null && trade.tpOrder.isActive() && !trade.tpOrder.isCancelled();
+        Float currentTarget = targetActive ? trade.tpOrder.getLimitPrice() : null;
+        boolean targetNeedsUpdate = targetActive && (trade.tpOrder.getQuantity() != posQty
+            || currentTarget == null || Math.abs(currentTarget - desiredTarget) > inst.getTickSize() / 2.0);
+        if (!stopNeedsUpdate && !targetNeedsUpdate) {
+            trade.actualEntryFill = actualFill;
+            trade.entryPrice = actualFill;
+            trade.filledQty = posQty;
+            trade.attachedBracketQty = posQty;
+            trade.stopPrice = desiredStop;
+            if (targetActive) trade.targetPrice = desiredTarget;
+            return;
+        }
+
+        trade.pendingBracketQty = posQty;
+        trade.pendingBracketStopPrice = desiredStop;
+        trade.pendingBracketTargetPrice = desiredTarget;
+        trade.pendingBracketAverageFill = actualFill;
+        trade.stopSyncPending = stopNeedsUpdate;
+        trade.targetSyncPending = targetNeedsUpdate;
+        try {
+            if (stopNeedsUpdate) {
+                trade.slOrder.setAdjStopPrice(desiredStop);
+                trade.slOrder.setAdjQuantity(posQty);
                 ctx.submitOrders(trade.slOrder);
             }
+        } catch (RuntimeException e) {
+            trade.stopSyncPending = false;
+            trade.targetSyncPending = false;
+            submitFlatten(ctx, trade, "PARTIAL_FILL_STOP_SYNC_FAILED",
+                "Stop modification/submission failed: " + e.getMessage());
+            return;
+        }
+        try {
+            if (targetNeedsUpdate) {
+                trade.tpOrder.setAdjLimitPrice(desiredTarget);
+                trade.tpOrder.setAdjQuantity(posQty);
+                ctx.submitOrders(trade.tpOrder);
+            }
+        } catch (RuntimeException e) {
+            trade.stopSyncPending = false;
+            trade.targetSyncPending = false;
+            submitFlatten(ctx, trade, "PARTIAL_FILL_TARGET_SYNC_FAILED",
+                "Target modification/submission failed; safe flatten requested: " + e.getMessage());
+            return;
+        }
+        if (!trade.stopSyncPending && !trade.targetSyncPending) {
+            trade.actualEntryFill = actualFill;
+            trade.entryPrice = actualFill;
+            trade.filledQty = posQty;
             trade.attachedBracketQty = posQty;
-            logExecutionToCsv("BRACKET_QTY_SYNCED", trade.isLong ? "LONG" : "SHORT", posQty, trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, "PARTIAL_FILL_QTY_RECONCILED");
+            trade.stopPrice = desiredStop;
+            if (targetActive) trade.targetPrice = desiredTarget;
+        } else {
+            logExecutionToCsv("BRACKET_SYNC_SUBMITTED_NOT_CONFIRMED", trade.isLong ? "LONG" : "SHORT",
+                posQty, trade.theoreticalEntryPrice, actualFill, trade.entrySlippagePts,
+                trade.stopPrice, trade.targetPrice, "WAITING_FOR_ORDER_MODIFIED_CALLBACKS");
         }
     }
 
@@ -1360,16 +1461,68 @@ public class LucidCrudeRthExpansionStudy extends Study {
         if (ctx == null || order == null) return;
         for (ActiveTrade trade : tradeMap.values()) {
             if (trade.closed) continue;
+            double syncTickSize = ctx.getInstrument() != null ? ctx.getInstrument().getTickSize() : 0.01;
+            if (trade.stopSyncPending && (order == trade.slOrder
+                    || (trade.slOrderId != null && trade.slOrderId.equals(order.getOrderId())))) {
+                Float confirmedStop = order.getStopPrice();
+                if (!order.isActive() || order.getQuantity() != trade.pendingBracketQty
+                        || confirmedStop == null
+                        || Math.abs(confirmedStop - trade.pendingBracketStopPrice) > syncTickSize / 2.0) {
+                    trade.stopSyncPending = false;
+                    trade.targetSyncPending = false;
+                    submitFlatten(ctx, trade, "PARTIAL_FILL_STOP_SYNC_UNCONFIRMED",
+                        "Stop modification callback did not confirm active quantity and price.");
+                    return;
+                }
+                trade.stopSyncPending = false;
+                completePendingBracketSync(trade);
+                return;
+            }
+            if (trade.targetSyncPending && (order == trade.tpOrder
+                    || (trade.tpOrderId != null && trade.tpOrderId.equals(order.getOrderId())))) {
+                Float confirmedTarget = order.getLimitPrice();
+                if (!order.isActive() || order.getQuantity() != trade.pendingBracketQty
+                        || confirmedTarget == null
+                        || Math.abs(confirmedTarget - trade.pendingBracketTargetPrice) > syncTickSize / 2.0) {
+                    trade.stopSyncPending = false;
+                    trade.targetSyncPending = false;
+                    submitFlatten(ctx, trade, "PARTIAL_FILL_TARGET_SYNC_UNCONFIRMED",
+                        "Target modification callback did not confirm active quantity and price.");
+                    return;
+                }
+                trade.targetSyncPending = false;
+                completePendingBracketSync(trade);
+                return;
+            }
             if (order == trade.slOrder || (trade.slOrderId != null && !trade.slOrderId.isEmpty() && trade.slOrderId.equals(order.getOrderId()))) {
-                Float modStop = order.getStopPrice() != null ? order.getStopPrice() : order.getAdjStopPrice();
-                double newPrice = (modStop != null && Float.isFinite(modStop)) ? modStop.doubleValue() : (Double.isNaN(trade.pendingStopPrice) ? trade.stopPrice : trade.pendingStopPrice);
+                Float confirmedStop = order.getStopPrice();
+                double newPrice = confirmedStop != null && Float.isFinite(confirmedStop)
+                    ? confirmedStop.doubleValue() : trade.stopPrice;
                 double tickSize = ctx.getInstrument() != null ? ctx.getInstrument().getTickSize() : 0.01;
                 boolean matchesPending = !Double.isNaN(trade.pendingStopPrice) && Math.abs(newPrice - trade.pendingStopPrice) <= (tickSize + 1e-4);
-                if (trade.breakevenModifySubmitted && matchesPending) {
-                    trade.stopPrice = newPrice;
-                    trade.breakevenApplied = true;
+                if (trade.breakevenModifySubmitted) {
+                    if (!order.isActive() || order.isCancelled() || order.isFilled()
+                            || order.getQuantity() != Math.abs(ctx.getPosition())) {
+                        trade.breakevenModifySubmitted = false;
+                        if (ctx.getPosition() != 0) {
+                            submitFlatten(ctx, trade, "BREAKEVEN_STOP_SYNC_UNCONFIRMED",
+                                "Stop modification callback did not confirm active protection at the current position quantity.");
+                        }
+                        return;
+                    }
                     trade.breakevenModifySubmitted = false;
-                    logExecutionToCsv("BREAKEVEN_RATCHET_CONFIRMED", trade.isLong ? "SELL_STOP" : "BUY_STOP", Math.abs(ctx.getPosition()), trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, "BROKER_STOP_MODIFIED");
+                    if (matchesPending) {
+                        trade.stopPrice = newPrice;
+                        trade.breakevenApplied = true;
+                        logExecutionToCsv("BREAKEVEN_RATCHET_CONFIRMED", trade.isLong ? "SELL_STOP" : "BUY_STOP", Math.abs(ctx.getPosition()), trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, "BROKER_STOP_MODIFIED");
+                    } else {
+                        trade.stopPrice = newPrice;
+                        trade.breakevenApplied = false;
+                        logExecutionToCsv("BREAKEVEN_MODIFY_NOT_CONFIRMED_ORIGINAL_STOP_RETAINED",
+                            trade.isLong ? "SELL_STOP" : "BUY_STOP", Math.abs(ctx.getPosition()),
+                            trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts,
+                            trade.stopPrice, trade.targetPrice, "Active stop quantity retained; requested stop price was not confirmed.");
+                    }
                 } else {
                     trade.stopPrice = newPrice;
                     trade.breakevenModifySubmitted = false;
@@ -1380,13 +1533,50 @@ public class LucidCrudeRthExpansionStudy extends Study {
         }
     }
 
+    private void completePendingBracketSync(ActiveTrade trade) {
+        if (trade.stopSyncPending || trade.targetSyncPending) return;
+        trade.actualEntryFill = trade.pendingBracketAverageFill;
+        trade.entryPrice = trade.pendingBracketAverageFill;
+        trade.filledQty = trade.pendingBracketQty;
+        trade.attachedBracketQty = trade.pendingBracketQty;
+        trade.stopPrice = trade.pendingBracketStopPrice;
+        trade.targetPrice = trade.pendingBracketTargetPrice;
+        trade.bracketsSubmitted = true;
+        logExecutionToCsv("PARTIAL_FILL_BRACKET_SYNC_CONFIRMED", trade.isLong ? "LONG" : "SHORT",
+            trade.pendingBracketQty, trade.theoreticalEntryPrice, trade.actualEntryFill,
+            trade.entrySlippagePts, trade.stopPrice, trade.targetPrice,
+            "STOP_AND_ACTIVE_TARGET_CONFIRMED_BY_MODIFIED_CALLBACKS");
+    }
+
     @Override
     public void onOrderRejected(OrderContext ctx, Order order) {
         if (ctx == null || order == null) return;
         for (ActiveTrade trade : tradeMap.values()) {
             if (trade.closed) continue;
+            if (order == trade.flattenCancelPendingOrder
+                    || (trade.flattenCancelPendingOrder != null && trade.flattenCancelPendingOrder.getOrderId() != null
+                        && trade.flattenCancelPendingOrder.getOrderId().equals(order.getOrderId()))) {
+                if (order.isActive()) {
+                    trade.flattenCancelBlocked = true;
+                    logExecutionToCsv("FLATTEN_CANCEL_REJECTED_ORDER_STILL_ACTIVE_OPERATOR_ACTION_REQUIRED",
+                        trade.isLong ? "SELL" : "BUY", Math.abs(ctx.getPosition()),
+                        trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts,
+                        trade.stopPrice, trade.targetPrice, "ORDER_ID=" + order.getOrderId());
+                    return;
+                }
+                trade.flattenCancelPendingOrder = null;
+                trade.flattenCancelBlocked = false;
+            }
             if (trade.flattenSubmitted && (order == trade.flattenOrder
                     || (trade.flattenOrderId != null && !trade.flattenOrderId.isEmpty() && trade.flattenOrderId.equals(order.getOrderId())))) {
+                if (order.isActive()) {
+                    logExecutionToCsv("FLATTEN_REJECTION_STATUS_UNCERTAIN_OPERATOR_ACTION_REQUIRED",
+                        trade.isLong ? "SELL" : "BUY", Math.abs(ctx.getPosition()),
+                        trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts,
+                        trade.stopPrice, trade.targetPrice,
+                        "Rejected flatten still reports active; duplicate exit suppressed.");
+                    return;
+                }
                 trade.flattenSubmitted = false;
                 trade.flattenOrder = null;
                 trade.flattenOrderId = "";
@@ -1410,12 +1600,38 @@ public class LucidCrudeRthExpansionStudy extends Study {
                 break;
             }
             if (order == trade.slOrder || (trade.slOrderId != null && !trade.slOrderId.isEmpty() && trade.slOrderId.equals(order.getOrderId()))) {
+                if (trade.stopSyncPending) {
+                    trade.stopSyncPending = false;
+                    trade.targetSyncPending = false;
+                    if (!order.isActive()) trade.slOrder = null;
+                    submitFlatten(ctx, trade, "PARTIAL_FILL_STOP_MODIFICATION_REJECTED",
+                        "Protective stop quantity/price modification was rejected.");
+                    break;
+                }
+                if (order.isActive() && ctx.getPosition() != 0) {
+                    submitFlatten(ctx, trade, "PROTECTIVE_STOP_REJECTION_STATUS_UNCERTAIN",
+                        "Rejected stop still reports active; retain its identity for sequential cancellation.");
+                    break;
+                }
                 trade.slOrder = null;
                 applyProtectiveFailurePolicy(ctx, trade, "ON_BRACKET_REJECTED:" + order.getOrderId());
                 if (trade.flattenPending) submitFlatten(ctx, trade, trade.flattenEvent, trade.flattenReason);
                 break;
             }
             if (order == trade.tpOrder || (trade.tpOrderId != null && !trade.tpOrderId.isEmpty() && trade.tpOrderId.equals(order.getOrderId()))) {
+                if (trade.targetSyncPending) {
+                    trade.stopSyncPending = false;
+                    trade.targetSyncPending = false;
+                    if (!order.isActive()) trade.tpOrder = null;
+                    submitFlatten(ctx, trade, "PARTIAL_FILL_TARGET_MODIFICATION_REJECTED",
+                        "Target quantity/price modification was rejected; safe flatten requested.");
+                    break;
+                }
+                if (order.isActive() && ctx.getPosition() != 0) {
+                    submitFlatten(ctx, trade, "TARGET_REJECTION_STATUS_UNCERTAIN_FLATTEN",
+                        "Rejected target still reports active; retain its identity for sequential cancellation.");
+                    break;
+                }
                 trade.tpOrder = null;
                 logExecutionToCsv("PROFIT_TARGET_REJECTED_STOP_RETAINED", trade.isLong ? "SELL_LIMIT" : "BUY_LIMIT", Math.abs(ctx.getPosition()), trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, "TARGET_REJECTED:" + order.getOrderId());
                 if (ctx.getPosition() != 0 && (trade.slOrder == null || !trade.slOrder.isActive() || trade.slOrder.isCancelled())) {
@@ -1432,6 +1648,12 @@ public class LucidCrudeRthExpansionStudy extends Study {
         if (ctx == null || order == null) return;
         for (ActiveTrade trade : tradeMap.values()) {
             if (trade.closed) continue;
+            if (order == trade.flattenCancelPendingOrder
+                    || (trade.flattenCancelPendingOrder != null && trade.flattenCancelPendingOrder.getOrderId() != null
+                        && trade.flattenCancelPendingOrder.getOrderId().equals(order.getOrderId()))) {
+                trade.flattenCancelPendingOrder = null;
+                trade.flattenCancelBlocked = false;
+            }
             if (trade.flattenSubmitted && (order == trade.flattenOrder
                     || (trade.flattenOrderId != null && !trade.flattenOrderId.isEmpty() && trade.flattenOrderId.equals(order.getOrderId())))) {
                 trade.flattenSubmitted = false;
@@ -1542,6 +1764,14 @@ public class LucidCrudeRthExpansionStudy extends Study {
             // 2. Entry order fill (full or partial): anchor stop and target from actual average fill price
             if (order == trade.flattenOrder
                     || (trade.flattenOrderId != null && !trade.flattenOrderId.isEmpty() && trade.flattenOrderId.equals(order.getOrderId()))) {
+                if (order.isActive() || (!order.isFilled() && !order.isCancelled())) {
+                    logExecutionToCsv("FLATTEN_FILL_STATUS_UNCERTAIN_DUPLICATE_SUPPRESSED",
+                        trade.isLong ? "SELL" : "BUY", Math.abs(ctx.getPosition()),
+                        trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts,
+                        trade.stopPrice, trade.targetPrice,
+                        "Flatten order remains active or non-terminal; retaining identity and suppressing another exit.");
+                    return;
+                }
                 trade.flattenSubmitted = false;
                 trade.flattenOrder = null;
                 trade.flattenOrderId = "";
@@ -1586,7 +1816,8 @@ public class LucidCrudeRthExpansionStudy extends Study {
             float stopF = inst.round((float) (trade.isLong ? (actualFill - riskDist) : (actualFill + riskDist)));
             float targetF = inst.round((float) (trade.isLong ? (actualFill + targetDist) : (actualFill - targetDist)));
 
-            if (!trade.bracketsSubmitted) {
+            if (!trade.bracketSetupAttempted) {
+                trade.bracketSetupAttempted = true;
                 Enums$OrderAction exitAction = trade.isLong ? Enums$OrderAction.SELL : Enums$OrderAction.BUY;
                 String slRef = "LucidS5_SL_" + trade.signalTime;
                 String tpRef = "LucidS5_TP_" + trade.signalTime;
@@ -1608,15 +1839,13 @@ public class LucidCrudeRthExpansionStudy extends Study {
                 trade.targetPrice = targetF;
                 trade.slOrderId = slOrder != null && slOrder.getOrderId() != null ? slOrder.getOrderId() : slRef;
                 trade.tpOrderId = tpOrder != null && tpOrder.getOrderId() != null ? tpOrder.getOrderId() : tpRef;
-                trade.bracketsSubmitted = slOrder != null || tpOrder != null;
-                trade.attachedBracketQty = posQty;
-                boolean stopSubmissionAttempted = false;
+                trade.bracketsSubmitted = false;
+                trade.attachedBracketQty = 0;
                 if (slOrder != null) {
                     try {
                         ctx.submitOrders(slOrder);
-                        stopSubmissionAttempted = true;
                     } catch (RuntimeException e) {
-                        logExecutionToCsv("PROTECTIVE_STOP_SUBMISSION_FAILED", exitAction.name(), posQty, trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, e.getMessage());
+                        logExecutionToCsv("PROTECTIVE_STOP_SUBMISSION_STATUS_UNKNOWN", exitAction.name(), posQty, trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, e.getMessage());
                     }
                 } else {
                     logExecutionToCsv("PROTECTIVE_STOP_CREATION_FAILED", exitAction.name(), posQty, trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, "STOP_ORDER_NULL");
@@ -1630,33 +1859,26 @@ public class LucidCrudeRthExpansionStudy extends Study {
                 } else {
                     logExecutionToCsv("PROFIT_TARGET_CREATION_FAILED", exitAction.name(), posQty, trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, "TARGET_ORDER_NULL");
                 }
-                if (!stopSubmissionAttempted) {
-                    applyProtectiveFailurePolicy(ctx, trade, "PROTECTIVE_STOP_SUBMISSION_NOT_CONFIRMED");
+                Float submittedStopPrice = slOrder != null ? slOrder.getStopPrice() : null;
+                boolean stopConfirmed = slOrder != null && slOrder.isActive() && !slOrder.isCancelled()
+                    && !slOrder.isFilled() && slOrder.getQuantity() == posQty
+                    && submittedStopPrice != null
+                    && Math.abs(submittedStopPrice - stopF) <= inst.getTickSize() / 2.0;
+                if (stopConfirmed) {
+                    trade.bracketsSubmitted = true;
+                    trade.attachedBracketQty = posQty;
+                    logExecutionToCsv("PROTECTIVE_STOP_ACTIVE_STATE_VERIFIED", exitAction.name(), posQty,
+                        trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts,
+                        trade.stopPrice, trade.targetPrice, "ORDER_ID=" + slOrder.getOrderId());
                 } else {
-                    logExecutionToCsv("BRACKETS_SUBMISSION_ATTEMPTED", exitAction.name(), posQty, trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, "STOP_AND_TARGET_SUBMITTED_INDEPENDENTLY; WORKING_STATE_REQUIRES_ORDER_STATUS");
+                    submitFlatten(ctx, trade, "INITIAL_PROTECTIVE_STOP_UNCONFIRMED",
+                        "Stop order was not confirmed active at the open position quantity and requested price.");
                 }
+            } else if (trade.bracketsSubmitted) {
+                verifyAndSyncBracketQuantities(ctx, trade);
             } else {
-                // Subsequent partial entry fill: update existing bracket quantities and fill-anchored prices in-place
-                if (trade.slOrder == null || !trade.slOrder.isActive() || trade.slOrder.isCancelled()) {
-                    applyProtectiveFailurePolicy(ctx, trade, "PARTIAL_FILL_WITHOUT_CONFIRMED_STOP");
-                    break;
-                }
-                if (!trade.breakevenApplied) {
-                    trade.slOrder.setAdjStopPrice(stopF);
-                    trade.stopPrice = stopF;
-                }
-                trade.slOrder.setAdjQuantity(posQty);
-                if (trade.tpOrder != null && trade.tpOrder.isActive()) {
-                    trade.tpOrder.setAdjLimitPrice(targetF);
-                    trade.tpOrder.setAdjQuantity(posQty);
-                    trade.targetPrice = targetF;
-                } else {
-                    logExecutionToCsv("PARTIAL_FILL_TARGET_NOT_WORKING_STOP_RETAINED", trade.isLong ? "SELL" : "BUY", posQty, trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, "PROTECTIVE_STOP_ACTIVE");
-                }
-                ctx.submitOrders(trade.slOrder);
-                if (trade.tpOrder != null && trade.tpOrder.isActive()) ctx.submitOrders(trade.tpOrder);
-                trade.attachedBracketQty = posQty;
-                logExecutionToCsv("PARTIAL_FILL_BRACKETS_ADJUSTED", trade.isLong ? "SELL" : "BUY", posQty, trade.theoreticalEntryPrice, trade.actualEntryFill, trade.entrySlippagePts, trade.stopPrice, trade.targetPrice, "UPDATED_AVG_FILL");
+                submitFlatten(ctx, trade, "ENTRY_FILL_WITHOUT_CONFIRMED_PROTECTIVE_STOP",
+                    "Bracket setup was already attempted but no stop coverage was confirmed.");
             }
             break;
         }
