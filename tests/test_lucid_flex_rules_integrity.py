@@ -28,8 +28,12 @@ class TestLucidFlexRulesIntegrity:
         assert LUCID_FLEX_25K.FLOOR_LOCK_PEAK_BALANCE == 26_100.0
         assert LUCID_FLEX_25K.LOCKED_FLOOR_VALUE == 25_100.0
         assert LUCID_FLEX_25K.DAILY_SOFT_STOP == 600.0
-        assert LUCID_FLEX_25K.MAX_MICRO_CONTRACTS == 10
+        assert LUCID_FLEX_25K.OFFICIAL_FIRM_MAX_MINIS == 2
+        assert LUCID_FLEX_25K.OFFICIAL_FIRM_MAX_MICROS == 20
+        assert LUCID_FLEX_25K.INTERNAL_RISK_CAP_MICROS == 10
+        assert LUCID_FLEX_25K.MAX_MICRO_CONTRACTS == 10  # internal cap alias, not Lucid official max
         assert LUCID_FLEX_25K.CONSISTENCY_RULE_PCT == 40.0
+        assert LUCID_FLEX_25K.CONSISTENCY_ADDON_PCT == 50.0
 
     def test_funded_payout_parameters(self):
         assert LUCID_FLEX_25K.FUNDED_STARTING_BALANCE == 25_000.0

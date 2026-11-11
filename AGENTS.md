@@ -57,15 +57,16 @@ All models, agents, scripts, and backtests are strictly bound by the official **
 - **Maximum Trailing Drawdown**: $1,000.00 (Calculated on End-of-Day [EOD] closing balance)
 - **Trailing Floor Dynamic**: Starts at $24,000.00; trails $1,000 behind peak EOD balance up to $26,100.00
 - **Permanent Floor Lock**: Once peak reaches >= $26,100.00, the floor permanently locks at $25,100.00 (Base + $100)
-- **Intraday Soft Stop**: -$600.00 session halt (stops order flow for remaining windows in the day; not account breach)
-- **Max Sizing**: 10 Micros or 1 Mini contract maximum
-- **Consistency Rule**: Maximum 40% of target profit may come from a single trading day
+- **Intraday Soft Stop**: -$600.00 session halt of new entries for the rest of the session (not account breach; do not clip trade P&L to -$600)
+- **Official LucidFlex 25K Max Size**: 2 minis or 20 micros (support article 2026-11-11)
+- **Internal portfolio risk cap**: 10 micros (conservative strategy policy; not Lucid's official maximum)
+- **Consistency Rule (evaluation, 40% base)**: largest_single_day_profit / total_account_profit must be <= 0.40 after the $1,250 target is reached (50% add-on is a separately purchased option, not this repo's base scenario)
 
 ### 2. Funded Phase (Master / LiveSim Account)
 - **Account Transition**: Balance resets to $25,000.00 on Day 1; Drawdown floor resets to $24,000.00
 - **Floor Trailing Mechanics**: Trails $1,000 behind peak EOD balance up to $26,100.00, then locks permanently at $25,100.00
 - **Intraday Soft Stop**: -$600.00 session halt (same as evaluation)
-- **Buffer Requirement**: LucidFlex does NOT mandate maintaining an arbitrary static buffer; payouts directly deduct from the cushion above the $25,100 locked floor
+- **Buffer Requirement**: LucidFlex funded accounts have no consistency rule and no mandatory payout buffer. Any extra retained post-payout cushion used in sizing research is optional portfolio policy, not a firm requirement.
 
 ### 3. Payout Eligibility & Calculation Rules
 - **Minimum Profitable Days**: Minimum 5 separate trading days (not consecutive) with >= $100.00 net profit each during the payout cycle

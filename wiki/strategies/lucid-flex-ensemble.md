@@ -9,7 +9,7 @@ tags:
   - mgc
   - mcl
 created: "2026-11-05"
-updated: "2026-11-08"
+updated: "2026-11-11"
 status: active
 strategies:
   - lucid_flex_ensemble
@@ -61,37 +61,69 @@ All five strategies are strictly governed by the **Pareto Anti-Martingale Ratche
 
 ---
 
-## Empirical $5 \times 5$ Daily Return Correlation Matrix (2021–2026)
+## Daily-return correlation (zero-padded weekday matrix — not independence)
 
-Computed across **1,515 active trading sessions** (`2021-01-04` to `2026-10-30`, saved in `results/m3_portfolio_ratchet_simulation.json`):
+The matrix below is copied from the **legacy M3 JSON** (`results/m3_portfolio_ratchet_simulation.json`). It is Pearson correlation of **1-micro daily P&L on all weekdays 2021-01-04 to 2026-10-30**, including days with no trades (zeros). It is **not** evidence of statistical independence. Pairwise days on which both strategies actually traded are few (typically n = 3–17).
 
-| Strategy | `morning_va_breakout_s1` | `macro_momentum_s2` | `gold_london_fix_s3` | `asian_evening_reversion_s4` | `crude_rth_expansion_s5` |
+| Strategy | S1 | S2 | S3 | S4 | S5 |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| **`morning_va_breakout_s1` (S1)** | `1.0000` | `-0.0119` | `-0.0599` | `-0.0081` | `+0.0361` |
-| **`macro_momentum_s2` (S2)** | `-0.0119` | `1.0000` | `+0.0383` | `+0.0090` | `+0.0579` |
-| **`gold_london_fix_s3` (S3)** | `-0.0599` | `+0.0383` | `1.0000` | `+0.0223` | `-0.0369` |
-| **`asian_evening_reversion_s4` (S4)** | `-0.0081` | `+0.0090` | `+0.0223` | `1.0000` | `+0.0108` |
-| **`crude_rth_expansion_s5` (S5)** | `+0.0361` | `+0.0579` | `-0.0369` | `+0.0108` | `1.0000` |
+| **S1** | `1.0000` | `-0.0481` | `-0.0599` | `-0.0081` | `+0.0361` |
+| **S2** | `-0.0481` | `1.0000` | `-0.0325` | `+0.0090` | `+0.0579` |
+| **S3** | `-0.0599` | `-0.0325` | `1.0000` | `+0.0223` | `-0.0369` |
+| **S4** | `-0.0081` | `+0.0090` | `+0.0223` | `1.0000` | `+0.0108` |
+| **S5** | `+0.0361` | `+0.0579` | `-0.0369` | `+0.0108` | `1.0000` |
 
-- **Maximum Absolute Pairwise Correlation**: $|\rho|_{\max} = 0.0599 \ll 0.20$ (strictly orthogonal across all 10 strategy pairs).
+Max |ρ| on that zero-padded weekday matrix is `0.0599`. Do not treat `|ρ| ≪ 0.20` as a portfolio-construction proof.
 
 ---
 
-## LucidFlex 25K Evaluation Velocity & 10,000-Path Monte Carlo Comparison
+## LucidFlex 25K evaluation (authoritative vs legacy)
 
-Simulated under exact LucidFlex 25K rules (`$1,250` profit target, `$1,000` EOD trailing drawdown locking at `$25,100` once balance hits `$26,100`, `-$600` daily soft stop, `40%` consistency cap, `$39` One-Time Payment [OTP] with **zero monthly rebill**, and Pareto Anti-Martingale Ratchet `2 -> 3 -> 4` micros) via `scripts/run_m3_portfolio_ratchet_and_correlations.py` (`results/m3_portfolio_ratchet_simulation.json`):
+Authoritative causal simulator: `backtest/lucidflex_eval.py` (`lucidflex_eval_v1`), artifact `results/lucidflex_eval_v1_portfolio_comparison.json`.
 
-| Evaluation Metric | 3-Strategy Baseline (`S1 + S2 + S3`) | 5-Strategy Expanded (`S1 + S2 + S3 + S4 + S5`) | Expansion Delta ($\Delta$) |
-| :--- | :---: | :---: | :---: |
-| **Total Verified Trades (2021–2026)** | `543` (`93.6/yr`) | `748` (`129.0/yr`) | **`+205 trades (+37.8%)`** |
-| **Active Trading Days (2021–2026)** | `358 days` | `512 days` | **`+154 active days (+43.0%)`** |
-| **Historical Sequential Campaigns Passed** | `8 / 10` (`80.0%`) | `12 / 15` (`80.0%`) | **`+4 passed evals (+50.0% volume)`** |
-| **Historical Median Calendar Days to Pass** | `142.5 calendar days` | `98.0 calendar days` | **`-44.5 calendar days faster (-31.2%)`** |
-| **10,000-Path Monte Carlo Pass Rate** | **`69.18%`** | **`72.79%`** | **`+3.61 pp higher pass rate`** |
-| **10,000-Path Monte Carlo Bust Rate** | `30.82%` | `27.21%` | **`-3.61 pp lower bust rate`** |
-| **MC Median Exchange Sessions to Pass** | `82.0 sessions` (`21.0` active days) | `75.0 sessions` (`27.0` active days) | **`-7.0 exchange sessions faster`** |
-| **MC Median Max Drawdown** | `-$684.92` | `-$691.30` | `+$6.38` (well inside `$1,000` limit) |
-| **Expected OTP Cost per Funded Account ($39 OTP, $0 Rebill)** | **`$56.37`** (`1.45` attempts) | **`$53.58`** (`1.37` attempts) | **`-$2.79 cheaper per funded account`** |
+Data SHA-256 `84179526c91e3f04972ec4f75347328c3d3ff5853298692d47cb9a82b09d9bd2` (748 frozen trades). Equity model: **realized-close only** (S1–S3 have no intraday marks). Not an execution-validated backtest. Not a lifetime pass probability while unresolved paths remain.
+
+S1 paired MNQ/MES legs share one pre-entry ratchet tier (tier 2 = 1+1, tier 3 = 1+2, tier 4 = 2+2). DLL blocks later entries without clipping P&L.
+
+| Quantity (10,000 paths, seed 42, NQ 09:30 calendar) | S1–S3 | S1–S5 |
+| :--- | :---: | :---: |
+| **252-session pass / fail / unresolved** | 6904 / 1861 / 1235 | 7299 / 1946 / 755 |
+| **252-session pass ÷ all paths** | 69.04% | 72.99% |
+| **252-session fail ÷ all paths** | 18.61% | 19.46% |
+| **252-session unresolved ÷ all paths** | 12.35% | 7.55% |
+| **252-session pass ÷ resolved** | 78.77% | 78.95% |
+| **260-session pass / fail / unresolved** | 6965 / 1887 / 1148 | 7351 / 1965 / 684 |
+| **750-session pass / fail / unresolved** | 7711 / 2283 / 6 | 7834 / 2166 / 0 |
+| **750-session pass ÷ all paths** | 77.11% | 78.34% |
+| **OTP $ per funded (resolved attempts only, 252s)** | $49.51 | $49.40 |
+| **Historical sequential pass / fail / unresolved** | 9 / 4 / 1 | 12 / 3 / 1 |
+| **Historical median sessions among passes** | 81.0 | 89.5 |
+
+Never call `100 − pass÷all` a bust rate. Unresolved paths are still active (no evaluation time limit) and are not a second $39 ticket.
+
+```text
+────────────────────────────────────────────────────────────────────────────
+PROVENANCE VERIFICATION FOOTER (Rule 2 & 3)
+────────────────────────────────────────────────────────────────────────────
+Simulator    : lucidflex_eval_v1 1.0.0 (backtest/lucidflex_eval.py)
+Artifact     : results/lucidflex_eval_v1_portfolio_comparison.json
+Methodology  : Causal event eval; NQ 09:30 calendar; realized-close equity
+Date Range   : 2021-01-04 to 2026-10-30
+Data File    : data/processed/unified_five_strategy_portfolio_trades_2021_2026.parquet
+Data SHA-256 : 84179526c91e3f04972ec4f75347328c3d3ff5853298692d47cb9a82b09d9bd2
+Seed/Horizon : 42 / 252, 260, 750 sessions (censored; not lifetime)
+Cost Model   : Frozen ledger unit_micro_pnl (NET as stored)
+Warning Flags: REALIZED_CLOSE_ONLY, NOT_EXECUTION_VALIDATED, HORIZON_CENSORED
+────────────────────────────────────────────────────────────────────────────
+```
+
+### Legacy M3 artifact (do not restate as current)
+
+`results/m3_portfolio_ratchet_simulation.json` (SHA-256 `11410935d0b14f0d422c82fb4a753e7cdd79788eb960f15d02681bcb38267de2`) is a **prior-generation** simulator. Independent replay: 5-strat 7279 pass / 1983 fail / 738 unresolved (72.79% / 19.83% / 7.38%); 3-strat 6918 / 1950 / 1132 (69.18% / 19.50% / 11.32%). Wiki previously labeled 30.82% / 27.21% as “bust”; those figures were `100 − pass` and are **not** fail rates.
+
+### Distinct sizing-grid experiment (also not M3)
+
+`results/sizing_cushion_optimization/evaluation_pareto_frontier.csv` Balanced Champion `(T2=$100, T3=$600)` **72.24%** pass at 750 sessions is `dashboard_analytics.run_evaluation`, not `lucidflex_eval_v1` and not legacy M3 72.79%.
 
 ---
 
@@ -124,7 +156,8 @@ None (Clean Run)
 - **Candidate Strategy Engines**:
   - `strategies/asian_evening_reversion_s4.py` (`run_canonical_s4_asian_evening_reversion_2021_2026`)
   - `strategies/crude_rth_expansion_s5.py` (`run_canonical_s5_crude_rth_expansion_2021_2026`)
-- **5-Strategy Pareto Ratchet & Monte Carlo Engine**: `scripts/run_m3_portfolio_ratchet_and_correlations.py` (`results/m3_portfolio_ratchet_simulation.json`)
+- **Authoritative LucidFlex 25K evaluator**: `backtest/lucidflex_eval.py` / `scripts/run_lucidflex_eval_v1.py` (`results/lucidflex_eval_v1_portfolio_comparison.json`)
+- **Legacy M3 (preserved, not source of truth)**: `scripts/run_m3_portfolio_ratchet_and_correlations.py` (`results/m3_portfolio_ratchet_simulation.json`)
 - **MotiveWave Production Studies**: `src/motivewave/`
   - `LucidMorningVABreakoutStudy.java` (S1)
   - `LucidMacroMomentumStudy.java` (S2)

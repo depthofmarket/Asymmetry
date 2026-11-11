@@ -8,6 +8,16 @@ This is an append-only, chronological journal recording all agent actions, docum
 > Allowed AGENT values: `[claude]`, `[gemini]`, `[codex]`, `[orchestrator]`, `[explorer]`, `[worker]`, `[auditor]`, `[human]`, `[hook]`.  
 > Allowed ACTION values: `[INGEST]`, `[QUERY]`, `[LINT]`, `[UPDATE]`, `[SYNC]`, `[REVISE]`, `[SETUP]`.
 
+## [2026-11-11 04:55:00 UTC] [worker] [UPDATE] | Authoritative causal LucidFlex 25K evaluator
+- **Pages Modified**:
+  - `wiki/strategies/lucid-flex-ensemble.md`
+  - `wiki/prop_firm/lucid-flex-25k.md`
+  - `wiki/sizing/ratchet-and-cushion.md`
+  - `wiki/hot.md`
+  - `wiki/log.md`
+- **Summary**: Added `lucidflex_eval_v1` causal evaluation path. Separated Lucid 20-micro official max from the 10-micro internal cap. Stopped presenting `100-pass` as bust rate. Corrected five-strategy parquet hash to `84179526…`. Preserved legacy M3 JSON unchanged. Funded extra cushions labeled optional policy.
+- **Verification**: `pytest tests/test_lucidflex_eval_v1.py tests/test_lucid_flex_rules_integrity.py` (22 passed in isolation; full targeted set re-run at session end). `python3 scripts/run_lucidflex_eval_v1.py --n-paths 10000`. Legacy M3 SHA-256 `11410935d0b14f0d422c82fb4a753e7cdd79788eb960f15d02681bcb38267de2` unchanged.
+
 ## [2026-11-10 14:10:18 UTC] [auditor] [UPDATE] | Close remaining execution lifecycle gaps
 - **Pages Modified**:
   - `wiki/execution/motivewave-integration.md`

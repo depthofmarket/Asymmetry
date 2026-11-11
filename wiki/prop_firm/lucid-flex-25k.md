@@ -8,7 +8,7 @@ tags:
   - lucid-flex
   - funded-payouts
 created: "2026-11-05"
-updated: "2026-11-09"
+updated: "2026-11-11"
 status: active
 strategies:
   - lucid_flex_ensemble
@@ -48,11 +48,15 @@ Prop firm evaluations and funded live simulation accounts enforce asymmetric bou
   - Once high-water mark reaches or exceeds **$26,100.00**, the floor locks permanently at **$25,100.00** (Starting Balance + $100.00):
     $$\text{If } \text{Peak Balance}_t \ge \$26,100.00 \implies \text{Floor}_t = \$25,100.00 \text{ (locked permanently)}$$
   - Above $26,100.00, the account retains open upside with a fixed $25,100.00 liquidation barrier.
-- **Daily Soft Stop Limit**: -$600.00.
-  - If net realized plus unrealized losses reach -$600.00 within any single exchange session, all active orders are canceled and order flow is halted for that day.
-  - This is an intraday risk throttle, NOT an account breach or liquidation.
-- **Contract Sizing Cap**: 1 Mini contract or 10 Micro contracts maximum.
-- **Consistency Rule**: Maximum 40% of total accumulated profit may originate from a single trading day (`consistency_profit_limit_pct = 40`).
+- **Daily Loss Limit (base scenario ON, $600)**:
+  - Soft breach: block **new entries** until the next exchange session.
+  - Do **not** arithmetically clip a trade's realized P&L to -$600, and do not invent flatten fills.
+  - Authoritative ledger simulator (`backtest/lucidflex_eval.py`) uses **realized-close** P&L only because S1–S3 bundles lack intraday marks.
+- **Official LucidFlex 25K contract maximum**: 2 minis or **20 micros** ([evaluation account](https://support.lucidtrading.com/en/articles/12945790-lucidflex-evaluation-account), verified 2026-11-11).
+- **Internal portfolio risk cap**: 10 micros. This is an intentional conservative desk limit (`INTERNAL_RISK_CAP_MICROS`), **not** Lucid's official account maximum. `MAX_MICRO_CONTRACTS` remains a backward-compatible alias of the internal cap.
+- **Consistency Rule (evaluation, 40% standard)**:
+  $$\frac{\text{largest single-day profit}}{\text{total evaluation account profit}} \le 0.40$$
+  after the $1,250 target is reached. Equivalent implementation: total profit must be $\ge \max(\$1{,}250, \text{largest day}/0.40)$. A 50% add-on exists at checkout; this repository's base scenario is 40%. Funded LucidFlex accounts have **no** consistency rule.
 
 ---
 
@@ -62,7 +66,7 @@ When an evaluation is passed, the account transitions into the Funded Master/Liv
 - **Drawdown Floor**: Resets to **$24,000.00** ($1,000.00 trailing drawdown allowance).
 - **Floor Trailing Mechanics**: Trails $1,000.00 behind peak EOD balance up to **$26,100.00**, at which point the floor **permanently locks at $25,100.00** (Starting Balance + $100.00).
 - **Daily Soft Stop Limit**: -$600.00 session halt (same as evaluation).
-- **Buffer Requirement**: Unlike other prop firms, **LucidFlex does NOT mandate maintaining an arbitrary static buffer balance**.
+- **Consistency / Buffer**: Funded LucidFlex has **no consistency requirement** and **no mandatory payout buffer**. Post-payout leftover dollars above the $25,100 locked floor are arithmetic consequences of the payout size. Extra retained cushions used in `dashboard_analytics.run_funded` (e.g. Policy C waiting for a $900 leftover) are **optional portfolio policy**, not a Lucid rule.
 - **Payout Deductions**: Payouts are deducted directly from the account balance, which directly reduces the remaining cushion above the $25,100.00 locked floor.
 
 ---
@@ -90,8 +94,9 @@ To request an approved withdrawal, an account must satisfy all four conditions:
   - Balance after payout: $26,000.00.
   - Remaining Drawdown Cushion above $25,100.00 locked floor: **$900.00**.
 - **Profit Split**: **90/10** (Trader receives 90%, Prop Firm retains 10%).
-- **Post-Payout Dynamic Cushion Decay**:
-  $$\text{Cushion} = 400.0 + (\text{Gross Payout} - 500.0) \quad \text{for } \text{Gross Payout} \in [500, 1000]$$
+- **Post-Payout leftover vs locked floor** (mechanical, not a mandated buffer):
+  $$\text{Leftover} = 400.0 + (\text{Gross Payout} - 500.0) \quad \text{for } \text{Gross Payout} \in [500, 1000]$$
+  Sizing research that *requires* this leftover before requesting a payout is optional policy.
 
 #### 3.3 Authoritative Withdrawal Policy Comparison & Corrected 3D Pareto Frontier (10,000 CRN Paths, 7,829 Funded Accounts, 1,500-Session Terminal Completion)
 - **Policy A (Immediate Harvest, $500 Min)** [`PARETO-OPTIMAL`]: Harvests as soon as balance reaches $26,000. Achieves **80.62% Payout #1 survival**, **19.38% infant mortality** (95% CI `[18.52%, 20.27%]`), highest pooled live promotion rate (**43.16%**; 26.72% at 252 sessions), and **$948.39 Terminal Funded-Lifecycle Payout EV** ($791.61 at 252 sessions).
@@ -133,13 +138,22 @@ gross_payout, trader_net, post_balance = LUCID_FLEX_25K.calculate_payout(
 ---
 
 ## Production Invariant Rules & Failure Modes
-1. **Rule 1: Never Violate EOD Trailing Floor**: If account balance drops below the active trailing floor ($bal < \text{Floor}$), the account is breached. Simulation terminates immediately.
-2. **Rule 2: Daily Soft Stop Execution**: Reaching -$600.00 daily loss mandates a complete cessation of order flow for that day.
-3. **Rule 3: Consistency Cap Compliance**: If a single session generates $> 40\%$ of the profit target, subsequent sessions must be traded until the 40% cap condition is satisfied before declaring an evaluation pass.
-4. **Rule 4: Never Downscale on Day 1 Funded**: Maintain 2 micros base on Day 1 of funded mode; do not fall into the 1-micro infant mortality trap.
-5. **Rule 5: Enforce $400 Safe CPPI Cushion Buffer**: If post-payout or mid-cycle cushion falls below $400.00, immediately de-lever to 1 micro across all desks until cushion recovers above $500.00.
+1. **EOD trailing floor**: If realized account equity is at or below the active EOD floor, the evaluation is failed. Floor updates only at session close.
+2. **Daily loss limit**: After realized session P&L reaches -$600, block new entries; do not clip open or closed trade P&L.
+3. **Evaluation consistency (40% base)**: Pass only when total profit >= $1,250 and largest_day / total_profit <= 0.40.
+4. **Contract caps**: Enforce Lucid's 20-micro official maximum and this desk's 10-micro internal cap as separate limits.
+5. **Safe CPPI / finish-line 1-micro de-lever**: Optional portfolio sizing policy, not a Lucid funded-account rule.
+6. **Authoritative evaluation path**: `backtest/lucidflex_eval.py`. Do not quote generic `prop_firm.py` profiles, dashboard-era grids, or legacy M3 JSON as the current LucidFlex result.
 
 ---
+
+## Implementation & File Map
+- Registry: `config/prop_firm_registry.py`
+- Authoritative evaluation simulator: `backtest/lucidflex_eval.py`
+- Runner: `scripts/run_lucidflex_eval_v1.py`
+- Tests: `tests/test_lucidflex_eval_v1.py`, `tests/test_lucid_flex_rules_integrity.py`
+- Corrected artifact: `results/lucidflex_eval_v1_portfolio_comparison.json`
+- Legacy M3 artifact (preserved): `results/m3_portfolio_ratchet_simulation.json`
 
 ## Cross References
 - [Python Prop Firm Registry](../../config/prop_firm_registry.py)

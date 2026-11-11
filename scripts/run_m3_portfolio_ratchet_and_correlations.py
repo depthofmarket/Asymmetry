@@ -1,5 +1,19 @@
 #!/usr/bin/env python3
 """
+LEGACY Milestone M3 simulator (historical comparison only).
+
+Do not use this module as the LucidFlex 25K evaluation source of truth.
+The authoritative causal evaluator is `backtest.lucidflex_eval` (simulator
+`lucidflex_eval_v1`). This script and `results/m3_portfolio_ratchet_simulation.json`
+are preserved byte-for-byte as a prior-generation artifact.
+
+Known defects relative to lucidflex_eval_v1:
+- Credits terminal trade P&L at entry (lookahead).
+- Double-applies the ratchet to simultaneous S1 MNQ/MES legs.
+- Arithmetically clips daily P&L to -$600.
+- Uses generic weekdays instead of the NQ 09:30 ET session calendar.
+- Treats unresolved Monte Carlo paths as non-pass without a distinct outcome label.
+
 Milestone M3: 5-Strategy Pareto Anti-Martingale Ratchet Simulation & 5x5 Correlation Matrix.
 
 Executes:
@@ -416,8 +430,15 @@ def main():
     }
 
     out_path = REPO_ROOT / "results" / "m3_portfolio_ratchet_simulation.json"
-    out_path.write_text(json.dumps(out_payload, indent=2), encoding="utf-8")
-    print(f"\nSaved verified M3 simulation report to: {out_path}")
+    if out_path.exists():
+        print(
+            f"\nLEGACY ARTIFACT PRESERVED (not overwritten): {out_path}\n"
+            "Authoritative LucidFlex evaluation is backtest.lucidflex_eval / "
+            "scripts/run_lucidflex_eval_v1.py"
+        )
+    else:
+        out_path.write_text(json.dumps(out_payload, indent=2), encoding="utf-8")
+        print(f"\nSaved verified M3 simulation report to: {out_path}")
 
 
 if __name__ == "__main__":

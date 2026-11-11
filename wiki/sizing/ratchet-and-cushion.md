@@ -7,7 +7,7 @@ tags:
   - risk-management
   - money-management
 created: "2026-11-05"
-updated: "2026-11-09"
+updated: "2026-11-11"
 status: active
 strategies:
   - lucid_flex_ensemble
@@ -42,7 +42,7 @@ During evaluation, contract sizing scales up as accumulated profit widens the di
 - **Empirical Duration Compression (-26.6% to -31.6%)**:
   - On the 3-strategy portfolio (543 trades, 0.36 trades/session), the Pareto Ratchet (200/550) required **79.0 median exchange sessions** to reach the $1,250 target.
   - On the 5-strategy portfolio (748 trades, 0.50 trades/session), increased trade frequency compresses median pass duration to **58.0 sessions** (-21.0 sessions / -26.6% faster) under the Balanced Champion `(T2=$100, T3=$600)` and down to **54.0 sessions** (-31.6% faster) under the Maximum Compression Champion `(T2=$100, T3=$350)`.
-  - Pass rates remain exceptionally stable at **72.24% to 74.97%** across 10,000 CRN block-bootstrap iterations.
+  - Pass rates in **that dashboard-era grid** (`dashboard_analytics.run_evaluation`, 750-session horizon) sit at **72.24% to 74.97%**. That 72.24% Balanced Champion figure is **not** the legacy M3 72.79% and is **not** `lucidflex_eval_v1`. See `wiki/strategies/lucid-flex-ensemble.md`.
 
 ---
 

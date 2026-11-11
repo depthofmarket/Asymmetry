@@ -20,12 +20,15 @@ The repository maintains a strict separation between the **3-Strategy Production
 
 - **Current Repository Branch**: `depthofmarket-execution-safety-audit`
 - **Canonical Provenance Store**: `results/backtest_provenance.db` (26 verified runs recorded: 5 canonical baselines, 3 parameter plateau sweeps, 1 alpha factory walkforward, 1 forward demo, 16 candidate runs including verified S4 and S5)
-- **5-Strategy Expansion Empirical Verification (`results/m3_portfolio_ratchet_simulation.json`)**:
-  - **Empirical $5 \times 5$ Daily Return Correlation Matrix**: Maximum pairwise $|\rho| = 0.0599 \ll 0.20$ across 1,515 trading sessions (`2021–2026`).
-  - **10,000-Path Block-Bootstrap Monte Carlo (Pareto Ratchet `2 -> 3 -> 4` Micros, $39 OTP, Zero Monthly Rebill)**: Pass Rate improves from **`69.18%` (3-Strategy Baseline)** to **`72.79%` (+3.61 pp, 5-Strategy Portfolio)**; median exchange sessions to pass improves from **`82.0` to `75.0` (-7.0 sessions faster)**; Expected OTP Cost per Funded Account drops from **`$56.37` to `$53.58`**.
-  - **Historical Sequential LucidFlex 25K Campaigns (2021–2026)**: Passed evaluations increase by **+50%** (`12 / 15` vs `8 / 10`), and median calendar time to pass drops by **-44.5 calendar days (-31.2%)** from **`142.5` days to `98.0` days**.
+- **Authoritative LucidFlex 25K evaluator (`lucidflex_eval_v1`, `results/lucidflex_eval_v1_portfolio_comparison.json`)**: Causal event accounting, S1 pair split (not double ratchet), DLL without P&L clipping, NQ 09:30 calendar, realized-close equity only. 10,000 paths seed 42:
+  - 252-session **S1–S5**: 7299 pass / 1946 fail / 755 unresolved (72.99% / 19.46% / 7.55% of all paths; 78.95% of resolved). **Not a lifetime probability.**
+  - 252-session **S1–S3**: 6904 / 1861 / 1235 (69.04% / 18.61% / 12.35%; 78.77% of resolved).
+  - 750-session S1–S5: 7834 / 2166 / 0 (78.34%). Fail rate does not fall vs 3-strat at 252 sessions (19.46% vs 18.61%).
+  - Do **not** call `100 − pass` a bust rate. OTP cost uses failed resolved attempts only.
+- **Legacy M3 JSON (preserved)**: `results/m3_portfolio_ratchet_simulation.json` SHA-256 `11410935d0b14f0d422c82fb4a753e7cdd79788eb960f15d02681bcb38267de2`. Historical output 72.79% / 69.18% pass÷all with fail 19.83% / 19.50% and unresolved 7.38% / 11.32%. Not the current evaluator.
+- **Sizing-grid 72.24%**: `evaluation_pareto_frontier.csv` Balanced Champion (T2=$100, T3=$600), dashboard-era, distinct from both M3 and v1.
 - **Data Source Parquet**: `data/processed/unified_five_strategy_portfolio_trades_2021_2026.parquet`
-- **Data SHA-256**: `c3324fd429e92386d0511c50a43ed246e25357ec80688dcef3bfb335487359b0` (748 verified trades across 2021-01-07 to 2026-10-30, Net +$16,490.34)
+- **Data SHA-256**: `84179526c91e3f04972ec4f75347328c3d3ff5853298692d47cb9a82b09d9bd2` (748 frozen trades, 2021-01-07 to 2026-10-30, research-sized Net +$16,490.34). The previously cited hash `c3324fd4…` does not match this local file.
 - **MotiveWave Custom Studies Status**: All 5 custom studies compiled with JDK 25 (`tools/jdk25/Contents/Home/bin/javac`) and deployed to `/Users/novo/MotiveWave Extensions/LucidPropEnsemble.jar` (85.5 KB):
   1. `LucidMorningVABreakoutStudy.java` (`VA_BREAKOUT_ALGO_V2` on MNQ/MES, S1)
   2. `LucidMacroMomentumStudy.java` (`MACRO_MOMENTUM_ALGO_V1` on MNQ, S2)

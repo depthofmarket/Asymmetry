@@ -32,8 +32,16 @@ class LucidFlex25KProfile:
     FLOOR_LOCK_PEAK_BALANCE: float = 26_100.0  # Peak EOD balance where floor locks permanently
     LOCKED_FLOOR_VALUE: float = 25_100.0       # Permanent locked floor (Base $25,000 + $100)
     DAILY_SOFT_STOP: float = 600.0             # -$600 halt for remainder of day (not account liquidation)
-    MAX_MICRO_CONTRACTS: int = 10              # 1 Mini or 10 Micros max position limit
-    CONSISTENCY_RULE_PCT: float = 40.0         # Max 40% of target profit from a single trading day
+    # LucidFlex 25K official contract maximum (support article 2026-11-11):
+    # 2 mini / 20 micros. See https://support.lucidtrading.com/en/articles/12945790-lucidflex-evaluation-account
+    OFFICIAL_FIRM_MAX_MINIS: int = 2
+    OFFICIAL_FIRM_MAX_MICROS: int = 20
+    # Intentional conservative portfolio policy used by this repository's live/demo stack.
+    # Not Lucid's official account maximum.
+    INTERNAL_RISK_CAP_MICROS: int = 10
+    MAX_MICRO_CONTRACTS: int = 10              # Backward-compatible alias of INTERNAL_RISK_CAP_MICROS
+    CONSISTENCY_RULE_PCT: float = 40.0         # Base evaluation: largest_day / total_profit <= 0.40
+    CONSISTENCY_ADDON_PCT: float = 50.0        # Separately purchased 50% add-on (not the repo base scenario)
 
     # ── Funded Phase (Master / LiveSim) ──
     FUNDED_STARTING_BALANCE: float = 25_000.0  # Account resets to $25,000.00 on Day 1
